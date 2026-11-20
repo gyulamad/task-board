@@ -225,7 +225,8 @@ function task_board_update_page(PDO $pdo, array $config): void {
             <form method="post" onsubmit="return confirm('Install this update now? Make sure you have a database backup.')"><?=csrf_field()?>
                 <input type="hidden" name="action" value="install_update">
                 <input type="hidden" name="source_type" value="<?=h($selectedType)?>">
-                <input type="hidden" name="branch" value="<?=h($selectedBranch)?>">\n                <input type="hidden" name="source_ref" value="<?=h($sourceInfo['ref'])?>">
+                <input type="hidden" name="branch" value="<?=h($selectedBranch)?>">
+                <input type="hidden" name="source_ref" value="<?=h($sourceInfo['ref'])?>">
                 <div class="mb-3"><label class="form-label" for="current_password">Current administrator password</label><input class="form-control" type="password" id="current_password" name="current_password" autocomplete="current-password" required></div>
                 <button class="btn btn-danger">Back up and install update</button>
             </form>

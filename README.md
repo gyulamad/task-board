@@ -19,7 +19,7 @@ A lightweight multi-user task and message board for PHP 8.2+ and MySQL/MariaDB s
 5. Ensure the `uploads` directory is writable by PHP (usually permissions 755; use your host's recommended setting).
 6. Visit `https://your-domain.example/?page=install` and create the first administrator.
 7. Sign in, then use Administration to create other users.
-8. **Delete or rename the install page access** after creating the first account. It is also protected against creating another admin once any user exists.
+8. After the first account is created, the installer link is hidden and `?page=install` returns HTTP 404 for both GET and POST requests.
 
 ## Important security / hosting notes
 - Use HTTPS. Do not use this for sensitive or regulated data without a security review.

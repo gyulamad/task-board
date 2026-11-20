@@ -60,6 +60,16 @@ if ($page === 'login' && $_SERVER['REQUEST_METHOD'] === 'POST') {
     $error = 'Invalid username or password.';
 }
 
+if ($page === 'install') {
+    // Disable the installer completely after the first account exists.
+    // This protects direct GET requests and POST submissions alike.
+    $existingUsers = (int)$pdo->query('SELECT COUNT(*) FROM users')->fetchColumn();
+    if ($existingUsers > 0) {
+        http_response_code(404);
+        exit('Not found.');
+    }
+}
+
 if ($page === 'install' && $_SERVER['REQUEST_METHOD'] === 'POST') {
     // Run schema.sql manually first. This creates the first administrator.
     $count = (int)$pdo->query('SELECT COUNT(*) FROM users')->fetchColumn();
@@ -168,7 +178,7 @@ if (!user() && !in_array($page,['login','install'],true)) redirect('?page=login'
 
 if ($page==='login') {
     render_header('Sign in',$config); ?>
-    <div class="row justify-content-center"><div class="col-md-5"><div class="card p-4"><h2 class="h4 mb-3">Sign in</h2><form method="post"><?=csrf_field()?><div class="mb-3"><label class="form-label">Username</label><input class="form-control" name="username" required autofocus></div><div class="mb-3"><label class="form-label">Password</label><input class="form-control" type="password" name="password" required></div><button class="btn btn-primary w-100">Sign in</button></form><p class="small muted mt-3 mb-0">First time here? <a href="?page=install">Create the administrator account</a>.</p></div></div></div>
+    <div class="row justify-content-center"><div class="col-md-5"><div class="card p-4"><h2 class="h4 mb-3">Sign in</h2><form method="post"><?=csrf_field()?><div class="mb-3"><label class="form-label">Username</label><input class="form-control" name="username" required autofocus></div><div class="mb-3"><label class="form-label">Password</label><input class="form-control" type="password" name="password" required></div><button class="btn btn-primary w-100">Sign in</button></form><?php if ((int)$pdo->query('SELECT COUNT(*) FROM users')->fetchColumn() === 0): ?><p class="small muted mt-3 mb-0">First time here? <a href="?page=install">Create the administrator account</a>.</p><?php endif; ?></div></div></div>
     <?php render_footer(); exit;
 }
 if ($page==='install') {

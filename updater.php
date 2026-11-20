@@ -58,7 +58,7 @@ function tb_update_source(string $type, string $branch): array {
         'label' => 'Branch ' . $branch . ' (' . substr((string)$meta['sha'], 0, 12) . ')',
         'ref' => (string)$meta['sha'],
         'sha' => (string)$meta['sha'],
-        'url' => 'https://codeload.github.com/' . TASK_BOARD_UPDATE_REPO . '/zip/refs/heads/' . $encoded,
+        'url' => 'https://codeload.github.com/' . TASK_BOARD_UPDATE_REPO . '/zip/' . rawurlencode((string)$meta['sha']),
     ];
 }
 

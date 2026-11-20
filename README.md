@@ -9,6 +9,7 @@ A lightweight multi-user task and message board for PHP 8.2+ and MySQL/MariaDB s
 - Filter by assignee/status and search by title/description
 - Comments, attachments, history and task relationships
 - Admin can add status labels and mark completion statuses
+- Admin-only software updater for the latest GitHub release or a selected repository branch
 - PDO prepared statements, output escaping, CSRF tokens and upload MIME checks
 
 ## Install on shared hosting
@@ -20,6 +21,7 @@ A lightweight multi-user task and message board for PHP 8.2+ and MySQL/MariaDB s
 6. Visit `https://your-domain.example/?page=install` and create the first administrator.
 7. Sign in, then use Administration to create other users.
 8. After the first account is created, the installer link is hidden and `?page=install` returns HTTP 404 for both GET and POST requests.
+9. The administrator can open **Software updates** from the navigation bar to check and install application updates from the latest published GitHub release or a selected branch. Releases are recommended; branches are intended for testing.
 
 ## Important security / hosting notes
 - Use HTTPS. Do not use this for sensitive or regulated data without a security review.
@@ -28,6 +30,9 @@ A lightweight multi-user task and message board for PHP 8.2+ and MySQL/MariaDB s
 - Set `upload_max_filesize` and `post_max_size` in PHP settings to at least 5M (or lower the app limit in config.php).
 - The upload allowlist is intentionally conservative. Adjust it in `index.php` if you need more file types.
 - The app uses Bootstrap from a CDN; it needs internet access to load the styling.
+- The updater requires PHP's ZIP extension (`ZipArchive`), outbound HTTPS access to GitHub, and write permission for the allowlisted application files. It updates only `index.php`, `updater.php`, `version.json`, `schema.sql`, `README.md`, `config.example.php`, `.gitignore` and `uploads/.htaccess`; it never replaces `config.php` or user-uploaded files.
+- The updater rechecks the source at install time, validates archive paths, rejects symbolic links, stages file replacements, and creates a temporary backup before writing. If a write fails, it attempts to restore files already replaced. Keep an independent backup of both files and the database before updating; temporary hosting storage may be cleared by the host.
+- The updater does not run database migrations. Review release notes and apply any required `schema.sql` changes manually after backing up the database. Do not install experimental branches on a production board.
 - Database relationships are one-directional as entered: for example, on task A choose "blocks" and task B to mean A blocks B.
 - Task history currently records task creation, updates, comments, attachments and relationship changes. For a detailed field-by-field audit trail, extend `save_task` to compare old and new values.
 - Admin user management currently supports creating users. Password reset, editing/deactivating users and status rename/delete are not yet included.

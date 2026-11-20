@@ -62,6 +62,17 @@ function tb_update_source(string $type, string $branch): array {
     ];
 }
 
+
+function tb_update_pinned_source(string $type, string $ref): array {
+    if ($type === 'release' && preg_match('/^[A-Za-z0-9._-]{1,100}$/', $ref)) {
+        return ['label' => 'Release ' . $ref, 'ref' => $ref, 'sha' => $ref, 'url' => 'https://codeload.github.com/' . TASK_BOARD_UPDATE_REPO . '/zip/refs/tags/' . rawurlencode($ref)];
+    }
+    if ($type === 'branch' && preg_match('/^[a-f0-9]{40}$/i', $ref)) {
+        return ['label' => 'Branch commit ' . substr($ref, 0, 12), 'ref' => $ref, 'sha' => $ref, 'url' => 'https://codeload.github.com/' . TASK_BOARD_UPDATE_REPO . '/zip/' . rawurlencode($ref)];
+    }
+    throw new RuntimeException('The checked update reference is invalid. Please check for updates again.');
+}
+
 function tb_update_archive_files(string $archiveData): array {
     if (!class_exists(ZipArchive::class)) throw new RuntimeException('The PHP ZIP extension (ZipArchive) is required for updates.');
     $tmp = tempnam(sys_get_temp_dir(), 'tb-update-');
@@ -161,7 +172,7 @@ function task_board_update_page(PDO $pdo, array $config): void {
             $error = 'Your current administrator password was not accepted.';
         } else {
             try {
-                $sourceInfo = tb_update_source($selectedType, $selectedBranch);
+                $sourceInfo = tb_update_pinned_source($selectedType, trim($_POST['source_ref'] ?? ''));
                 $archive = tb_update_http_get($sourceInfo['url'], 20 * 1024 * 1024);
                 $files = tb_update_archive_files($archive);
                 $files['version.json'] = json_encode(['source' => $selectedType, 'ref' => $sourceInfo['ref'], 'sha' => $sourceInfo['sha'], 'installed_at' => gmdate('c')], JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES) . "\n";
@@ -214,7 +225,7 @@ function task_board_update_page(PDO $pdo, array $config): void {
             <form method="post" onsubmit="return confirm('Install this update now? Make sure you have a database backup.')"><?=csrf_field()?>
                 <input type="hidden" name="action" value="install_update">
                 <input type="hidden" name="source_type" value="<?=h($selectedType)?>">
-                <input type="hidden" name="branch" value="<?=h($selectedBranch)?>">
+                <input type="hidden" name="branch" value="<?=h($selectedBranch)?>">\n                <input type="hidden" name="source_ref" value="<?=h($sourceInfo['ref'])?>">
                 <div class="mb-3"><label class="form-label" for="current_password">Current administrator password</label><input class="form-control" type="password" id="current_password" name="current_password" autocomplete="current-password" required></div>
                 <button class="btn btn-danger">Back up and install update</button>
             </form>

@@ -176,7 +176,13 @@ function task_board_update_page(PDO $pdo, array $config): void {
     } elseif ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['action'] ?? '') === 'check_update') {
         try {
             $sourceInfo = tb_update_source($selectedType, $selectedBranch);
-            $message = 'Source found: ' . $sourceInfo['label'] . '. Confirm the source and enter your current administrator password to install it.';
+            $installed = is_file(__DIR__ . '/version.json') ? (json_decode((string)file_get_contents(__DIR__ . '/version.json'), true) ?: []) : [];
+            if (!empty($installed['sha']) && hash_equals((string)$installed['sha'], (string)$sourceInfo['sha'])) {
+                $message = 'This exact source is already installed (' . $sourceInfo['label'] . ').';
+                $sourceInfo = null;
+            } else {
+                $message = 'Update found: ' . $sourceInfo['label'] . '. Confirm the source and enter your current administrator password to install it.';
+            }
         } catch (Throwable $e) {
             $error = $e->getMessage();
         }

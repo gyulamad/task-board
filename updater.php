@@ -9,6 +9,7 @@ const TASK_BOARD_UPDATE_REPO = 'gyulamad/task-board';
 const TASK_BOARD_UPDATE_FILES = [
     'index.php',
     'updater.php',
+    'version.json',
     'schema.sql',
     'README.md',
     'config.example.php',
@@ -24,15 +25,16 @@ function tb_update_http_get(string $url, int $maxBytes): string {
         'http' => [
             'method' => 'GET',
             'timeout' => 25,
-            'follow_location' => 1,
-            'max_redirects' => 3,
+            'follow_location' => 0,
             'header' => "User-Agent: PHP-Task-Board-Updater\r\nAccept: application/vnd.github+json\r\n",
         ],
         'ssl' => ['verify_peer' => true, 'verify_peer_name' => true],
     ]);
     $data = @file_get_contents($url, false, $context, 0, $maxBytes + 1);
-    if ($data === false || strlen($data) > $maxBytes) {
-        throw new RuntimeException('Could not download the update, or the download exceeded the size limit.');
+    $status = 0;
+    foreach (($http_response_header ?? []) as $header) if (preg_match('#^HTTP/\\S+\\s+(\\d{3})#', $header, $match)) $status = (int)$match[1];
+    if ($data === false || strlen($data) > $maxBytes || $status < 200 || $status >= 300) {
+        throw new RuntimeException('Could not download the update (HTTP ' . $status . '), or the download exceeded the size limit.');
     }
     return $data;
 }
@@ -44,7 +46,7 @@ function tb_update_source(string $type, string $branch): array {
         $tag = (string)$meta['tag_name'];
         if (!preg_match('/^[A-Za-z0-9._-]{1,100}$/', $tag)) throw new RuntimeException('GitHub returned an invalid release tag.');
         $zipUrl = 'https://codeload.github.com/' . TASK_BOARD_UPDATE_REPO . '/zip/refs/tags/' . rawurlencode($tag);
-        return ['label' => 'Release ' . $tag, 'ref' => $tag, 'url' => $zipUrl];
+        return ['label' => 'Release ' . $tag, 'ref' => $tag, 'sha' => $tag, 'url' => $zipUrl];
     }
     if ($type !== 'branch' || !preg_match('/^[A-Za-z0-9._\/-]{1,100}$/', $branch) || str_contains($branch, '..') || str_starts_with($branch, '/') || str_ends_with($branch, '/')) {
         throw new RuntimeException('Choose a valid branch name.');
@@ -55,6 +57,7 @@ function tb_update_source(string $type, string $branch): array {
     return [
         'label' => 'Branch ' . $branch . ' (' . substr((string)$meta['sha'], 0, 12) . ')',
         'ref' => (string)$meta['sha'],
+        'sha' => (string)$meta['sha'],
         'url' => 'https://codeload.github.com/' . TASK_BOARD_UPDATE_REPO . '/zip/refs/heads/' . $encoded,
     ];
 }
@@ -161,8 +164,11 @@ function task_board_update_page(PDO $pdo, array $config): void {
                 $sourceInfo = tb_update_source($selectedType, $selectedBranch);
                 $archive = tb_update_http_get($sourceInfo['url'], 20 * 1024 * 1024);
                 $files = tb_update_archive_files($archive);
+                $files['version.json'] = json_encode(['source' => $selectedType, 'ref' => $sourceInfo['ref'], 'sha' => $sourceInfo['sha'], 'installed_at' => gmdate('c')], JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES) . "\n";
+                $installedLabel = $sourceInfo['label'];
                 $backup = tb_update_install($files);
-                $message = 'Update installed from ' . $sourceInfo['label'] . '. A private backup was saved at ' . $backup . '. No database changes were run; apply any required schema migrations manually after reviewing the release notes.';
+                $sourceInfo = null;
+                $message = 'Update installed from ' . $installedLabel . '. A private backup was saved temporarily at ' . $backup . '. No database changes were run; apply any required schema migrations manually after reviewing the release notes.';
             } catch (Throwable $e) {
                 $error = $e->getMessage();
             }
@@ -176,9 +182,12 @@ function task_board_update_page(PDO $pdo, array $config): void {
         }
     }
 
+    $installed = [];
+    if (is_file(__DIR__ . '/version.json')) $installed = json_decode((string)file_get_contents(__DIR__ . '/version.json'), true) ?: [];
     render_header('Software updates', $config); ?>
     <div class="card p-4">
         <h2 class="h4">Software updates</h2>
+        <p class="small muted">Installed source: <?=h((string)($installed['source'] ?? 'unknown'))?> · <?=h((string)($installed['ref'] ?? 'not recorded'))?> · Installed at <?=h((string)($installed['installed_at'] ?? 'unknown'))?></p>
         <p class="muted">Download application files from the official <a href="https://github.com/gyulamad/task-board" target="_blank" rel="noopener">Task Board repository</a>. Releases are recommended for normal updates; branches are intended for testing.</p>
         <?php if ($error): ?><div class="alert alert-danger"><?=h($error)?></div><?php endif; ?>
         <?php if ($message): ?><div class="alert alert-info"><?=h($message)?></div><?php endif; ?>

@@ -1,5 +1,6 @@
 <?php
 declare(strict_types=1);
+define('TASK_BOARD_BOOTSTRAPPED', true);
 session_start();
 
 $configFile = __DIR__ . '/config.php';
@@ -168,7 +169,7 @@ function render_header(string $title, array $config): void {
     ?><!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title><?=h($title)?> - <?=h($config['app_name'])?></title>
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
     <style>body{background:#f5f6f8}.card{border:0;box-shadow:0 1px 5px #0000000d}.muted{color:#687386}.prewrap{white-space:pre-wrap}.navbar-brand{font-weight:700}</style></head><body>
-    <nav class="navbar navbar-expand-lg navbar-dark bg-dark"><div class="container"><a class="navbar-brand" href="?"><?=h($config['app_name'])?></a><?php if(user()): ?><div class="navbar-nav ms-auto align-items-center"><a class="nav-link" href="?">Tasks</a><?php if(is_admin()): ?><a class="nav-link" href="?page=admin">Administration</a><?php endif; ?><span class="navbar-text mx-2"><?=h(user()['display_name'])?></span><a class="nav-link" href="?page=logout">Sign out</a></div><?php endif; ?></div></nav><main class="container py-4">
+    <nav class="navbar navbar-expand-lg navbar-dark bg-dark"><div class="container"><a class="navbar-brand" href="?"><?=h($config['app_name'])?></a><?php if(user()): ?><div class="navbar-nav ms-auto align-items-center"><a class="nav-link" href="?">Tasks</a><?php if(is_admin()): ?><a class="nav-link" href="?page=admin">Administration</a><a class="nav-link" href="?page=updates">Software updates</a><?php endif; ?><span class="navbar-text mx-2"><?=h(user()['display_name'])?></span><a class="nav-link" href="?page=logout">Sign out</a></div><?php endif; ?></div></nav><main class="container py-4">
     <?php if (!empty($_SESSION['flash'])): ?><div class="alert alert-success"><?=h($_SESSION['flash'])?></div><?php unset($_SESSION['flash']); endif; ?>
     <?php global $error; if($error): ?><div class="alert alert-danger"><?=h($error)?></div><?php endif;
 }
@@ -193,6 +194,13 @@ if ($page==='download') {
     header('Content-Type: '.$a['mime_type']); header('Content-Length: '.$a['file_size']);
     header('Content-Disposition: attachment; filename="'.str_replace('"','', $a['original_name']).'"');
     readfile(__DIR__.'/uploads/'.$a['stored_name']); exit;
+}
+
+if ($page === 'updates') {
+    if (!is_admin()) { http_response_code(403); exit('Forbidden.'); }
+    require __DIR__ . '/updater.php';
+    task_board_update_page($pdo, $config);
+    exit;
 }
 
 if ($page==='admin' && is_admin()) {

@@ -9,6 +9,10 @@ const TASK_BOARD_UPDATE_REPO = 'gyulamad/task-board';
 const TASK_BOARD_UPDATE_FILES = [
     'index.php',
     'updater.php',
+    // index.php requires this file since the helpers were split out of
+    // index.php; leaving it off the allowlist installs an application that
+    // cannot start (HTTP 500). Keep it in sync with the repository layout.
+    'src/helpers.php',
     'version.json',
     'schema.sql',
     'README.md',
@@ -126,7 +130,13 @@ function tb_update_install(array $files): string {
             if (!in_array($relative, TASK_BOARD_UPDATE_FILES, true)) throw new RuntimeException('An unexpected update path was rejected.');
             $target = __DIR__ . '/' . $relative;
             $parent = dirname($target);
-            if (!is_dir($parent) || !is_writable($parent)) throw new RuntimeException('The hosting account cannot write to ' . $relative . '.');
+            // Post-split versions may introduce sub-directories (e.g. src/)
+            // that do not exist on installations made before the split, so an
+            // update has to be able to bootstrap them.
+            if (!is_dir($parent) && !@mkdir($parent, 0775, true) && !is_dir($parent)) {
+                throw new RuntimeException('The hosting account cannot create the directory needed for ' . $relative . '.');
+            }
+            if (!is_writable($parent)) throw new RuntimeException('The hosting account cannot write to ' . $relative . '.');
             if (is_link($target)) throw new RuntimeException('A symbolic link target was rejected.');
             if (is_file($target)) {
                 $backup = $backupDir . '/' . str_replace('/', '__', $relative);

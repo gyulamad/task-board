@@ -28,12 +28,13 @@ A lightweight multi-user task and message board for PHP 8.2+ and MySQL/MariaDB s
 - Use HTTPS. Do not use this for sensitive or regulated data without a security review.
 - Session cookies are hardened (HttpOnly, SameSite=Lax, Secure on HTTPS, strict mode) and sessions idle out after 12 hours (configurable via `session_idle_seconds` in `config.php`).
 - Sign-out is a CSRF-protected POST; failed sign-in attempts are throttled (10 failures per client within 10 minutes) and responses carry `X-Content-Type-Options`, `X-Frame-Options`, `Referrer-Policy` and a conservative `Content-Security-Policy`.
+- Upload the complete repository to the web root, including the `src/` directory: `index.php` requires `src/helpers.php` and exits with a clear error when the file is missing. A partial upload that copies `index.php` without `src/helpers.php` makes every page return HTTP 500.
 - Keep `config.php` out of public source control. If your host supports it, place it outside the web root.
 - `uploads/.htaccess` disables script execution on Apache. On non-Apache hosts, configure the uploads directory so PHP and other scripts cannot execute there.
 - Set `upload_max_filesize` and `post_max_size` in PHP settings to at least 5M (or lower the app limit in config.php).
 - The upload allowlist is intentionally conservative. Adjust it in `index.php` if you need more file types.
 - The app uses Bootstrap from a CDN; it needs internet access to load the styling.
-- The updater requires PHP's ZIP extension (`ZipArchive`), outbound HTTPS access to GitHub, and write permission for the allowlisted application files. It updates only `index.php`, `updater.php`, `version.json`, `schema.sql`, `README.md`, `config.example.php`, `.gitignore` and `uploads/.htaccess`; it never replaces `config.php` or user-uploaded files.
+- The updater requires PHP's ZIP extension (`ZipArchive`), outbound HTTPS access to GitHub, and write permission for the allowlisted application files. It updates only `index.php`, `updater.php`, `src/helpers.php`, `version.json`, `schema.sql`, `README.md`, `config.example.php`, `.gitignore` and `uploads/.htaccess`; it creates missing sub-directories such as `src/` on demand and never replaces `config.php` or user-uploaded files.
 - The updater rechecks the source at install time, validates archive paths, rejects symbolic links, stages file replacements, and creates a temporary backup before writing. If a write fails, it attempts to restore files already replaced. Keep an independent backup of both files and the database before updating; temporary hosting storage may be cleared by the host.
 - The updater does not run database migrations. Review release notes and apply any required `schema.sql` changes manually after backing up the database. Do not install experimental branches on a production board.
 - Database relationships are one-directional as entered: for example, on task A choose "blocks" and task B to mean A blocks B.

@@ -37,6 +37,13 @@ try {
     exit('Database connection failed. Check config.php.');
 }
 
+// Deployment guard: a partial upload, or an update installed before the src/
+// directory existed, used to die here as an opaque HTTP 500 with an empty
+// body. Fail with an actionable message instead.
+if (!is_file(__DIR__ . '/src/helpers.php')) {
+    http_response_code(500);
+    exit('Application files are incomplete: src/helpers.php was not found on the server. Upload the full repository, including the src/ directory, and try again.');
+}
 require __DIR__ . '/src/helpers.php';
 
 // Basic response hardening for every page (including CSRF/403 rejections).

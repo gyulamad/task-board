@@ -6,7 +6,8 @@ A lightweight multi-user task and message board for PHP 8.2+ and MySQL/MariaDB s
 - Session login; password hashes using PHP `password_hash()`
 - Admin and regular user roles; admin can create users
 - Task CRUD, multi-assignee selection, status and parent task
-- Filter by assignee/status and search by title/description
+- Filter by assignee/status/parent task and search by title/description
+- Paginated task list with per-task Edit/Delete shortcuts and multi-select bulk delete
 - Comments, attachments, history and task relationships
 - Admin can add status labels and mark completion statuses
 - Admin-only software updater for the latest GitHub release or a selected repository branch

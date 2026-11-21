@@ -116,7 +116,26 @@ if (user()) {
             if ($action === 'delete_task') {
                 $id = (int)$_POST['id'];
                 if (!is_admin() && (int)$pdo->query('SELECT created_by FROM tasks WHERE id=' . $id)->fetchColumn() !== (int)user()['id']) throw new RuntimeException('Only an administrator or task creator can delete this task.');
-                $pdo->prepare('DELETE FROM tasks WHERE id=?')->execute([$id]); flash('Task deleted.'); redirect('?');
+                $pdo->prepare('DELETE FROM tasks WHERE id=?')->execute([$id]);
+                $returnUrl = $_POST['return'] ?? '';
+                flash('Task deleted.');
+                redirect(is_string($returnUrl) && str_starts_with($returnUrl, '?page=tasks') ? $returnUrl : '?');
+            }
+            if ($action === 'bulk_delete_tasks') {
+                $ids = array_values(array_unique(array_filter(array_map('intval', (array)($_POST['task_ids'] ?? [])), fn($v) => $v > 0)));
+                if (!$ids) throw new RuntimeException('Select at least one task to delete.');
+                $returnUrl = $_POST['return'] ?? '';
+                $returnUrl = is_string($returnUrl) && str_starts_with($returnUrl, '?page=tasks') ? $returnUrl : '?';
+                $check = $pdo->prepare('SELECT created_by FROM tasks WHERE id=?');
+                $del = $pdo->prepare('DELETE FROM tasks WHERE id=?');
+                $deleted = 0; $skipped = 0;
+                foreach ($ids as $tid) {
+                    $check->execute([$tid]);
+                    $creator = (int)$check->fetchColumn();
+                    if (is_admin() || $creator === (int)user()['id']) { $del->execute([$tid]); $deleted++; } else { $skipped++; }
+                }
+                flash($deleted . ' task' . ($deleted === 1 ? '' : 's') . ' deleted.' . ($skipped ? ' ' . $skipped . ' skipped: only administrators or the task creator can delete a task.' : ''));
+                redirect($returnUrl);
             }
             if ($action === 'comment') {
                 $id = (int)$_POST['task_id']; $body = trim($_POST['body'] ?? '');
@@ -244,14 +263,41 @@ if ($page==='task') {
 
 $statuses=$pdo->query('SELECT * FROM statuses ORDER BY sort_order,id')->fetchAll();
 $users=$pdo->query('SELECT id,display_name FROM users ORDER BY display_name')->fetchAll();
+$parents=$pdo->query('SELECT DISTINCT t.parent_id, p.title parent_title FROM tasks t JOIN tasks p ON p.id=t.parent_id WHERE t.parent_id IS NOT NULL ORDER BY t.parent_id DESC')->fetchAll();
 $where=[];$params=[];
 if (!empty($_GET['assignee'])) {$where[]='EXISTS(SELECT 1 FROM task_assignees ax WHERE ax.task_id=t.id AND ax.user_id=?)';$params[]=(int)$_GET['assignee'];}
 if (!empty($_GET['status'])) {$where[]='t.status_id=?';$params[]=(int)$_GET['status'];}
+if (!empty($_GET['parent'])) {if ($_GET['parent']==='none') {$where[]='t.parent_id IS NULL';} else {$where[]='t.parent_id=?';$params[]=(int)$_GET['parent'];}}
 if (!empty($_GET['q'])) {$where[]='(t.title LIKE ? OR t.description LIKE ?)';$params[]='%'.$_GET['q'].'%';$params[]='%'.$_GET['q'].'%';}
-$sql='SELECT t.id,t.title,t.updated_at,s.name status_name FROM tasks t JOIN statuses s ON s.id=t.status_id'.($where?' WHERE '.implode(' AND ',$where):'').' ORDER BY t.updated_at DESC';
+$perPage=20;
+$taskPage=max(1,(int)($_GET['p']??1));
+$cs=$pdo->prepare('SELECT COUNT(*) FROM tasks t'.($where?' WHERE '.implode(' AND ',$where):''));$cs->execute($params);$totalTasks=(int)$cs->fetchColumn();
+$totalPages=max(1,(int)ceil($totalTasks/$perPage));
+$taskPage=min($taskPage,$totalPages);
+$sql='SELECT t.id,t.title,t.updated_at,t.created_by,t.parent_id,p.title parent_title,s.name status_name FROM tasks t JOIN statuses s ON s.id=t.status_id LEFT JOIN tasks p ON p.id=t.parent_id'.($where?' WHERE '.implode(' AND ',$where):'').' ORDER BY t.updated_at DESC LIMIT '.$perPage.' OFFSET '.(($taskPage-1)*$perPage);
 $s=$pdo->prepare($sql);$s->execute($params);$tasks=$s->fetchAll();
+$listUrl=function(array $override=[]): string {
+    $qs=['page'=>'tasks'];
+    foreach (['q','assignee','status','parent'] as $fk) {if (isset($_GET[$fk]) && $_GET[$fk]!=='' && $_GET[$fk]!==null) $qs[$fk]=(string)$_GET[$fk];}
+    return '?' . http_build_query(array_merge($qs,$override));
+};
 render_header('Tasks',$config); ?>
-<div class="d-flex justify-content-between align-items-center mb-3"><div><h1 class="h3 mb-0">Tasks</h1><div class="muted"><?=count($tasks)?> tasks</div></div><a class="btn btn-primary" href="?page=new">+ New task</a></div>
-<div class="card p-3 mb-3"><form class="row g-2"><input type="hidden" name="page" value="tasks"><div class="col-md-4"><input class="form-control" name="q" value="<?=h($_GET['q']??'')?>" placeholder="Search tasks"></div><div class="col-md-3"><select class="form-select" name="assignee"><option value="">All assignees</option><?php foreach($users as $u): ?><option value="<?=$u['id']?>" <?=($_GET['assignee']??'')==$u['id']?'selected':''?>><?=h($u['display_name'])?></option><?php endforeach; ?></select></div><div class="col-md-3"><select class="form-select" name="status"><option value="">All statuses</option><?php foreach($statuses as $st): ?><option value="<?=$st['id']?>" <?=($_GET['status']??'')==$st['id']?'selected':''?>><?=h($st['name'])?></option><?php endforeach; ?></select></div><div class="col-md-2 d-grid"><button class="btn btn-outline-primary">Filter</button></div></form></div>
-<div class="card"><div class="table-responsive"><table class="table table-hover align-middle mb-0"><thead><tr><th class="ps-3">Task</th><th>Status</th><th>Assignees</th><th>Updated</th></tr></thead><tbody><?php foreach($tasks as $t): ?><tr><td class="ps-3"><a class="fw-semibold text-decoration-none" href="?page=task&id=<?=$t['id']?>">#<?=$t['id']?> · <?=h($t['title'])?></a></td><td><span class="badge text-bg-light border"><?=h($t['status_name'])?></span></td><td><?php $as=$pdo->prepare('SELECT u.display_name FROM task_assignees a JOIN users u ON u.id=a.user_id WHERE a.task_id=?');$as->execute([$t['id']]);echo h(implode(', ',array_column($as->fetchAll(),'display_name')) ?: '—'); ?></td><td class="small muted"><?=h($t['updated_at'])?></td></tr><?php endforeach; if(!$tasks): ?><tr><td colspan="4" class="text-center muted py-4">No tasks found.</td></tr><?php endif; ?></tbody></table></div></div>
+<div class="d-flex justify-content-between align-items-center mb-3"><div><h1 class="h3 mb-0">Tasks</h1><div class="muted"><?=$totalTasks?> task<?=$totalTasks===1?'':'s'?></div></div><a class="btn btn-primary" href="?page=new">+ New task</a></div>
+<div class="card p-3 mb-3"><form class="row g-2"><input type="hidden" name="page" value="tasks"><div class="col-md-3"><input class="form-control" name="q" value="<?=h($_GET['q']??'')?>" placeholder="Search tasks"></div><div class="col-md-2"><select class="form-select" name="assignee"><option value="">All assignees</option><?php foreach($users as $u): ?><option value="<?=$u['id']?>" <?=($_GET['assignee']??'')==$u['id']?'selected':''?>><?=h($u['display_name'])?></option><?php endforeach; ?></select></div><div class="col-md-2"><select class="form-select" name="status"><option value="">All statuses</option><?php foreach($statuses as $st): ?><option value="<?=$st['id']?>" <?=($_GET['status']??'')==$st['id']?'selected':''?>><?=h($st['name'])?></option><?php endforeach; ?></select></div><div class="col-md-2"><select class="form-select" name="parent"><option value="">All parents</option><option value="none" <?=($_GET['parent']??'')==='none'?'selected':''?>>No parent</option><?php foreach($parents as $pt): ?><option value="<?=$pt['parent_id']?>" <?=($_GET['parent']??'')==(string)$pt['parent_id']?'selected':''?>>#<?=$pt['parent_id']?> · <?=h($pt['parent_title'])?></option><?php endforeach; ?></select></div><div class="col-md-3 d-grid"><button class="btn btn-outline-primary">Filter</button></div></form></div>
+<form method="post" id="bulk-form" onsubmit="return confirm('Delete all selected tasks permanently?')"><?=csrf_field()?><input type="hidden" name="action" value="bulk_delete_tasks"><input type="hidden" name="return" value="<?=h($listUrl(['p'=>$taskPage]))?>"><?php foreach (['q','assignee','status','parent'] as $fk): if(($_GET[$fk]??'')!==''): ?><input type="hidden" name="<?=$fk?>" value="<?=h($_GET[$fk])?>"><?php endif; endforeach; ?>
+<div class="card"><div class="table-responsive"><table class="table table-hover align-middle mb-0"><thead><tr><th class="ps-3" style="width:36px"><input type="checkbox" class="form-check-input" id="check-all" aria-label="Select all tasks on this page"></th><th>Task</th><th>Status</th><th>Assignees</th><th>Parent</th><th>Updated</th><th>Actions</th></tr></thead><tbody><?php foreach($tasks as $t): $canDelete=is_admin()||(int)$t['created_by']===(int)user()['id']; ?><tr><td class="ps-3"><input type="checkbox" class="form-check-input row-check" name="task_ids[]" value="<?=$t['id']?>" aria-label="Select task #<?=$t['id']?>"></td><td><a class="fw-semibold text-decoration-none" href="?page=task&id=<?=$t['id']?>">#<?=$t['id']?> · <?=h($t['title'])?></a></td><td><span class="badge text-bg-light border"><?=h($t['status_name'])?></span></td><td><?php $as=$pdo->prepare('SELECT u.display_name FROM task_assignees a JOIN users u ON u.id=a.user_id WHERE a.task_id=?');$as->execute([$t['id']]);echo h(implode(', ',array_column($as->fetchAll(),'display_name')) ?: '—'); ?></td><td><?php if($t['parent_id']): ?><a class="text-decoration-none" href="?page=task&id=<?=$t['parent_id']?>">#<?=$t['parent_id']?><?=($t['parent_title']??'')!==''&&$t['parent_title']!==null?' · '.h($t['parent_title']):''?></a><?php else: ?><span class="muted">—</span><?php endif; ?></td><td class="small muted"><?=h($t['updated_at'])?></td><td class="text-nowrap"><a class="btn btn-sm btn-outline-secondary" href="?page=edit&id=<?=$t['id']?>">Edit</a><?php if($canDelete): ?> <button type="submit" class="btn btn-sm btn-outline-danger" form="delete-<?=$t['id']?>">Delete</button><?php endif; ?></td></tr><?php endforeach; if(!$tasks): ?><tr><td colspan="7" class="text-center muted py-4">No tasks found.</td></tr><?php endif; ?></tbody></table></div></div>
+<div class="d-flex justify-content-between align-items-center mt-3 gap-2 flex-wrap"><?php if($totalPages>1): ?><nav aria-label="Task list pages"><ul class="pagination mb-0"><li class="page-item <?=$taskPage<=1?'disabled':''?>"><a class="page-link" href="<?=h($listUrl(['p'=>max(1,$taskPage-1)]))?>">&laquo;</a></li><?php $winStart=max(1,$taskPage-2);$winEnd=min($totalPages,$winStart+4);if($winEnd-$winStart<4)$winStart=max(1,$winEnd-4);if($winStart>1): ?><li class="page-item"><a class="page-link" href="<?=h($listUrl(['p'=>1]))?>">1</a></li><?php if($winStart>2): ?><li class="page-item disabled"><span class="page-link">&hellip;</span></li><?php endif; endif; for($i=$winStart;$i<=$winEnd;$i++): ?><li class="page-item <?=$i===$taskPage?'active':''?>"><a class="page-link" href="<?=h($listUrl(['p'=>$i]))?>"><?=$i?></a></li><?php endfor; if($winEnd<$totalPages): ?><?php if($winEnd<$totalPages-1): ?><li class="page-item disabled"><span class="page-link">&hellip;</span></li><?php endif; ?><li class="page-item"><a class="page-link" href="<?=h($listUrl(['p'=>$totalPages]))?>"><?=$totalPages?></a></li><?php endif; ?><li class="page-item <?=$taskPage>=$totalPages?'disabled':''?>"><a class="page-link" href="<?=h($listUrl(['p'=>min($totalPages,$taskPage+1)]))?>">&raquo;</a></li></ul></nav><span class="small muted">Page <?=$taskPage?> of <?=$totalPages?></span><?php endif; ?><button type="submit" class="btn btn-outline-danger" id="bulk-delete-btn" disabled>Delete selected (<span id="bulk-count">0</span>)</button></div>
+</form>
+<?php foreach($tasks as $t): if(is_admin()||(int)$t['created_by']===(int)user()['id']): ?><form method="post" id="delete-<?=$t['id']?>" class="d-none" onsubmit="return confirm('Delete task #<?=$t['id']?> permanently?')"><?=csrf_field()?><input type="hidden" name="action" value="delete_task"><input type="hidden" name="id" value="<?=$t['id']?>"><input type="hidden" name="return" value="<?=h($listUrl(['p'=>$taskPage]))?>"></form><?php endif; endforeach; ?>
+<script>
+(function(){
+var all=document.getElementById('check-all');
+var btn=document.getElementById('bulk-delete-btn');
+function rows(){return Array.prototype.slice.call(document.querySelectorAll('.row-check'));}
+function sync(){var bs=rows();var n=bs.filter(function(b){return b.checked;}).length;if(btn)btn.disabled=n===0;if(all){all.checked=n>0&&n===bs.length;all.indeterminate=n>0&&n<bs.length;}var lbl=document.getElementById('bulk-count');if(lbl)lbl.textContent=String(n);}
+if(all)all.addEventListener('change',function(){var v=all.checked;rows().forEach(function(b){b.checked=v;});sync();});
+document.addEventListener('change',function(e){if(e.target&&e.target.classList&&e.target.classList.contains('row-check'))sync();});
+sync();
+})();
+</script>
 <?php render_footer(); ?>

@@ -186,4 +186,60 @@ final class TaskLifecycleTest extends E2eTestCase
         $list = $admin->get('/?');
         $this->assertTrue($list->contains('#' . $id . ' · Visible on the list'));
     }
+
+    public function test_edit_form_renders_assignees_as_checkboxes(): void
+    {
+        $admin = $this->adminSession();
+        $id = $admin->createTask('Checkbox task', ['assignees' => ['1']]);
+
+        $editPage = $admin->get('/?page=edit&id=' . $id);
+        $this->assertSame(200, $editPage->status);
+        // Assignees are rendered as checkboxes so they can be unticked (unassigned).
+        $this->assertTrue($editPage->contains('type="checkbox" name="assignees[]"'));
+        // User #1 (Administrator) is currently assigned, so their box is pre-ticked.
+        $this->assertTrue($editPage->contains('value="1" id="assignee-1" checked'));
+        // The old undiscoverable multi-select is gone.
+        $this->assertFalse($editPage->contains('name="assignees[]" multiple'));
+    }
+
+    public function test_task_can_be_unassigned_by_saving_the_edit_form_without_assignees(): void
+    {
+        $admin = $this->adminSession();
+        $id = $admin->createTask('Unassign me', ['assignees' => ['1']]);
+
+        $page = $admin->taskPage($id);
+        $this->assertTrue($page->contains('Assignees:'));
+        $this->assertTrue($page->contains('Administrator'));
+        $this->assertSame(1, (int)TestServer::pdo()->query('SELECT COUNT(*) FROM task_assignees WHERE task_id=' . $id)->fetchColumn());
+
+        // Saving the edit form with every assignee checkbox unticked: the browser
+        // omits the assignees[] field entirely, which must clear all assignees.
+        $response = $admin->post('/?page=edit&id=' . $id, [
+            'action' => 'save_task',
+            'id' => (string)$id,
+            'title' => 'Unassign me',
+            'description' => 'Created by the test suite',
+            'status_id' => '1',
+            'parent_id' => '',
+        ]);
+        $this->assertSame(302, $response->status);
+
+        $page = $admin->taskPage($id);
+        $this->assertTrue($page->contains('Unassigned'));
+        $this->assertSame(0, (int)TestServer::pdo()->query('SELECT COUNT(*) FROM task_assignees WHERE task_id=' . $id)->fetchColumn());
+
+        // Re-assigning through the same form still works afterwards.
+        $response = $admin->post('/?page=edit&id=' . $id, [
+            'action' => 'save_task',
+            'id' => (string)$id,
+            'title' => 'Unassign me',
+            'description' => 'Created by the test suite',
+            'status_id' => '1',
+            'parent_id' => '',
+            'assignees' => ['1'],
+        ]);
+        $this->assertSame(302, $response->status);
+        $this->assertSame(1, (int)TestServer::pdo()->query('SELECT COUNT(*) FROM task_assignees WHERE task_id=' . $id)->fetchColumn());
+        $this->assertTrue($admin->taskPage($id)->contains('Administrator'));
+    }
 }

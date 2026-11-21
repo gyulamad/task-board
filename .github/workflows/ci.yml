@@ -1,0 +1,100 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  lint:
+    name: PHP syntax check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.2'
+          coverage: none
+      - name: Lint PHP files
+        run: |
+          set -e
+          for f in index.php updater.php src/*.php tests/bootstrap.php tests/Support/*.php tests/Unit/*.php tests/E2E/*.php tests/bin/*.php; do
+            php -l "$f"
+          done
+
+  tests-sqlite:
+    name: Tests (SQLite)
+    runs-on: ubuntu-latest
+    needs: lint
+    steps:
+      - uses: actions/checkout@v4
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.2'
+          coverage: none
+          extensions: curl, sqlite3, pdo_sqlite
+      - name: Install dependencies
+        run: composer install --prefer-dist --no-interaction --no-progress
+      - name: Run test suite (SQLite, zero setup)
+        run: vendor/bin/phpunit --no-coverage
+
+  tests-mysql:
+    name: Tests (MySQL) with coverage
+    runs-on: ubuntu-latest
+    needs: lint
+    services:
+      mysql:
+        image: mysql:8.0
+        env:
+          MYSQL_ROOT_PASSWORD: root
+          MYSQL_DATABASE: task_board_test
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd="mysqladmin ping -h 127.0.0.1 -proot"
+          --health-interval=5s
+          --health-timeout=3s
+          --health-retries=30
+    env:
+      TEST_DB_MODE: mysql
+      TEST_DB_HOST: 127.0.0.1
+      TEST_DB_NAME: task_board_test
+      TEST_DB_USER: root
+      TEST_DB_PASS: root
+      TEST_BASE_URL: http://127.0.0.1:8099
+    steps:
+      - uses: actions/checkout@v4
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.2'
+          coverage: pcov
+          extensions: curl, pdo_mysql
+      - name: Install dependencies
+        run: composer install --prefer-dist --no-interaction --no-progress
+      - name: Import schema and write test config
+        run: php tests/bin/prepare-mysql.php
+      - name: Start application server
+        run: php -S 127.0.0.1:8099 -t . > server.log 2>&1 &
+      - name: Wait for the application server
+        run: |
+          for i in $(seq 1 30); do
+            if curl -sf "http://127.0.0.1:8099/?page=login" > /dev/null; then
+              echo "Server is ready."
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "Server did not start in time. Log tail:"
+          tail -50 server.log
+          exit 1
+      - name: Run test suite (MySQL) with coverage
+        run: vendor/bin/phpunit --coverage-clover build/coverage/clover.xml --coverage-html build/coverage/html --coverage-text | tee coverage-summary.txt
+      - name: Upload coverage report
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-report
+          path: |
+            build/coverage/clover.xml
+            build/coverage/html/
+            coverage-summary.txt
+          if-no-files-found: error

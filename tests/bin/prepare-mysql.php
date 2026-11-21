@@ -7,6 +7,11 @@ declare(strict_types=1);
 //     connects to that database.
 // Run with: php tests/bin/prepare-mysql.php
 
+// Load the Composer autoloader first: this script is executed directly by
+// PHP (not through PHPUnit), and the test bootstrap requires E2eTestCase,
+// which extends PHPUnit\Framework\TestCase and therefore depends on it.
+require __DIR__ . '/../../vendor/autoload.php';
+
 require __DIR__ . '/../bootstrap.php';
 
 use TaskBoard\Tests\Support\Schema;

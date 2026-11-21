@@ -76,7 +76,8 @@ final class AppSession
 
     public function logout(): HttpResponse
     {
-        $response = $this->http->get('/?page=logout');
+        // Sign-out is CSRF-protected and POST-only since task #6.
+        $response = $this->post('/?page=logout', []);
         $this->csrf = null;
         return $response;
     }

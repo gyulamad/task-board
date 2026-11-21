@@ -105,4 +105,37 @@ final class HelpersTest extends TestCase
         verify_csrf();
         $this->addToAssertionCount(1);
     }
+
+    public function test_login_throttle_ignores_unknown_clients(): void
+    {
+        $key = 'unit-test-' . bin2hex(random_bytes(8));
+        $this->assertFalse(tb_login_throttled($key));
+        tb_login_throttle_clear($key);
+    }
+
+    public function test_login_throttle_blocks_after_ten_recent_failures(): void
+    {
+        $key = 'unit-test-' . bin2hex(random_bytes(8));
+        try {
+            for ($i = 1; $i <= 9; $i++) {
+                tb_login_throttle_fail($key);
+                $this->assertFalse(tb_login_throttled($key), 'failure #' . $i . ' must not block yet');
+            }
+            tb_login_throttle_fail($key);
+            $this->assertTrue(tb_login_throttled($key), 'the 10th failure must trigger the throttle');
+            tb_login_throttle_clear($key);
+            $this->assertFalse(tb_login_throttled($key), 'a successful sign-in clears the bucket');
+        } finally {
+            tb_login_throttle_clear($key);
+        }
+    }
+
+    public function test_session_destroy_clears_session_state(): void
+    {
+        $_SESSION['user'] = ['id' => 1];
+        $_SESSION['csrf'] = 'abc';
+        tb_session_destroy();
+        $this->assertSame([], $_SESSION);
+        $this->addToAssertionCount(1); // session_destroy() ran without errors
+    }
 }

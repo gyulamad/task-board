@@ -1,6 +1,21 @@
 <?php
 declare(strict_types=1);
 define('TASK_BOARD_BOOTSTRAPPED', true);
+
+// Harden the session cookie before the session starts: HttpOnly keeps the
+// session id away from JavaScript, SameSite=Lax mitigates cross-site request
+// timing/CSRF exposure, Secure is enabled whenever the request arrived via HTTPS.
+$tbHttps = (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off')
+    || strcasecmp((string)($_SERVER['HTTP_X_FORWARDED_PROTO'] ?? ''), 'https') === 0;
+ini_set('session.use_strict_mode', '1');
+session_set_cookie_params([
+    'lifetime' => 0,
+    'path' => '/',
+    'domain' => '',
+    'secure' => $tbHttps,
+    'httponly' => true,
+    'samesite' => 'Lax',
+]);
 session_start();
 
 $configFile = __DIR__ . '/config.php';
@@ -24,24 +39,66 @@ try {
 
 require __DIR__ . '/src/helpers.php';
 
+// Basic response hardening for every page (including CSRF/403 rejections).
+header('X-Content-Type-Options: nosniff');
+header('X-Frame-Options: DENY');
+header('Referrer-Policy: strict-origin-when-cross-origin');
+header("Content-Security-Policy: default-src 'self'; style-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; img-src 'self' data:; font-src 'self' https://cdn.jsdelivr.net; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'");
+if (user()) {
+    // Authenticated pages hold private data; keep browsers (and bfcache) from storing them.
+    header('Cache-Control: no-store, max-age=0');
+    header('Pragma: no-cache');
+}
+
 if (empty($_SESSION['csrf'])) $_SESSION['csrf'] = bin2hex(random_bytes(32));
 verify_csrf();
 
 $page = $_GET['page'] ?? 'tasks';
 $error = '';
 
-if ($page === 'logout') { session_destroy(); redirect('?page=login'); }
+// Sign-out is POST-only and CSRF-protected, so a crafted <img src="?page=logout">
+// link or other cross-site GET request can no longer force users to log out.
+if ($page === 'logout') {
+    if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+        tb_session_destroy();
+        redirect('?page=login');
+    }
+    redirect(user() ? '?' : '?page=login');
+}
 
 if ($page === 'login' && $_SERVER['REQUEST_METHOD'] === 'POST') {
-    $s = $pdo->prepare('SELECT * FROM users WHERE username=?');
-    $s->execute([trim($_POST['username'] ?? '')]);
-    $u = $s->fetch();
-    if ($u && password_verify($_POST['password'] ?? '', $u['password_hash'])) {
-        session_regenerate_id(true);
-        $_SESSION['user'] = ['id' => (int)$u['id'], 'username' => $u['username'], 'display_name' => $u['display_name'], 'role' => $u['role']];
-        redirect('?');
+    // Brute-force throttle: bucket failed attempts per client address for 10
+    // minutes. Behind proxies the forwarded-for header identifies the client;
+    // the delay below keeps guessing slow even when that header is spoofed.
+    $tbIp = trim(explode(',', (string)($_SERVER['HTTP_X_FORWARDED_FOR'] ?? ''))[0]);
+    if ($tbIp === '') $tbIp = (string)($_SERVER['REMOTE_ADDR'] ?? 'unknown');
+    if (tb_login_throttled($tbIp)) {
+        $error = 'Too many failed sign-in attempts. Please try again in a few minutes.';
+    } else {
+        // A static dummy hash keeps password_verify() running even when the
+        // username does not exist, so response timing cannot reveal valid usernames.
+        $tbDummyHash = '$2y$10$K8xQ6eL9vXJ2rYc5wO1sPuG7tN3mB4aD0fHjR2iC6eV8kS1lZ3TqW';
+        $tbOk = false;
+        $u = null;
+        try {
+            $s = $pdo->prepare('SELECT * FROM users WHERE username=?');
+            $s->execute([trim($_POST['username'] ?? '')]);
+            $u = $s->fetch();
+            $tbHash = is_array($u) ? (string)$u['password_hash'] : $tbDummyHash;
+            $tbOk = is_array($u) && password_verify($_POST['password'] ?? '', $tbHash);
+        } catch (Throwable $e) {
+            error_log('Task board: sign-in error: ' . $e->getMessage());
+        }
+        if ($tbOk && is_array($u)) {
+            tb_login_throttle_clear($tbIp);
+            session_regenerate_id(true);
+            $_SESSION['user'] = ['id' => (int)$u['id'], 'username' => $u['username'], 'display_name' => $u['display_name'], 'role' => $u['role']];
+            redirect('?');
+        }
+        tb_login_throttle_fail($tbIp);
+        usleep(random_int(200000, 500000));
+        $error = 'Invalid username or password.';
     }
-    $error = 'Invalid username or password.';
 }
 
 if ($page === 'install') {
@@ -59,14 +116,28 @@ if ($page === 'install' && $_SERVER['REQUEST_METHOD'] === 'POST') {
     $count = (int)$pdo->query('SELECT COUNT(*) FROM users')->fetchColumn();
     if ($count > 0) $error = 'An account already exists. Sign in instead.';
     elseif (strlen($_POST['password'] ?? '') < 10) $error = 'Use a password with at least 10 characters.';
+    elseif (tb_char_length(trim((string)($_POST['username'] ?? ''))) > 80) $error = 'Username must be 80 characters or fewer.';
     else {
-        $s = $pdo->prepare("INSERT INTO users(username,password_hash,display_name,role) VALUES(?,?,?,'admin')");
-        $s->execute([trim($_POST['username']), password_hash($_POST['password'], PASSWORD_DEFAULT), trim($_POST['display_name'])]);
-        flash('Administrator created. Please sign in.'); redirect('?page=login');
+        try {
+            $s = $pdo->prepare("INSERT INTO users(username,password_hash,display_name,role) VALUES(?,?,?,'admin')");
+            $s->execute([trim($_POST['username']), password_hash($_POST['password'], PASSWORD_DEFAULT), trim($_POST['display_name'])]);
+            flash('Administrator created. Please sign in.'); redirect('?page=login');
+        } catch (PDOException $e) {
+            // Duplicate username or database trouble: never leak driver details.
+            error_log('Task board: installer error: ' . $e->getMessage());
+            $error = 'Could not create the administrator account. The username may already be taken.';
+        }
     }
 }
 
 if (user()) {
+    // Idle session timeout (12 hours by default, configurable via config.php).
+    $tbIdleSeconds = max(0, (int)($config['session_idle_seconds'] ?? 43200));
+    if ($tbIdleSeconds > 0 && isset($_SESSION['_last_activity']) && time() - (int)$_SESSION['_last_activity'] > $tbIdleSeconds) {
+        tb_session_destroy();
+        redirect('?page=login');
+    }
+    $_SESSION['_last_activity'] = time();
     if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
         $action = $_POST['action'];
         try {
@@ -77,6 +148,7 @@ if (user()) {
                 $statusId = (int)($_POST['status_id'] ?? 0);
                 $parentId = (int)($_POST['parent_id'] ?? 0) ?: null;
                 if ($title === '') throw new RuntimeException('Task title is required.');
+                if (tb_char_length($title) > 200) throw new RuntimeException('Task title must be 200 characters or fewer.');
                 if ($parentId && ($parentId === $id || !task_exists($pdo, $parentId))) throw new RuntimeException('Invalid parent task.');
                 $s = $pdo->prepare('SELECT id FROM statuses WHERE id=?'); $s->execute([$statusId]);
                 if (!$s->fetch()) throw new RuntimeException('Choose a valid status.');
@@ -98,7 +170,9 @@ if (user()) {
             }
             if ($action === 'delete_task') {
                 $id = (int)$_POST['id'];
-                if (!is_admin() && (int)$pdo->query('SELECT created_by FROM tasks WHERE id=' . $id)->fetchColumn() !== (int)user()['id']) throw new RuntimeException('Only an administrator or task creator can delete this task.');
+                $s = $pdo->prepare('SELECT created_by FROM tasks WHERE id=?');
+                $s->execute([$id]);
+                if (!is_admin() && (int)$s->fetchColumn() !== (int)user()['id']) throw new RuntimeException('Only an administrator or task creator can delete this task.');
                 $pdo->prepare('DELETE FROM tasks WHERE id=?')->execute([$id]);
                 $returnUrl = $_POST['return'] ?? '';
                 flash('Task deleted.');
@@ -133,7 +207,8 @@ if (user()) {
                 history($pdo,$id,'Relationship added',$type.' task #'.$other); redirect('?page=task&id='.$id);
             }
             if ($action === 'unlink_task') {
-                $id=(int)$_POST['task_id']; $other=(int)$_POST['related_task_id']; $type=$_POST['link_type'];
+                $id=(int)$_POST['task_id']; $other=(int)$_POST['related_task_id']; $type=(string)($_POST['link_type'] ?? '');
+                if (!in_array($type,['blocks','depends_on','relates_to'],true)) throw new RuntimeException('Invalid task relationship.');
                 $pdo->prepare('DELETE FROM task_links WHERE task_id=? AND related_task_id=? AND link_type=?')->execute([$id,$other,$type]);
                 history($pdo,$id,'Relationship removed',$type.' task #'.$other); redirect('?page=task&id='.$id);
             }
@@ -154,12 +229,14 @@ if (user()) {
             if ($action === 'add_status' && is_admin()) {
                 $name=trim($_POST['name'] ?? '');
                 if ($name==='') throw new RuntimeException('Status name is required.');
+                if (tb_char_length($name) > 40) throw new RuntimeException('Status name must be 40 characters or fewer.');
                 $pdo->prepare('INSERT INTO statuses(name,sort_order,is_done) VALUES(?,?,?)')->execute([$name,(int)$pdo->query('SELECT COALESCE(MAX(sort_order),0)+1 FROM statuses')->fetchColumn(),isset($_POST['is_done'])?1:0]);
                 flash('Status added.'); redirect('?page=admin');
             }
             if ($action === 'add_user' && is_admin()) {
                 $name=trim($_POST['username'] ?? ''); $display=trim($_POST['display_name'] ?? ''); $pass=$_POST['password'] ?? '';
                 if ($name==='' || $display==='' || strlen($pass)<10) throw new RuntimeException('Enter username, display name and a password of at least 10 characters.');
+                if (tb_char_length($name) > 80 || tb_char_length($display) > 120) throw new RuntimeException('Username is limited to 80 and display name to 120 characters.');
                 $pdo->prepare('INSERT INTO users(username,password_hash,display_name,role) VALUES(?,?,?,?)')->execute([$name,password_hash($pass,PASSWORD_DEFAULT),$display,$_POST['role']==='admin'?'admin':'user']);
                 flash('User created.'); redirect('?page=admin');
             }
@@ -171,7 +248,7 @@ function render_header(string $title, array $config): void {
     ?><!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title><?=h($title)?> - <?=h($config['app_name'])?></title>
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
     <style>body{background:#f5f6f8}.card{border:0;box-shadow:0 1px 5px #0000000d}.muted{color:#687386}.prewrap{white-space:pre-wrap}.navbar-brand{font-weight:700}</style></head><body>
-    <nav class="navbar navbar-expand-lg navbar-dark bg-dark"><div class="container"><a class="navbar-brand" href="?"><?=h($config['app_name'])?></a><?php if(user()): ?><div class="navbar-nav ms-auto align-items-center"><a class="nav-link" href="?">Tasks</a><?php if(is_admin()): ?><a class="nav-link" href="?page=admin">Administration</a><a class="nav-link" href="?page=updates">Software updates</a><?php endif; ?><span class="navbar-text mx-2"><?=h(user()['display_name'])?></span><a class="nav-link" href="?page=logout">Sign out</a></div><?php endif; ?></div></nav><main class="container py-4">
+    <nav class="navbar navbar-expand-lg navbar-dark bg-dark"><div class="container"><a class="navbar-brand" href="?"><?=h($config['app_name'])?></a><?php if(user()): ?><div class="navbar-nav ms-auto align-items-center"><a class="nav-link" href="?">Tasks</a><?php if(is_admin()): ?><a class="nav-link" href="?page=admin">Administration</a><a class="nav-link" href="?page=updates">Software updates</a><?php endif; ?><span class="navbar-text mx-2"><?=h(user()['display_name'])?></span><form method="post" action="?page=logout" class="d-inline m-0"><?=csrf_field()?><button type="submit" class="btn btn-link nav-link p-0 text-white text-decoration-none">Sign out</button></form></div><?php endif; ?></div></nav><main class="container py-4">
     <?php if (!empty($_SESSION['flash'])): ?><div class="alert alert-success"><?=h($_SESSION['flash'])?></div><?php unset($_SESSION['flash']); endif; ?>
     <?php global $error; if($error): ?><div class="alert alert-danger"><?=h($error)?></div><?php endif;
 }
@@ -181,7 +258,7 @@ if (!user() && !in_array($page,['login','install'],true)) redirect('?page=login'
 
 if ($page==='login') {
     render_header('Sign in',$config); ?>
-    <div class="row justify-content-center"><div class="col-md-5"><div class="card p-4"><h2 class="h4 mb-3">Sign in</h2><form method="post"><?=csrf_field()?><div class="mb-3"><label class="form-label">Username</label><input class="form-control" name="username" required autofocus></div><div class="mb-3"><label class="form-label">Password</label><input class="form-control" type="password" name="password" required></div><button class="btn btn-primary w-100">Sign in</button></form><?php if ((int)$pdo->query('SELECT COUNT(*) FROM users')->fetchColumn() === 0): ?><p class="small muted mt-3 mb-0">First time here? <a href="?page=install">Create the administrator account</a>.</p><?php endif; ?></div></div></div>
+    <div class="row justify-content-center"><div class="col-md-5"><div class="card p-4"><h2 class="h4 mb-3">Sign in</h2><form method="post"><?=csrf_field()?><div class="mb-3"><label class="form-label">Username</label><input class="form-control" name="username" autocomplete="username" required autofocus></div><div class="mb-3"><label class="form-label">Password</label><input class="form-control" type="password" name="password" autocomplete="current-password" required></div><button class="btn btn-primary w-100">Sign in</button></form><?php if ((int)$pdo->query('SELECT COUNT(*) FROM users')->fetchColumn() === 0): ?><p class="small muted mt-3 mb-0">First time here? <a href="?page=install">Create the administrator account</a>.</p><?php endif; ?></div></div></div>
     <?php render_footer(); exit;
 }
 if ($page==='install') {
@@ -194,7 +271,11 @@ if ($page==='download') {
     $id=(int)($_GET['id']??0); $s=$pdo->prepare('SELECT * FROM attachments WHERE id=?'); $s->execute([$id]); $a=$s->fetch();
     if(!$a || !is_file(__DIR__.'/uploads/'.$a['stored_name'])) { http_response_code(404); exit('File not found.'); }
     header('Content-Type: '.$a['mime_type']); header('Content-Length: '.$a['file_size']);
-    header('Content-Disposition: attachment; filename="'.str_replace('"','', $a['original_name']).'"');
+    // Strip quotes and control characters (including CRLF) from the stored name
+    // so the Content-Disposition header can never be split or malformed.
+    $tbName = preg_replace('/[\x00-\x1f\x7f"]+/', '', (string)$a['original_name']) ?? '';
+    if ($tbName === '') $tbName = 'attachment';
+    header('Content-Disposition: attachment; filename="'.$tbName.'"');
     readfile(__DIR__.'/uploads/'.$a['stored_name']); exit;
 }
 
@@ -251,7 +332,7 @@ $where=[];$params=[];
 if (!empty($_GET['assignee'])) {$where[]='EXISTS(SELECT 1 FROM task_assignees ax WHERE ax.task_id=t.id AND ax.user_id=?)';$params[]=(int)$_GET['assignee'];}
 if (!empty($_GET['status'])) {$where[]='t.status_id=?';$params[]=(int)$_GET['status'];}
 if (!empty($_GET['parent'])) {if ($_GET['parent']==='none') {$where[]='t.parent_id IS NULL';} else {$where[]='t.parent_id=?';$params[]=(int)$_GET['parent'];}}
-if (!empty($_GET['q'])) {$where[]='(t.title LIKE ? OR t.description LIKE ?)';$params[]='%'.$_GET['q'].'%';$params[]='%'.$_GET['q'].'%';}
+if (!empty($_GET['q'])) {$tbTerm=str_replace(['|','%','_'],['||','|%','|_'],(string)$_GET['q']);$where[]="(t.title LIKE ? ESCAPE '|' OR t.description LIKE ? ESCAPE '|')";$params[]='%'.$tbTerm.'%';$params[]='%'.$tbTerm.'%';}
 $perPage=20;
 $taskPage=max(1,(int)($_GET['p']??1));
 $cs=$pdo->prepare('SELECT COUNT(*) FROM tasks t'.($where?' WHERE '.implode(' AND ',$where):''));$cs->execute($params);$totalTasks=(int)$cs->fetchColumn();

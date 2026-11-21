@@ -26,6 +26,8 @@ A lightweight multi-user task and message board for PHP 8.2+ and MySQL/MariaDB s
 
 ## Important security / hosting notes
 - Use HTTPS. Do not use this for sensitive or regulated data without a security review.
+- Session cookies are hardened (HttpOnly, SameSite=Lax, Secure on HTTPS, strict mode) and sessions idle out after 12 hours (configurable via `session_idle_seconds` in `config.php`).
+- Sign-out is a CSRF-protected POST; failed sign-in attempts are throttled (10 failures per client within 10 minutes) and responses carry `X-Content-Type-Options`, `X-Frame-Options`, `Referrer-Policy` and a conservative `Content-Security-Policy`.
 - Keep `config.php` out of public source control. If your host supports it, place it outside the web root.
 - `uploads/.htaccess` disables script execution on Apache. On non-Apache hosts, configure the uploads directory so PHP and other scripts cannot execute there.
 - Set `upload_max_filesize` and `post_max_size` in PHP settings to at least 5M (or lower the app limit in config.php).

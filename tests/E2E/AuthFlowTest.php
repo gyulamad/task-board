@@ -37,7 +37,12 @@ final class AuthFlowTest extends E2eTestCase
         $this->assertSame(200, $tasks->status);
         $this->assertTrue($tasks->contains('Sign out'));
 
-        $signOut = $user->get('/?page=logout');
+        // Sign-out is POST-only (CSRF protected): a GET must not log the user out.
+        $signOutGet = $user->get('/?page=logout');
+        $this->assertSame(302, $signOutGet->status);
+        $this->assertSame('?', (string)$signOutGet->header('location'));
+
+        $signOut = $user->logout();
         $this->assertSame(302, $signOut->status);
         $this->assertSame('?page=login', (string)$signOut->header('location'));
 
@@ -53,5 +58,18 @@ final class AuthFlowTest extends E2eTestCase
         $this->assertTrue($page->contains('name="username"'));
         $this->assertTrue($page->contains('name="password"'));
         $this->assertTrue($page->contains('Sign in'));
+    }
+
+    public function test_responses_carry_security_headers_and_a_hardened_session_cookie(): void
+    {
+        $page = $this->session->get('/?page=login');
+        $this->assertSame(200, $page->status);
+        $this->assertSame('nosniff', $page->header('x-content-type-options'));
+        $this->assertSame('DENY', $page->header('x-frame-options'));
+        $this->assertTrue(str_starts_with((string)$page->header('content-security-policy'), 'default-src'));
+
+        $setCookie = (string)$page->header('set-cookie');
+        $this->assertStringContainsString('HttpOnly', $setCookie);
+        $this->assertStringContainsString('SameSite=Lax', $setCookie);
     }
 }

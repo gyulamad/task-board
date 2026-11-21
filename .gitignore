@@ -1,3 +1,10 @@
 config.php
 /uploads/*
 !/uploads/.htaccess
+
+# Test suite artifacts
+.phpunit.cache/
+build/
+vendor/
+server.log
+coverage-summary.txt

@@ -44,3 +44,28 @@ A lightweight multi-user task and message board for PHP 8.2+ and MySQL/MariaDB s
 - PDO MySQL extension
 - Fileinfo extension
 - MySQL 5.7+ / MariaDB 10.3+ recommended
+
+## Testing and CI
+The project ships with a PHPUnit test suite (`tests/`) that covers the application end to end
+through its HTTP interface plus unit tests for `src/helpers.php`:
+
+- `composer install`
+- `composer test` — runs the full suite against SQLite; no other setup needed. The test
+  bootstrap copies the app into a temp directory and applies two documented SQLite
+  compatibility edits there (the PDO DSN and `INSERT IGNORE` → `INSERT OR IGNORE`), so the
+  real source files are never touched.
+- `composer test:mysql` — runs the same suite against a real MySQL/MariaDB server using the
+  verbatim source. Requires `TEST_DB_HOST`, `TEST_DB_NAME`, `TEST_DB_USER`, `TEST_DB_PASS`
+  and a running app server (`php -S 127.0.0.1:8099 -t .`) plus `TEST_BASE_URL`.
+- `composer test:coverage` — generates an HTML + clover + text coverage report under
+  `build/coverage/`; requires the PCOV or Xdebug extension.
+- Without Composer, download the PHPUnit PHAR and run `php phpunit.phar --no-coverage`.
+
+Continuous integration lives in `.github/workflows/ci.yml`: it lints every PHP file, runs the
+suite on SQLite, and runs it on MySQL 8 with PCOV enabled. The MySQL job publishes the
+coverage report (HTML + clover + summary) as a build artifact.
+
+The installer flow itself is exercised by the tests (the suite creates its administrator
+through `?page=install` on a fresh database for every test), and each test starts from a
+cleanly imported schema.
+

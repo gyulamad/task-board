@@ -103,16 +103,25 @@ https://your-domain.example/?page=cronjob
 The controller needs no login. On every call it reopens each scheduled task that
 has not been updated for longer than its period:
 
-- status is reset to the `TODO` status (looked up by name, falling back to the first
-  non-completion status),
-- all assignees are removed,
+- status is reset to the task's **reopen status** — picked on the edit form right
+  next to the period; tasks without one go to the `TODO` status (looked up by name,
+  falling back to the first non-completion status),
+- assignees are replaced with the task's **reopen assignees** — also picked on the
+  edit form (Ctrl/Cmd-click for several); tasks without any are left unassigned,
 - the comment `Reopen by auto-scheduler` and a `Reopened by auto-scheduler` history
   entry are recorded,
 - the task's `updated_at` is refreshed, so the next reopen can only happen after a
   full period has passed again.
 
-Tasks that are already TODO **and** unassigned are left untouched (no comment spam
-on tasks nobody has picked up yet). Tasks without a schedule are never touched.
+The reopen targets ride on the task itself (`tasks.schedule_status_id`,
+`tasks.schedule_assignees`, set together with the period by the edit form; the
+database upgrades itself on the first request after deployment, like the other
+scheduler columns). A status or user that was deleted after scheduling is skipped:
+the reopen falls back to the default status and drops the missing assignee.
+
+Tasks that already sit in their target state (status **and** assignees) are left
+untouched (no comment spam on tasks nobody has picked up yet). Tasks without a
+schedule are never touched.
 The controller answers in plain text, e.g. `Auto-scheduler reopened 2 task(s): #12, #14.`
 or `Auto-scheduler: nothing to reopen.`, which is convenient to watch in cron logs.
 

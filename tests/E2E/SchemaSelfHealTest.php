@@ -33,9 +33,16 @@ final class SchemaSelfHealTest extends E2eTestCase
         // references, so rebuild the tasks table exactly like the pre-#9
         // schema.sql had it (same columns minus project_id / fk_task_project).
         $pdo->exec('PRAGMA foreign_keys=OFF');
+        // A modern-SQLite RENAME rewrites REFERENCES clauses in the OTHER
+        // tables (comments, task_history, ...) to point at tasks_pre9, which
+        // this fixture drops at the end - later INSERTs would then die with
+        // "no such table: main.tasks_pre9". Legacy rename semantics keep the
+        // references pointing at "tasks", the table recreated right below.
+        $pdo->exec('PRAGMA legacy_alter_table=ON');
         $pdo->exec('DROP TABLE IF EXISTS project_assignees');
         $pdo->exec('DROP TABLE IF EXISTS projects');
         $pdo->exec('ALTER TABLE tasks RENAME TO tasks_pre9');
+        $pdo->exec('PRAGMA legacy_alter_table=OFF');
         $pdo->exec("CREATE TABLE tasks (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             title VARCHAR(200) NOT NULL,
@@ -112,7 +119,38 @@ final class SchemaSelfHealTest extends E2eTestCase
         $this->assertContains('schedule_period', $names);
         $this->assertContains('archived_at', $names);
         $this->assertContains('project_id', $names);
+        $this->assertContains('schedule_status_id', $names, 'The #31 scheduler target columns must exist on a healthy database.');
+        $this->assertContains('schedule_assignees', $names, 'The #31 scheduler target columns must exist on a healthy database.');
         // The seed data must not be disturbed.
         $this->assertSame('3', (string)$pdo->query('SELECT COUNT(*) FROM statuses')->fetchColumn());
+    }
+
+    public function test_the_scheduler_target_columns_are_self_healed(): void
+    {
+        // The pre-#9 tasks table this fixture rebuilds carries neither the
+        // #31 target columns (SQLite mode strips the whole tasks table back to
+        // its 2024 shape) nor the projects schema, so one heal must restore
+        // everything and the scheduler targets must be usable immediately.
+        $this->dropProjectsSchema();
+        $admin = $this->adminSession();   // the first request runs the self-heal
+
+        $id = $admin->createTask('Post heal schedule');
+        $response = $admin->post('/?page=edit&id=' . $id, [
+            'action' => 'save_task',
+            'id' => (string)$id,
+            'title' => 'Post heal schedule',
+            'description' => '',
+            'status_id' => '1',
+            'parent_id' => '',
+            'schedule_period' => 'hourly',
+            'schedule_status_id' => '2',
+            'schedule_assignees' => ['1'],
+            'assignees' => [],
+        ]);
+        $this->assertSame(302, $response->status, 'Storing scheduler targets must work right after the self-heal.');
+
+        $row = TestServer::pdo()->query('SELECT schedule_status_id, schedule_assignees FROM tasks WHERE id=' . $id)->fetch();
+        $this->assertSame(2, (int)$row['schedule_status_id']);
+        $this->assertSame('1', (string)$row['schedule_assignees']);
     }
 }

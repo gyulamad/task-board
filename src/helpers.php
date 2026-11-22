@@ -64,6 +64,12 @@ function status_exists(PDO $pdo, int $id): bool {
     return (bool)$s->fetchColumn();
 }
 
+function user_exists(PDO $pdo, int $id): bool {
+    $s = $pdo->prepare('SELECT 1 FROM users WHERE id=?');
+    $s->execute([$id]);
+    return (bool)$s->fetchColumn();
+}
+
 function project_exists(PDO $pdo, int $id): bool {
     $s = $pdo->prepare('SELECT 1 FROM projects WHERE id=?');
     $s->execute([$id]);
@@ -625,6 +631,19 @@ function tb_migrate_schema(PDO $pdo): void {
             ? 'ALTER TABLE tasks ADD COLUMN schedule_period VARCHAR(20) NULL DEFAULT NULL AFTER parent_id'
             : 'ALTER TABLE tasks ADD COLUMN schedule_period TEXT NULL DEFAULT NULL');
     }
+    // Scheduler targets (#31): must run after the schedule_period ALTER so the
+    // MySQL "AFTER schedule_period" placement finds its anchor column even on
+    // a table that needed both upgrades in the same request.
+    if (!in_array('schedule_status_id', $taskColumns, true)) {
+        $pdo->exec($isMysql
+            ? 'ALTER TABLE tasks ADD COLUMN schedule_status_id INT UNSIGNED NULL DEFAULT NULL AFTER schedule_period'
+            : 'ALTER TABLE tasks ADD COLUMN schedule_status_id INTEGER NULL DEFAULT NULL');
+    }
+    if (!in_array('schedule_assignees', $taskColumns, true)) {
+        $pdo->exec($isMysql
+            ? 'ALTER TABLE tasks ADD COLUMN schedule_assignees TEXT NULL DEFAULT NULL AFTER schedule_status_id'
+            : 'ALTER TABLE tasks ADD COLUMN schedule_assignees TEXT NULL DEFAULT NULL');
+    }
     if (!in_array('archived_at', $taskColumns, true)) {
         $pdo->exec($isMysql
             ? 'ALTER TABLE tasks ADD COLUMN archived_at TIMESTAMP NULL DEFAULT NULL AFTER updated_at'
@@ -738,4 +757,26 @@ function tb_migrate_schema(PDO $pdo): void {
                 : 'ALTER TABLE users ADD COLUMN last_seen_at TEXT NULL DEFAULT NULL');
         }
     }
+}
+
+/**
+ * Parses the scheduler's stored target assignees (#31): the comma-separated
+ * user id list the task edit form saves into tasks.schedule_assignees.
+ * Returns a sorted list of unique positive integer ids, so two lists compare
+ * as sets; unparsable fragments and non-positive numbers are dropped. NULL
+ * (a task scheduled before #31 existed) and '' mean "no target assignees" —
+ * the reopen clears the task's assignees, exactly the #18 behavior.
+ */
+function schedule_target_assignees(?string $csv): array {
+    if ($csv === null || trim($csv) === '') return [];
+    $ids = [];
+    foreach (explode(',', $csv) as $part) {
+        $part = trim($part);
+        if ($part === '' || !preg_match('/^\d+$/', $part)) continue;
+        $id = (int)$part;
+        if ($id > 0) $ids[] = $id;
+    }
+    $ids = array_values(array_unique($ids));
+    sort($ids);
+    return $ids;
 }

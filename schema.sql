@@ -45,6 +45,10 @@ CREATE TABLE tasks (
     status_id INT UNSIGNED NOT NULL,
     parent_id INT UNSIGNED NULL,
     schedule_period VARCHAR(20) NULL DEFAULT NULL,
+    -- Scheduler targets (#31): the status and assignee list the cron job sets
+    -- when the schedule fires. NULL keeps the #18 defaults (TODO, unassigned).
+    schedule_status_id INT UNSIGNED NULL DEFAULT NULL,
+    schedule_assignees TEXT NULL DEFAULT NULL,
     project_id INT UNSIGNED NULL,
     -- Nullable since user management (task #17): deleting a user keeps their
     -- tasks and clears the creator (rendered as "Deleted user").

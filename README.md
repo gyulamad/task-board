@@ -18,6 +18,7 @@ A lightweight multi-user task and message board for PHP 8.2+ and MySQL/MariaDB s
 - Comments, attachments, history and task relationships
 - Admin can add status labels and mark completion statuses; existing statuses can be renamed, reordered and deleted from the Administration page (a status still used by tasks and the last remaining status cannot be deleted)
 - Admin can add status labels and mark completion statuses
+- Last activity on the Administration page: a Last active column shows when each user was last seen ("active: 23 minutes ago", "1h 12m ago", "never"); refreshed by authenticated requests, throttled to one write per couple of minutes (#30)
 - Per-task auto-reopen schedule: an external cron job resets overdue tasks to TODO, unassigns them and comments "Reopen by auto-scheduler"
 - Admin-only software updater for the latest GitHub release or a selected repository branch
 - PDO prepared statements, output escaping, CSRF tokens and upload MIME checks

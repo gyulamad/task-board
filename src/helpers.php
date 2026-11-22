@@ -461,6 +461,65 @@ function ensure_users_theme_column(PDO $pdo): void {
     }
 }
 
+// How stale a stored last_seen_at may be before an authenticated request
+// refreshes it (#30). The write is the only cost of tracking activity, and on
+// a board where every click is a request an unconditional UPDATE would churn
+// the users table for no visible change: the admin page reads minutes, so a
+// two-minute window still lands the one write that matters (the first of a
+// burst, and the first request after a login) while the rest are no-ops.
+const TB_LAST_SEEN_MIN_INTERVAL_MINUTES = 2;
+
+/**
+ * Refreshes the signed-in user's last_seen_at (#30). Called once per request
+ * from index.php for authenticated sessions. The UPDATE is self-throttling:
+ * the WHERE clause only matches when the stored stamp is missing or older
+ * than TB_LAST_SEEN_MIN_INTERVAL_MINUTES, so most requests cost one indexed
+ * no-op statement and the column stays good enough for minute-resolution
+ * labels. The stamp is written and compared on the database's own clock
+ * (CURRENT_TIMESTAMP / NOW() / datetime('now')), so PHP's timezone setting
+ * can never skew it.
+ */
+function tb_touch_last_seen(PDO $pdo): void {
+    $u = user();
+    if ($u === null) return;   // anonymous requests are not user activity
+    $isMysql = $pdo->getAttribute(PDO::ATTR_DRIVER_NAME) === 'mysql';
+    $sql = $isMysql
+        ? 'UPDATE users SET last_seen_at = CURRENT_TIMESTAMP WHERE id = ? AND (last_seen_at IS NULL OR last_seen_at < NOW() - INTERVAL ' . TB_LAST_SEEN_MIN_INTERVAL_MINUTES . ' MINUTE)'
+        : "UPDATE users SET last_seen_at = CURRENT_TIMESTAMP WHERE id = ? AND (last_seen_at IS NULL OR last_seen_at <= datetime('now', '-" . TB_LAST_SEEN_MIN_INTERVAL_MINUTES . " minutes'))";
+    $pdo->prepare($sql)->execute([$u['id']]);
+}
+
+/**
+ * The 'active: 23 minutes ago' label of the admin page's Last active column
+ * (#30). Pure: pass $now (a unix timestamp) to pin the clock — the page feeds
+ * it the database's own current timestamp, so a label is always computed on
+ * the same clock the stamp was written with; tests pass a fixed one. NULL (a
+ * user not seen since the feature landed) reads 'never'.
+ */
+function tb_last_seen_label(?string $lastSeenAt, ?int $now = null): string {
+    if ($lastSeenAt === null || $lastSeenAt === '') return 'never';
+    $ts = strtotime($lastSeenAt);
+    if ($ts === false) return 'unknown';
+    $s = ($now ?? time()) - $ts;
+    if ($s < 0) $s = 0;   // a clock hiccup must not read negative
+    if ($s < 60) return 'just now';
+    if ($s < 3600) {   // whole minutes: the task's '23 minutes ago'
+        $m = intdiv($s, 60);
+        return $m === 1 ? '1 minute ago' : $m . ' minutes ago';
+    }
+    if ($s < 86400) {  // the task's '1h 12m ago'
+        $h = intdiv($s, 3600);
+        $m = intdiv($s % 3600, 60);
+        return $h . 'h' . ($m > 0 ? ' ' . $m . 'm' : '') . ' ago';
+    }
+    if ($s < 30 * 86400) {   // '3d 4h ago' for the recent past
+        $d = intdiv($s, 86400);
+        $h = intdiv($s % 86400, 3600);
+        return $d . 'd' . ($h > 0 ? ' ' . $h . 'h' : '') . ' ago';
+    }
+    return intdiv($s, 86400) . 'd ago';   // and plain days for the long tail
+}
+
 /**
  * Idempotent schema self-heal (#18 scheduler, #12 archive, #24 projects).
  * Fresh installs get everything from schema.sql; this check upgrades existing
@@ -576,6 +635,26 @@ function tb_migrate_schema(PDO $pdo): void {
                 updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
                 CONSTRAINT fk_saved_search_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
             )");
+        }
+    }
+
+    // Last activity (#30): the admin page reads users.last_seen_at
+    // unconditionally, so a deployment that lands without the upgrade SQL
+    // adds the column on the first request instead of fataling. Skipped when
+    // the users table is missing entirely: a board without a users table is
+    // pre-install and gets the full schema.sql (column included) from the
+    // install guard.
+    $hasUsers = $isMysql
+        ? (bool)$pdo->query("SHOW TABLES LIKE 'users'")->fetchColumn()
+        : (bool)$pdo->query("SELECT 1 FROM sqlite_master WHERE type='table' AND name='users'")->fetchColumn();
+    if ($hasUsers) {
+        $userColumns = $isMysql
+            ? array_column($pdo->query('SHOW COLUMNS FROM users')->fetchAll(PDO::FETCH_ASSOC), 'Field')
+            : array_column($pdo->query('PRAGMA table_info(users)')->fetchAll(PDO::FETCH_ASSOC), 'name');
+        if (!in_array('last_seen_at', $userColumns, true)) {
+            $pdo->exec($isMysql
+                ? 'ALTER TABLE users ADD COLUMN last_seen_at TIMESTAMP NULL DEFAULT NULL AFTER created_at'
+                : 'ALTER TABLE users ADD COLUMN last_seen_at TEXT NULL DEFAULT NULL');
         }
     }
 }

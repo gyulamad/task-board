@@ -126,5 +126,22 @@ CREATE TABLE templates (
     CONSTRAINT fk_template_creator FOREIGN KEY (created_by) REFERENCES users(id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
+CREATE TABLE saved_searches (
+    id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+    -- Saved searches (#29): the list filters travel in the URL only, so a
+    -- saved search stores the filter part of the list URL under a name. They
+    -- are personal: each user saves and sees their own, and deleting a user
+    -- removes their searches with the account.
+    user_id INT UNSIGNED NOT NULL,
+    name VARCHAR(200) NOT NULL,
+    -- The whitelisted filter/sort part of the list URL, rebuilt with
+    -- http_build_query() at save time (no page number: a saved search opens
+    -- on page 1).
+    query TEXT NOT NULL,
+    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    CONSTRAINT fk_saved_search_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
 INSERT INTO statuses (name, sort_order, is_done) VALUES
 ('TODO', 1, 0), ('IN PROGRESS', 2, 0), ('DONE', 3, 1);

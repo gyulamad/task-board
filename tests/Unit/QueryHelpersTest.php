@@ -205,4 +205,76 @@ final class QueryHelpersTest extends TestCase
         );
         $this->assertSame('3 projects deleted.', tb_bulk_flash(3, 0, 'project', 'deleted', 'only administrators or the project creator can delete a project.'));
     }
+
+    // ---- Saved searches (Task #29) -----------------------------------------
+
+    public function test_saved_search_query_builds_the_canonical_filter_query(): void
+    {
+        $query = tb_saved_search_query([
+            'q' => 'Beta',
+            'status' => ['2'],
+            'sort' => 'updated',
+            'dir' => 'desc',
+        ]);
+        $this->assertSame('q=Beta&status%5B0%5D=2&sort=updated&dir=desc', $query);
+    }
+
+    public function test_saved_search_query_keeps_multi_value_filters(): void
+    {
+        $query = tb_saved_search_query([
+            'assignee' => ['2', '5', 'unassigned'],
+            'parent' => ['none'],
+        ]);
+        $this->assertSame('assignee%5B0%5D=2&assignee%5B1%5D=5&assignee%5B2%5D=unassigned&parent%5B0%5D=none', $query);
+    }
+
+    public function test_saved_search_query_normalizes_legacy_scalar_shapes(): void
+    {
+        // Old bookmarks link ?status=1; the same value through the save form
+        // produces the same stored link semantics either way.
+        $this->assertSame('status=2', tb_saved_search_query(['status' => '2']));
+        $this->assertSame('q=Beta', tb_saved_search_query(['q' => 'Beta']));
+    }
+
+    public function test_saved_search_query_collapses_a_crafted_scalar_array_to_its_first_value(): void
+    {
+        // A hand-crafted q[]=... must never be stored as an array: the list
+        // page reads ?q= as a string, so the stored link stays a plain one.
+        $this->assertSame('q=Beta&sort=title', tb_saved_search_query(['q' => 'Beta', 'sort' => ['title', 'updated']]));
+    }
+
+    public function test_saved_search_query_drops_unknown_empty_and_blank_values(): void
+    {
+        $query = tb_saved_search_query([
+            'q' => 'Beta',
+            'status' => ['', null],
+            'assignee' => [],
+            'csrf' => 'token',
+            'action' => 'save_search',
+            'page' => 'task',
+            'id' => '1',
+            'p' => '3',
+            'evil' => 'x',
+        ]);
+        $this->assertSame('q=Beta', $query, 'Only known filter keys survive; csrf/action/pagination and unknown keys are dropped.');
+    }
+
+    public function test_saved_search_query_returns_null_without_a_real_filter(): void
+    {
+        // Sort-only or empty submissions are not a search.
+        $this->assertNull(tb_saved_search_query([]));
+        $this->assertNull(tb_saved_search_query(['sort' => 'updated', 'dir' => 'asc']));
+        $this->assertNull(tb_saved_search_query(['status' => ['']]));
+    }
+
+    public function test_filter_query_value_reads_the_given_source_instead_of_get(): void
+    {
+        $_GET['status'] = '1';
+        $this->assertSame('2', filter_query_value('status', ['status' => '2']), 'An explicit source wins over $_GET.');
+        $this->assertSame('1', filter_query_value('status'), 'Without a source the helpers keep reading $_GET.');
+        $this->assertSame(['3', '4'], filter_query_value('status', ['status' => ['3', '4']]));
+        $this->assertNull(filter_query_value('missing', ['status' => '2']));
+        $this->assertNull(filter_query_value('blank', ['blank' => '']));
+        unset($_GET['status']);
+    }
 }

@@ -357,15 +357,18 @@ function tb_in_placeholders(int $count): string {
 }
 
 /**
- * Carries one filter parameter from the current request into a query string
- * builder: scalars pass through as strings, arrays pass through as arrays so
+ * Carries one filter parameter from a request into a query string builder:
+ * scalars pass through as strings, arrays pass through as arrays so
  * http_build_query() re-emits them as filter[0]=...&filter[1]=... (which PHP
  * parses back into an array). Empty and blank values are dropped entirely.
+ * $source defaults to $_GET (the list page URLs); the saved-search save
+ * handler (#29) passes $_POST so the same normalization builds the stored
+ * query string.
  *
  * @return string[]|string|null
  */
-function filter_query_value(string $key) {
-    $value = $_GET[$key] ?? null;
+function filter_query_value(string $key, ?array $source = null) {
+    $value = ($source ?? $_GET)[$key] ?? null;
     if ($value === null || $value === '') {
         return null;
     }
@@ -374,6 +377,57 @@ function filter_query_value(string $key) {
         return $value === [] ? null : $value;
     }
     return (string)$value;
+}
+
+// --- Saved searches (Task #29) ----------------------------------------------
+//
+// The task list is fully URL-driven: every dropdown and the search box submit
+// into ?q=/?assignee[]=/... and nothing about a filtered list lives in the
+// session or a cookie. A saved search therefore stores exactly that URL part
+// under a name (the user's "actual search link"), and the list page renders
+// the stored links in a dropdown. These helpers build the canonical query
+// string that gets stored; the list page itself keeps validating every
+// parameter when the link is opened, so a stored value can never do more than
+// a hand-typed URL could.
+
+/** Request keys a saved search stores, in canonical order. */
+const TASK_BOARD_SEARCH_KEYS = ['q', 'assignee', 'status', 'parent', 'project', 'sort', 'dir'];
+
+/** The subset of TASK_BOARD_SEARCH_KEYS that actually filters the list; at least one must be present for a search to be worth saving. */
+const TASK_BOARD_SEARCH_FILTER_KEYS = ['q', 'assignee', 'status', 'parent', 'project'];
+
+/** Keys that carry a single value on the list page (the rest submit arrays). */
+const TASK_BOARD_SEARCH_SCALAR_KEYS = ['q', 'sort', 'dir'];
+
+/**
+ * Builds the canonical saved-search query string from request-shaped values
+ * ($_POST in the save handler, but any array works for unit tests): every
+ * TASK_BOARD_SEARCH_KEYS entry passes through filter_query_value(), scalar
+ * keys collapse a crafted array to its first value so the stored link can
+ * never hit the list page with an array ?q=. Unknown keys (page, p, csrf,
+ * action, ...) are dropped. Returns null when none of the real filter keys
+ * is present, e.g. only the sort direction was picked - such a link would
+ * just re-open the plain list, which is not a search.
+ */
+function tb_saved_search_query(array $source): ?string {
+    $qs = [];
+    foreach (TASK_BOARD_SEARCH_KEYS as $key) {
+        $value = filter_query_value($key, $source);
+        if ($value === null) {
+            continue;
+        }
+        if (in_array($key, TASK_BOARD_SEARCH_SCALAR_KEYS, true) && is_array($value)) {
+            $value = $value[0] ?? null;
+            if ($value === null || $value === '') {
+                continue;
+            }
+        }
+        $qs[$key] = $value;
+    }
+    if (!array_intersect_key($qs, array_flip(TASK_BOARD_SEARCH_FILTER_KEYS))) {
+        return null;
+    }
+    return http_build_query($qs);
 }
 
 // --- Theme settings (Task #11) -------------------------------------------
@@ -492,6 +546,36 @@ function tb_migrate_schema(PDO $pdo): void {
             // real constraint from schema.sql and deletes keep the tasks intact
             // because the list queries tolerate a missing project reference.
             $pdo->exec('ALTER TABLE tasks ADD COLUMN project_id INTEGER NULL DEFAULT NULL');
+        }
+    }
+
+    // Saved searches (#29): the task list page reads the saved_searches table
+    // unconditionally, so a deployment that lands without the upgrade SQL
+    // recreates the table on the first request instead of fataling.
+    $hasSavedSearches = $isMysql
+        ? (bool)$pdo->query("SHOW TABLES LIKE 'saved_searches'")->fetchColumn()
+        : (bool)$pdo->query("SELECT 1 FROM sqlite_master WHERE type='table' AND name='saved_searches'")->fetchColumn();
+    if (!$hasSavedSearches) {
+        if ($isMysql) {
+            $pdo->exec("CREATE TABLE saved_searches (
+                id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+                user_id INT UNSIGNED NOT NULL,
+                name VARCHAR(200) NOT NULL,
+                query TEXT NOT NULL,
+                created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                CONSTRAINT fk_saved_search_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4");
+        } else {
+            $pdo->exec("CREATE TABLE saved_searches (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL,
+                name TEXT NOT NULL,
+                query TEXT NOT NULL,
+                created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                CONSTRAINT fk_saved_search_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+            )");
         }
     }
 }

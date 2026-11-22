@@ -14,6 +14,7 @@ A lightweight multi-user task and message board for PHP 8.2+ and MySQL/MariaDB s
 - Paginated task list with per-task Edit/Delete shortcuts and multi-select bulk actions (archive, and move the selected tasks into a project)
 - Task archive: Delete/Archive actions soft-delete a task (hidden from lists, restorable); permanent deletion happens only from the Archive page, by an administrator or the creator
 - Sortable task list: clicking a column name (Task, Status, Assignees, Parent, Updated) orders the list; shared helpers make it easy to reuse on other CRUD lists
+- Saved searches on the task list: a Save search button stores the current list filters under a name and the Saved searches dropdown re-opens them; the searches are per user and travel as plain URLs
 - Comments, attachments, history and task relationships
 - Admin can add status labels and mark completion statuses; existing statuses can be renamed, reordered and deleted from the Administration page (a status still used by tasks and the last remaining status cannot be deleted)
 - Admin can add status labels and mark completion statuses
@@ -128,6 +129,27 @@ be viewed, restored (returns the task unchanged to the list) or deleted permanen
 Permanent deletion requires the task to be archived and is limited to an
 administrator or the task creator; it cascades comments, attachments metadata,
 history and links exactly like the old direct delete did.
+
+## Saved searches
+The task list is fully URL-driven: the search box and the four filter dropdowns
+submit into `?q=`, `?assignee[]=`, `?status[]=`, `?parent[]=`, `?project[]=` and the
+column headers add `?sort=`/`?dir=` — nothing about a filtered list lives in the
+session or a cookie. **Save search** on the task list therefore stores exactly that
+URL part under a name: the saved search is the actual search link.
+
+- Saving keeps only the known filter and sort parameters (unknown keys, the CSRF
+  field and the page number are dropped, so a saved search always opens on page 1)
+  and requires at least one real filter (`sort`-only or empty lists cannot be saved).
+- Saved searches are personal: each user saves and sees their own, listed in the
+  **Saved searches** dropdown under the filter form. The ✕ next to an entry deletes
+  it; deletion is limited to the search owner or an administrator, like the templates.
+- Opening a saved search navigates to the stored link, which the list page validates
+  exactly like a hand-typed URL (bound parameters, allowlisted sort keys), so a
+  stored value can never do more than a normal list URL could.
+
+Fresh installs get the `saved_searches` table from `schema.sql`; existing boards are
+upgraded automatically on the first request after deployment (the idempotent
+self-heal in `tb_migrate_schema()` recreates the table if it is missing).
 
 ## Requirements
 - PHP 8.2+ recommended

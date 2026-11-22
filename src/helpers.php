@@ -539,9 +539,155 @@ function tb_last_seen_label(?string $lastSeenAt, ?int $now = null): string {
 
 // The traffic-light thresholds of the activity dot (#30): green = seen within
 // the last 15 minutes, yellow = seen 15-60 minutes ago, red = seen longer ago.
-// Named constants so the admin wording and the tests stay in lockstep.
+// Named constants so the admin wording and the tests stay in lockstep. Since
+// #34 they double as the DEFAULTS of the configurable periods: the settings
+// page (?page=activity_settings) stores an administrator-defined period list
+// in the app_settings table, and these constants keep the pre-#34 behaviour
+// byte-identical until somebody actually saves their own periods.
 const TB_ACTIVITY_GREEN_AFTER_MINUTES = 15;
 const TB_ACTIVITY_YELLOW_AFTER_MINUTES = 60;
+
+/** Colours a period may use for its dot (#34); one CSS class each in the page style block. */
+const TB_ACTIVITY_COLORS = ['green', 'yellow', 'red', 'grey'];
+
+/** app_settings key (#34) under which the configured period list is stored as JSON. */
+const TB_ACTIVITY_SETTINGS_KEY = 'activity_levels';
+
+/**
+ * The built-in activity periods (#34): the exact pre-#34 behaviour expressed
+ * as a period list, so an untouched board renders the same dots as before.
+ * Shape of every period (here and in the stored JSON):
+ *   ['until_minutes' => ?int, 'color' => ?string, 'character' => ?string]
+ * until_minutes is the inclusive upper age bound in minutes; null (allowed
+ * only on the last period) means "forever". A period renders as a coloured
+ * dot when it carries a colour, else as its character glyph.
+ */
+function tb_activity_levels_default(): array {
+    return [
+        ['until_minutes' => TB_ACTIVITY_GREEN_AFTER_MINUTES, 'color' => 'green', 'character' => null],
+        ['until_minutes' => TB_ACTIVITY_YELLOW_AFTER_MINUTES, 'color' => 'yellow', 'character' => null],
+        ['until_minutes' => null, 'color' => 'red', 'character' => null],
+    ];
+}
+
+/**
+ * Validates a period list (#34). Returns null when the list is usable, else
+ * the message for the settings form. Rules: 2-5 periods; every period shows
+ * exactly one of a known colour or a 1-3 character glyph; every period but
+ * the last has a positive minute bound; the bounds increase strictly, so the
+ * periods tile the timeline without gaps or overlaps.
+ */
+function tb_activity_levels_validation_error(array $levels): ?string {
+    $count = count($levels);
+    if ($count < 2) return 'Define at least two periods.';
+    if ($count > 5) return 'At most five periods are supported.';
+    $previous = null;
+    foreach ($levels as $i => $level) {
+        $label = 'Period ' . ($i + 1);
+        if (!is_array($level)) return $label . ' is malformed.';
+        $minutes = $level['until_minutes'] ?? null;
+        $color = $level['color'] ?? null;
+        $character = $level['character'] ?? null;
+        $isLast = $i === $count - 1;
+        if ($minutes === null) {
+            if (!$isLast) return $label . ' needs an upper minute bound - only the last period may run forever.';
+        } else {
+            if (!is_int($minutes) || $minutes < 1 || $minutes > 525600) return $label . ' needs a bound between 1 and 525600 minutes (or an empty bound on the last period).';
+            if ($previous !== null && $minutes <= $previous) return $label . ' must start after the previous period ends: the bounds have to increase.';
+        }
+        if ($color !== null && $character !== null) return $label . ' must pick one: a colour or a character.';
+        if ($color !== null) {
+            if (!in_array($color, TB_ACTIVITY_COLORS, true)) return $label . ' uses an unknown colour.';
+        } elseif ($character !== null) {
+            if (trim($character) === '') return $label . ' cannot show an empty character.';
+            if (preg_match_all('/./us', $character) > 3) return $label . ' character is limited to 3 characters.';
+        } else {
+            return $label . ' needs a colour or a character.';
+        }
+        $previous = $minutes;
+    }
+    return null;
+}
+
+/**
+ * Builds the period list from the settings form's rows (#34). $rows is the
+ * levels[minutes][] / levels[style][] / levels[character][] arrays PHP
+ * assembles from the posted form. Fully unused rows are dropped; a
+ * 'color:<name>' style value becomes that colour, the 'character' style
+ * takes the row's character field. Validate the result with
+ * tb_activity_levels_validation_error() before storing it.
+ */
+function tb_activity_levels_from_form(array $rows): array {
+    $count = is_array($rows['minutes'] ?? null) ? count($rows['minutes']) : 0;
+    $levels = [];
+    for ($i = 0; $i < $count; $i++) {
+        $minutes = trim((string)($rows['minutes'][$i] ?? ''));
+        $style = (string)($rows['style'][$i] ?? '');
+        $character = trim((string)($rows['character'][$i] ?? ''));
+        if ($minutes === '' && $style === '' && $character === '') continue;
+        $level = ['until_minutes' => null, 'color' => null, 'character' => null];
+        if ($minutes !== '' && preg_match('/^\d+$/', $minutes)) $level['until_minutes'] = (int)$minutes;
+        if ($style === 'character') {
+            $level['character'] = $character;
+        } elseif (str_starts_with($style, 'color:')) {
+            $level['color'] = substr($style, 6);
+        }
+        $levels[] = $level;
+    }
+    return $levels;
+}
+
+/**
+ * Reads the configured activity periods from the app_settings table (#34).
+ * A missing row, corrupt JSON or an invalid stored list all fall back to the
+ * built-in periods - the dots never disappear because of a bad save. This is
+ * also the loader index.php uses to fill the request-wide configuration.
+ */
+function tb_load_activity_levels(PDO $pdo): array {
+    try {
+        $s = $pdo->prepare('SELECT value FROM app_settings WHERE name=?');
+        $s->execute([TB_ACTIVITY_SETTINGS_KEY]);
+        $raw = $s->fetchColumn();
+    } catch (Throwable $e) {
+        return tb_activity_levels_default();   // the table is not there yet: defaults
+    }
+    if ($raw === false || $raw === null || $raw === '') return tb_activity_levels_default();
+    $decoded = json_decode((string)$raw, true);
+    if (!is_array($decoded)) return tb_activity_levels_default();
+    if (tb_activity_levels_validation_error($decoded) !== null) return tb_activity_levels_default();
+    return $decoded;
+}
+
+/**
+ * Stores the configured activity periods (#34). null removes the stored list
+ * (the board falls back to the built-in periods). Stored as JSON; a later
+ * read re-validates before use, so a hand-edited row cannot break the board.
+ */
+function tb_save_activity_levels(PDO $pdo, ?array $levels): void {
+    $isMysql = $pdo->getAttribute(PDO::ATTR_DRIVER_NAME) === 'mysql';
+    if ($levels === null) {
+        $pdo->prepare('DELETE FROM app_settings WHERE name=?')->execute([TB_ACTIVITY_SETTINGS_KEY]);
+        return;
+    }
+    $json = json_encode(array_values($levels));
+    if ($json === false) throw new RuntimeException('Could not encode the activity periods.');
+    if ($isMysql) {
+        $pdo->prepare('INSERT INTO app_settings(name,value) VALUES(?,?) ON DUPLICATE KEY UPDATE value=VALUES(value)')->execute([TB_ACTIVITY_SETTINGS_KEY, $json]);
+    } else {
+        $pdo->prepare('INSERT OR REPLACE INTO app_settings(name,value) VALUES(?,?)')->execute([TB_ACTIVITY_SETTINGS_KEY, $json]);
+    }
+}
+
+/**
+ * The periods a request renders with (#34): an explicit $levels argument
+ * wins, else the request-wide configuration index.php loaded from
+ * app_settings, else the built-in defaults.
+ */
+function tb_activity_levels_current(?array $levels = null): array {
+    if ($levels !== null) return $levels;
+    $global = $GLOBALS['TB_ACTIVITY_LEVELS'] ?? null;
+    return is_array($global) && $global !== [] ? $global : tb_activity_levels_default();
+}
 
 /**
  * The clock the activity ages are computed against (#14): the database's own
@@ -559,38 +705,91 @@ function tb_default_now_ts(): int {
 }
 
 /**
- * The activity level of a user stamp: 'green', 'yellow' or 'red' (#30). Pure:
- * pass $now (a unix timestamp) to pin the clock — call sites that already read
- * the database's clock feed it here; tests pass a fixed one. A user without a
- * stamp (never seen since the feature landed) or an unparsable one sits at the
- * red end of the scale, which is what "inactive for over an hour" includes.
+ * The index of the period a last_seen stamp falls into (#34). Pure: pass
+ * $now to pin the clock (the pages feed the database's own current
+ * timestamp; tests a fixed one) and $levels to pin the configuration. A
+ * missing or unparsable stamp lands in the last period - the "long gone"
+ * end of the scale, exactly where #30 put it.
  */
-function tb_activity_level(?string $lastSeenAt, ?int $now = null): string {
-    if ($lastSeenAt === null || $lastSeenAt === '') return 'red';
+function tb_activity_bucket(?string $lastSeenAt, ?int $now = null, ?array $levels = null): int {
+    $levels = tb_activity_levels_current($levels);
+    if ($lastSeenAt === null || $lastSeenAt === '') return count($levels) - 1;
     $ts = strtotime($lastSeenAt);
-    if ($ts === false) return 'red';
-    // Second granularity (#14): the level changes at exactly 15:00 and 60:00
-    // minutes, and minute-truncation makes 59:59 and 60:01 the same bucket as
-    // the boundaries themselves, which contradicts the documented thresholds.
+    if ($ts === false) return count($levels) - 1;
+    // Second granularity (#14): the bucket changes at exactly the boundary
+    // seconds, and minute-truncation would make 59:59 and 60:01 the same
+    // bucket as the boundaries themselves, which contradicts the thresholds.
     $s = max(0, ($now ?? tb_default_now_ts()) - $ts);
-    if ($s <= TB_ACTIVITY_GREEN_AFTER_MINUTES * 60) return 'green';
-    if ($s <= TB_ACTIVITY_YELLOW_AFTER_MINUTES * 60) return 'yellow';
-    return 'red';
+    foreach ($levels as $i => $level) {
+        $until = is_array($level) ? ($level['until_minutes'] ?? null) : null;
+        if ($until === null || $s <= $until * 60) return (int)$i;
+    }
+    return count($levels) - 1;
 }
 
 /**
- * The activity dot next to a user name (#30): a small green/yellow/red disc
- * with a title attribute naming the state, so the color is never the only
- * carrier of the meaning.
+ * The activity level of a user stamp (#34): the colour of the period the
+ * stamp falls into — 'green', 'yellow', 'red' and, since the settings page
+ * can add one, 'grey'. A period configured to render as a character instead
+ * of a colour reports 'red' (the safe end of the scale) so callers that only
+ * know colours keep working. With the default periods in effect the result
+ * is exactly the pre-#34 green/yellow/red (#30). Pure: pass $now to pin the
+ * clock; pass $levels to pin the configuration.
  */
-function tb_activity_dot(?string $lastSeenAt, ?int $now = null): string {
-    $titles = [
-        'green' => 'Active in the last 15 minutes',
-        'yellow' => 'Not active in the last hour',
-        'red' => 'Inactive for over an hour',
-    ];
-    $level = tb_activity_level($lastSeenAt, $now);
-    return '<span class="tb-activity-dot tb-activity-' . $level . '" title="' . $titles[$level] . '"></span>';
+function tb_activity_level(?string $lastSeenAt, ?int $now = null, ?array $levels = null): string {
+    $levels = tb_activity_levels_current($levels);
+    $bucket = tb_activity_bucket($lastSeenAt, $now, $levels);
+    $color = is_array($levels[$bucket] ?? null) ? ($levels[$bucket]['color'] ?? null) : null;
+    return $color ?? 'red';
+}
+
+/**
+ * The human title of one period (#34), for the dot's title attribute so the
+ * colour is never the only carrier of the meaning. The built-in periods keep
+ * the exact #30 wording; administrator-configured periods get generated
+ * wording from their bounds.
+ */
+function tb_activity_level_title(int $bucket, ?array $levels = null): string {
+    $levels = tb_activity_levels_current($levels);
+    $isDefault = $levels === tb_activity_levels_default();
+    if ($isDefault) {
+        $legacy = ['Active in the last 15 minutes', 'Not active in the last hour', 'Inactive for over an hour'];
+        return $legacy[$bucket] ?? 'Inactive for over an hour';
+    }
+    $until = is_array($levels[$bucket] ?? null) ? ($levels[$bucket]['until_minutes'] ?? null) : null;
+    if ($until === null) return 'Last seen longer ago than every period above';
+    if ($until < 60) return 'Seen within the last ' . $until . ' minutes';
+    if ($until === 60) return 'Seen within the last hour';
+    if ($until === 1440) return 'Seen within the last day';
+    if ($until % 60 === 0) return 'Seen within the last ' . intdiv($until, 60) . ' hours';
+    return 'Seen within the last ' . $until . ' minutes';
+}
+
+/**
+ * The activity indicator for one period index (#34) — tb_activity_dot()
+ * renders this, and the settings page's legend previews each period with it
+ * without fabricating stamps. A period with a colour renders as a coloured
+ * disc; a character-only period renders its glyph. Both carry a title naming
+ * the state, so the colour is never the only carrier of the meaning.
+ */
+function tb_activity_dot_for_bucket(int $bucket, ?array $levels = null): string {
+    $levels = tb_activity_levels_current($levels);
+    $bucket = max(0, min($bucket, count($levels) - 1));
+    $title = tb_activity_level_title($bucket, $levels);
+    $level = is_array($levels[$bucket] ?? null) ? $levels[$bucket] : [];
+    if (($level['character'] ?? null) !== null && ($level['color'] ?? null) === null) {
+        return '<span class="tb-activity-char" title="' . h($title) . '">' . h((string)$level['character']) . '</span>';
+    }
+    return '<span class="tb-activity-dot tb-activity-' . ($level['color'] ?? 'red') . '" title="' . h($title) . '"></span>';
+}
+
+/**
+ * The activity dot next to a user name (#30): since #34 it renders the
+ * request's configured periods (see tb_activity_levels_current()); with the
+ * built-in ones in effect the markup is byte-identical to the #30 output.
+ */
+function tb_activity_dot(?string $lastSeenAt, ?int $now = null, ?array $levels = null): string {
+    return tb_activity_dot_for_bucket(tb_activity_bucket($lastSeenAt, $now, $levels), $levels);
 }
 
 /**
@@ -755,6 +954,28 @@ function tb_migrate_schema(PDO $pdo): void {
             $pdo->exec($isMysql
                 ? 'ALTER TABLE users ADD COLUMN last_seen_at TIMESTAMP NULL DEFAULT NULL AFTER created_at'
                 : 'ALTER TABLE users ADD COLUMN last_seen_at TEXT NULL DEFAULT NULL');
+        }
+    }
+
+    // Activity status periods (#34): the settings page stores the configured
+    // period list in the app_settings table and the board reads it
+    // unconditionally on every request, so a deployment that lands without
+    // the upgrade SQL recreates the table on the first request. An absent
+    // row simply means the built-in periods are in effect.
+    $hasAppSettings = $isMysql
+        ? (bool)$pdo->query("SHOW TABLES LIKE 'app_settings'")->fetchColumn()
+        : (bool)$pdo->query("SELECT 1 FROM sqlite_master WHERE type='table' AND name='app_settings'")->fetchColumn();
+    if (!$hasAppSettings) {
+        if ($isMysql) {
+            $pdo->exec("CREATE TABLE app_settings (
+                name VARCHAR(80) PRIMARY KEY,
+                value TEXT NOT NULL
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4");
+        } else {
+            $pdo->exec("CREATE TABLE app_settings (
+                name TEXT PRIMARY KEY,
+                value TEXT NOT NULL
+            )");
         }
     }
 }

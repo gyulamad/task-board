@@ -148,5 +148,13 @@ CREATE TABLE saved_searches (
     CONSTRAINT fk_saved_search_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
+CREATE TABLE app_settings (
+    -- App-wide key/value settings (#34): the activity status periods page
+    -- stores its configured period list under the name 'activity_levels' as
+    -- JSON. An absent row means the built-in periods are in effect.
+    name VARCHAR(80) PRIMARY KEY,
+    value TEXT NOT NULL
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
 INSERT INTO statuses (name, sort_order, is_done) VALUES
 ('TODO', 1, 0), ('IN PROGRESS', 2, 0), ('DONE', 3, 1);

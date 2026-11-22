@@ -160,7 +160,9 @@ final class CommentsAttachmentsTest extends E2eTestCase
         ], 'file', $file, 'cascaded.txt', 'text/plain');
         unlink($file);
 
-        $admin->post('/?page=task&id=' . $id, ['action' => 'delete_task', 'id' => (string)$id]);
+        // Deleting goes through the archive (#12): archive first, then remove permanently.
+        $admin->post('/?page=task&id=' . $id, ['action' => 'archive_task', 'id' => (string)$id]);
+        $admin->post('/?page=task&id=' . $id, ['action' => 'delete_task', 'id' => (string)$id, 'return' => '?page=archive']);
 
         $download = $admin->get('/?page=download&id=1');
         $this->assertSame(404, $download->status);

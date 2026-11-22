@@ -60,20 +60,31 @@ if (user()) {
 // Task scheduler (#18): make sure the schedule_period column exists on tasks.
 // Fresh installs get it from schema.sql; this idempotent check upgrades existing
 // databases in place so no manual migration is required.
+
+// Task scheduler (#18) and task archive (#12): make sure the scheduler and archive
+// columns exist on tasks. Fresh installs get them from schema.sql; this idempotent
+// check upgrades existing databases in place so no manual migration is required.
 try {
     if ($pdo->getAttribute(PDO::ATTR_DRIVER_NAME) === 'mysql') {
         $scheduleColumn = $pdo->query("SHOW COLUMNS FROM tasks LIKE 'schedule_period'")->fetchColumn();
         if (!$scheduleColumn) {
             $pdo->exec("ALTER TABLE tasks ADD COLUMN schedule_period VARCHAR(20) NULL DEFAULT NULL AFTER parent_id");
         }
+        $archiveColumn = $pdo->query("SHOW COLUMNS FROM tasks LIKE 'archived_at'")->fetchColumn();
+        if (!$archiveColumn) {
+            $pdo->exec("ALTER TABLE tasks ADD COLUMN archived_at TIMESTAMP NULL DEFAULT NULL AFTER updated_at");
+        }
     } else {
         $scheduleColumns = array_column($pdo->query('PRAGMA table_info(tasks)')->fetchAll(PDO::FETCH_ASSOC), 'name');
         if (!in_array('schedule_period', $scheduleColumns, true)) {
             $pdo->exec('ALTER TABLE tasks ADD COLUMN schedule_period TEXT NULL DEFAULT NULL');
         }
+        if (!in_array('archived_at', $scheduleColumns, true)) {
+            $pdo->exec('ALTER TABLE tasks ADD COLUMN archived_at TEXT NULL DEFAULT NULL');
+        }
     }
 } catch (Throwable $e) {
-    // Ignore: the cron endpoint reports a clear error if the column is still missing.
+    // Ignore: the cron endpoint and the archive page report clear errors if a column is still missing.
 }
 
 if (empty($_SESSION['csrf'])) $_SESSION['csrf'] = bin2hex(random_bytes(32));
@@ -197,30 +208,52 @@ if (user()) {
                 foreach ($assignees as $uid) $a->execute([$id,$uid]);
                 redirect('?page=task&id=' . $id);
             }
-            if ($action === 'delete_task') {
+            if ($action === 'archive_task') {
+                // Soft delete (#12): the task leaves the lists but stays restorable.
                 $id = (int)$_POST['id'];
-                $s = $pdo->prepare('SELECT created_by FROM tasks WHERE id=?');
-                $s->execute([$id]);
-                if (!is_admin() && (int)$s->fetchColumn() !== (int)user()['id']) throw new RuntimeException('Only an administrator or task creator can delete this task.');
+                $s = $pdo->prepare('SELECT created_by, archived_at FROM tasks WHERE id=?'); $s->execute([$id]);
+                if (!$t = $s->fetch()) throw new RuntimeException('Task not found.');
+                if (!is_admin() && (int)$t['created_by'] !== (int)user()['id']) throw new RuntimeException('Only an administrator or task creator can archive this task.');
+                $pdo->prepare('UPDATE tasks SET archived_at=CURRENT_TIMESTAMP WHERE id=? AND archived_at IS NULL')->execute([$id]);
+                history($pdo, $id, 'Task archived', 'The task was moved to the archive. Restore it from the archive page.');
+                flash('Task archived. Find it under Archive.');
+                $returnUrl = $_POST['return'] ?? '';
+                redirect(is_string($returnUrl) && str_starts_with($returnUrl, '?page=tasks') ? $returnUrl : '?page=task&id=' . $id);
+            }
+            if ($action === 'restore_task') {
+                $id = (int)$_POST['id'];
+                $pdo->prepare('UPDATE tasks SET archived_at=NULL, updated_at=CURRENT_TIMESTAMP WHERE id=? AND archived_at IS NOT NULL')->execute([$id]);
+                history($pdo, $id, 'Task restored', 'The task was restored from the archive.');
+                flash('Task restored.');
+                redirect('?page=task&id=' . $id);
+            }
+            if ($action === 'delete_task') {
+                // Hard delete (#12): only allowed on archived tasks, so everything
+                // goes through the archive before it is removed permanently.
+                $id = (int)$_POST['id'];
+                $s = $pdo->prepare('SELECT created_by, archived_at FROM tasks WHERE id=?'); $s->execute([$id]);
+                if (!$t = $s->fetch()) throw new RuntimeException('Task not found.');
+                if ($t['archived_at'] === null || $t['archived_at'] === '') throw new RuntimeException('Archive the task before deleting it permanently.');
+                if (!is_admin() && (int)$t['created_by'] !== (int)user()['id']) throw new RuntimeException('Only an administrator or task creator can delete this task.');
                 $pdo->prepare('DELETE FROM tasks WHERE id=?')->execute([$id]);
                 $returnUrl = $_POST['return'] ?? '';
-                flash('Task deleted.');
-                redirect(is_string($returnUrl) && str_starts_with($returnUrl, '?page=tasks') ? $returnUrl : '?');
+                flash('Task deleted permanently.');
+                redirect(is_string($returnUrl) && (str_starts_with($returnUrl, '?page=tasks') || str_starts_with($returnUrl, '?page=archive')) ? $returnUrl : '?page=archive');
             }
-            if ($action === 'bulk_delete_tasks') {
+            if ($action === 'bulk_archive_tasks') {
                 $ids = array_values(array_unique(array_filter(array_map('intval', (array)($_POST['task_ids'] ?? [])), fn($v) => $v > 0)));
-                if (!$ids) throw new RuntimeException('Select at least one task to delete.');
+                if (!$ids) throw new RuntimeException('Select at least one task to archive.');
                 $returnUrl = $_POST['return'] ?? '';
                 $returnUrl = is_string($returnUrl) && str_starts_with($returnUrl, '?page=tasks') ? $returnUrl : '?';
                 $check = $pdo->prepare('SELECT created_by FROM tasks WHERE id=?');
-                $del = $pdo->prepare('DELETE FROM tasks WHERE id=?');
-                $deleted = 0; $skipped = 0;
+                $archive = $pdo->prepare('UPDATE tasks SET archived_at=CURRENT_TIMESTAMP WHERE id=? AND archived_at IS NULL');
+                $archived = 0; $skipped = 0;
                 foreach ($ids as $tid) {
                     $check->execute([$tid]);
                     $creator = (int)$check->fetchColumn();
-                    if (is_admin() || $creator === (int)user()['id']) { $del->execute([$tid]); $deleted++; } else { $skipped++; }
+                    if (is_admin() || $creator === (int)user()['id']) { $archive->execute([$tid]); $archived++; } else { $skipped++; }
                 }
-                flash($deleted . ' task' . ($deleted === 1 ? '' : 's') . ' deleted.' . ($skipped ? ' ' . $skipped . ' skipped: only administrators or the task creator can delete a task.' : ''));
+                flash($archived . ' task' . ($archived === 1 ? '' : 's') . ' archived.' . ($skipped ? ' ' . $skipped . ' skipped: only administrators or the task creator can archive a task.' : ''));
                 redirect($returnUrl);
             }
             if ($action === 'comment') {
@@ -331,7 +364,7 @@ function reopen_due_tasks(PDO $pdo): array {
         $cutoff = schedule_interval_sql($driver, $period);
         if ($cutoff === null) continue;
         // $cutoff only ever comes from schedule_interval_sql(), never from user input.
-        $find = $pdo->prepare('SELECT id, title, created_by, status_id FROM tasks WHERE schedule_period=? AND updated_at < ' . $cutoff);
+        $find = $pdo->prepare('SELECT id, title, created_by, status_id FROM tasks WHERE schedule_period=? AND archived_at IS NULL AND updated_at < ' . $cutoff);
         $find->execute([$period]);
         foreach ($find->fetchAll() as $task) {
             // A task that is already TODO and has no assignees would not change:
@@ -402,6 +435,18 @@ if ($page === 'updates') {
     exit;
 }
 
+// ---- Task archive (#12) -------------------------------------------------------------------
+// Archived (soft-deleted) tasks: view, restore or delete them permanently.
+if ($page==='archive') {
+    $archivedTasks=$pdo->query('SELECT t.id,t.title,t.archived_at,t.updated_at,t.created_by,s.name status_name,u.display_name creator FROM tasks t JOIN statuses s ON s.id=t.status_id JOIN users u ON u.id=t.created_by WHERE t.archived_at IS NOT NULL ORDER BY t.archived_at DESC')->fetchAll();
+    render_header('Archive',$config); ?>
+    <div class="d-flex justify-content-between align-items-center mb-3"><div><h1 class="h3 mb-0">Archive</h1><div class="muted"><?=count($archivedTasks)?> archived task<?=count($archivedTasks)===1?'':'s'?></div></div><a class="btn btn-outline-secondary" href="?">Back to tasks</a></div>
+    <p class="small muted">Archived tasks are hidden from the task list but kept here. Restore brings a task back unchanged; Delete removes it and its comments, attachments, history and links permanently.</p>
+    <div class="card"><div class="table-responsive"><table class="table table-hover align-middle mb-0"><thead><tr><th class="ps-3">Task</th><th>Status</th><th>Creator</th><th>Archived</th><th>Actions</th></tr></thead><tbody><?php foreach($archivedTasks as $t): $canDelete=is_admin()||(int)$t['created_by']===(int)user()['id']; ?><tr><td class="ps-3"><a class="fw-semibold text-decoration-none" href="?page=task&id=<?=$t['id']?>">#<?=$t['id']?> · <?=h($t['title'])?></a></td><td><span class="badge text-bg-light border"><?=h($t['status_name'])?></span></td><td><?=h($t['creator'])?></td><td class="small muted"><?=h($t['archived_at'])?></td><td class="text-nowrap"><form method="post" class="d-inline"><?=csrf_field()?><input type="hidden" name="action" value="restore_task"><input type="hidden" name="id" value="<?=$t['id']?>"><button class="btn btn-sm btn-outline-primary">Restore</button></form><?php if($canDelete): ?> <form method="post" class="d-inline" onsubmit="return confirm('Delete task #<?=$t['id']?> permanently? This cannot be undone.')"><?=csrf_field()?><input type="hidden" name="action" value="delete_task"><input type="hidden" name="id" value="<?=$t['id']?>"><input type="hidden" name="return" value="?page=archive"><button class="btn btn-sm btn-outline-danger">Delete</button></form><?php endif; ?></td></tr><?php endforeach; if(!$archivedTasks): ?><tr><td colspan="5" class="text-center muted py-4">The archive is empty.</td></tr><?php endif; ?></tbody></table></div></div>
+    <?php render_footer(); exit;
+}
+// ---- End task archive ---------------------------------------------------------------------
+
 if ($page==='admin' && is_admin()) {
     $users=$pdo->query('SELECT id,username,display_name,role,created_at FROM users ORDER BY display_name')->fetchAll();
     $statuses=$pdo->query('SELECT * FROM statuses ORDER BY sort_order,id')->fetchAll();
@@ -413,9 +458,15 @@ if ($page==='admin' && is_admin()) {
 }
 
 if ($page==='edit' || $page==='new') {
-    $id=(int)($_GET['id']??0); $task=['id'=>0,'title'=>'','description'=>'','status_id'=>0,'parent_id'=>null,'schedule_period'=>null]; $selected=[];
+    $id=(int)($_GET['id']??0); $task=['id'=>0,'title'=>'','description'=>'','status_id'=>0,'parent_id'=>null,'schedule_period'=>null,'archived_at'=>null]; $selected=[];
     if($id){$s=$pdo->prepare('SELECT * FROM tasks WHERE id=?');$s->execute([$id]);$task=$s->fetch() ?: $task;$s=$pdo->prepare('SELECT user_id FROM task_assignees WHERE task_id=?');$s->execute([$id]);$selected=array_map('intval',array_column($s->fetchAll(),'user_id'));}
-    $users=$pdo->query('SELECT id,display_name FROM users ORDER BY display_name')->fetchAll();$statuses=$pdo->query('SELECT * FROM statuses ORDER BY sort_order,id')->fetchAll();$tasks=$pdo->prepare('SELECT id,title FROM tasks WHERE id<>? ORDER BY id DESC LIMIT 200');$tasks->execute([$id]);
+    // Archived tasks (#12) must be restored before they can be edited again.
+    if(!empty($task['id']) && !empty($task['archived_at'])) {
+        render_header('Edit task',$config); ?>
+        <div class="card p-4"><h2 class="h4">This task is archived</h2><p class="muted mb-3">Archived tasks are read-only. Restore task #<?=$task['id']?> from the archive first if you want to edit it.</p><div class="d-flex gap-2"><a class="btn btn-outline-secondary" href="?page=task&id=<?=$task['id']?>">View the task</a><a class="btn btn-outline-primary" href="?page=archive">Open the archive</a><form method="post" class="d-inline"><?=csrf_field()?><input type="hidden" name="action" value="restore_task"><input type="hidden" name="id" value="<?=$task['id']?>"><button class="btn btn-primary">Restore now</button></form></div></div>
+        <?php render_footer(); exit;
+    }
+    $users=$pdo->query('SELECT id,display_name FROM users ORDER BY display_name')->fetchAll();$statuses=$pdo->query('SELECT * FROM statuses ORDER BY sort_order,id')->fetchAll();$tasks=$pdo->prepare('SELECT id,title FROM tasks WHERE id<>? AND archived_at IS NULL ORDER BY id DESC LIMIT 200');$tasks->execute([$id]);
     render_header($id?'Edit task':'New task',$config); ?>
     <div class="card p-4"><h2 class="h4"><?= $id?'Edit task':'Create task' ?></h2><form method="post"><?=csrf_field()?><input type="hidden" name="action" value="save_task"><input type="hidden" name="id" value="<?=$id?>"><div class="mb-3"><label class="form-label">Title</label><input class="form-control" name="title" maxlength="200" value="<?=h($task['title'])?>" required></div><div class="mb-3"><label class="form-label">Description</label><textarea class="form-control" name="description" rows="5"><?=h($task['description'])?></textarea></div><div class="row"><div class="col-md-4 mb-3"><label class="form-label">Status</label><select class="form-select" name="status_id" required><?php foreach($statuses as $st): ?><option value="<?=$st['id']?>" <?=$task['status_id']==$st['id']?'selected':''?>><?=h($st['name'])?></option><?php endforeach; ?></select></div><div class="col-md-4 mb-3"><label class="form-label">Parent task</label><select class="form-select" name="parent_id"><option value="">None</option><?php foreach($tasks->fetchAll() as $t): ?><option value="<?=$t['id']?>" <?=$task['parent_id']==$t['id']?'selected':''?>>#<?=$t['id']?> - <?=h($t['title'])?></option><?php endforeach; ?></select></div><div class="col-md-4 mb-3"><label class="form-label">Auto-reopen schedule</label><select class="form-select" name="schedule_period"><option value="">None</option><?php foreach(schedule_periods() as $periodKey=>$periodLabel): ?><option value="<?=h($periodKey)?>" <?=$task['schedule_period']===$periodKey?'selected':''?>><?=h($periodLabel)?></option><?php endforeach; ?></select><div class="form-text">When set, the cron job resets this task to TODO, unassigns it and comments &quot;Reopen by auto-scheduler&quot; if it has not been updated within the selected period.</div></div></div><div class="mb-3"><label class="form-label">Assignees</label><div class="border rounded p-2" style="max-height:12rem;overflow-y:auto"><?php foreach($users as $u): ?><div class="form-check"><input class="form-check-input" type="checkbox" name="assignees[]" value="<?=$u['id']?>" id="assignee-<?=$u['id']?>" <?=in_array((int)$u['id'],$selected,true)?'checked':''?>><label class="form-check-label" for="assignee-<?=$u['id']?>"><?=h($u['display_name'])?></label></div><?php endforeach; if(!$users): ?><div class="small muted">No users can be assigned yet.</div><?php endif; ?></div><div class="form-text">Tick a name to assign the task. Untick a name to unassign them - leaving everybody unticked keeps the task unassigned.</div></div><button class="btn btn-primary">Save task</button> <a class="btn btn-outline-secondary" href="?">Cancel</a></form></div>
     <?php render_footer(); exit;
@@ -429,15 +480,16 @@ if ($page==='task') {
     $s=$pdo->prepare('SELECT a.*,u.display_name FROM attachments a JOIN users u ON u.id=a.user_id WHERE a.task_id=? ORDER BY a.created_at DESC');$s->execute([$id]);$attachments=$s->fetchAll();
     $s=$pdo->prepare('SELECT h.*,u.display_name FROM task_history h JOIN users u ON u.id=h.user_id WHERE h.task_id=? ORDER BY h.created_at DESC');$s->execute([$id]);$historyRows=$s->fetchAll();
     $s=$pdo->prepare('SELECT l.*,t.title FROM task_links l JOIN tasks t ON t.id=l.related_task_id WHERE l.task_id=? ORDER BY l.link_type');$s->execute([$id]);$links=$s->fetchAll();
-    $all=$pdo->prepare('SELECT id,title FROM tasks WHERE id<>? ORDER BY id DESC LIMIT 200');$all->execute([$id]);
+    $all=$pdo->prepare('SELECT id,title FROM tasks WHERE id<>? AND archived_at IS NULL ORDER BY id DESC LIMIT 200');$all->execute([$id]);
+    $isArchived=$t['archived_at'] !== null && $t['archived_at'] !== '';
     render_header('Task #'.$id,$config); ?>
-    <div class="d-flex justify-content-between align-items-start mb-3"><div><div class="muted">Task #<?=$id?> · <?=h($t['status_name'])?></div><h1 class="h3"><?=h($t['title'])?></h1></div><a class="btn btn-primary" href="?page=edit&id=<?=$id?>">Edit task</a></div>
+    <div class="d-flex justify-content-between align-items-start mb-3"><div><div class="muted">Task #<?=$id?> · <?=h($t['status_name'])?><?php if($isArchived): ?> <span class="badge text-bg-secondary">Archived</span><?php endif; ?></div><h1 class="h3"><?=h($t['title'])?></h1></div><?php if(!$isArchived): ?><a class="btn btn-primary" href="?page=edit&id=<?=$id?>">Edit task</a><?php endif; ?></div>
     <div class="row g-4"><div class="col-lg-8"><div class="card p-4 mb-4"><div class="prewrap"><?=h($t['description'])?></div><hr><div class="small muted">Created by <?=h($t['creator'])?> · <?=h($t['created_at'])?> · Updated <?=h($t['updated_at'])?></div><div class="mt-2"><strong>Assignees:</strong> <?=h(implode(', ',array_column($assignees,'display_name')) ?: 'Unassigned')?></div><?php if(!empty($t['schedule_period'])): ?><div><strong>Schedule:</strong> <?=h(schedule_periods()[$t['schedule_period']] ?? $t['schedule_period'])?> <span class="badge text-bg-info">auto-reopen</span></div><?php endif; ?><?php if($t['parent_id']): ?><div><strong>Parent:</strong> <a href="?page=task&id=<?=$t['parent_id']?>">Task #<?=$t['parent_id']?></a></div><?php endif; ?></div>
     <div class="card p-4 mb-4" id="comments"><h2 class="h5">Comments</h2><?php foreach($comments as $c): ?><div class="border-bottom py-3"><strong><?=h($c['display_name'])?></strong> <span class="small muted"><?=h($c['created_at'])?></span><div class="prewrap mt-1"><?=h($c['body'])?></div></div><?php endforeach; ?><form method="post" class="mt-3"><?=csrf_field()?><input type="hidden" name="action" value="comment"><input type="hidden" name="task_id" value="<?=$id?>"><textarea class="form-control mb-2" name="body" rows="3" placeholder="Write a comment..." required></textarea><button class="btn btn-primary">Add comment</button></form></div>
     <div class="card p-4 mb-4"><h2 class="h5">Attachments</h2><?php foreach($attachments as $a): ?><div class="d-flex justify-content-between border-bottom py-2"><a href="?page=download&id=<?=$a['id']?>"><?=h($a['original_name'])?></a><span class="small muted"><?=h($a['display_name'])?> · <?=number_format($a['file_size']/1024,1)?> KB</span></div><?php endforeach; ?><form method="post" enctype="multipart/form-data" class="mt-3"><?=csrf_field()?><input type="hidden" name="action" value="upload"><input type="hidden" name="task_id" value="<?=$id?>"><div class="input-group"><input class="form-control" type="file" name="file" required><button class="btn btn-outline-primary">Upload</button></div><div class="form-text">Max <?=round($config['max_upload_bytes']/1024/1024)?> MB. Allowed: common images, PDF, TXT, ZIP, DOCX and XLSX.</div></form></div>
     <div class="card p-4"><h2 class="h5">History</h2><?php foreach($historyRows as $r): ?><div class="border-bottom py-2"><strong><?=h($r['event'])?></strong> <span class="small muted">by <?=h($r['display_name'])?> · <?=h($r['created_at'])?></span><?php if($r['details']): ?><div class="small"><?=h($r['details'])?></div><?php endif; ?></div><?php endforeach; ?></div></div>
     <div class="col-lg-4"><div class="card p-4"><h2 class="h5">Relationships</h2><?php foreach($links as $l): ?><div class="border-bottom py-2"><span class="badge text-bg-secondary"><?=h($l['link_type'])?></span> <a href="?page=task&id=<?=$l['related_task_id']?>">#<?=$l['related_task_id']?> <?=h($l['title'])?></a><form method="post" class="d-inline"><?=csrf_field()?><input type="hidden" name="action" value="unlink_task"><input type="hidden" name="task_id" value="<?=$id?>"><input type="hidden" name="related_task_id" value="<?=$l['related_task_id']?>"><input type="hidden" name="link_type" value="<?=h($l['link_type'])?>"><button class="btn btn-sm btn-link text-danger">remove</button></form></div><?php endforeach; ?><form method="post" class="mt-3"><?=csrf_field()?><input type="hidden" name="action" value="link_task"><input type="hidden" name="task_id" value="<?=$id?>"><label class="form-label">Link type</label><select class="form-select mb-2" name="link_type"><option value="blocks">Blocks</option><option value="depends_on">Depends on</option><option value="relates_to">Relates to</option></select><label class="form-label">Task</label><select class="form-select mb-2" name="related_task_id" required><?php foreach($all->fetchAll() as $a): ?><option value="<?=$a['id']?>">#<?=$a['id']?> - <?=h($a['title'])?></option><?php endforeach; ?></select><button class="btn btn-outline-primary w-100">Add relationship</button></form></div>
-    <div class="card p-4 mt-4"><h2 class="h5">Actions</h2><form method="post" onsubmit="return confirm('Delete this task permanently?')"><?=csrf_field()?><input type="hidden" name="action" value="delete_task"><input type="hidden" name="id" value="<?=$id?>"><button class="btn btn-outline-danger w-100">Delete task</button></form></div></div></div>
+    <div class="card p-4 mt-4"><h2 class="h5">Actions</h2><?php if($isArchived): ?><p class="small muted">This task is archived and hidden from the task list.</p><form method="post" class="mb-2"><?=csrf_field()?><input type="hidden" name="action" value="restore_task"><input type="hidden" name="id" value="<?=$id?>"><button class="btn btn-outline-primary w-100">Restore task</button></form><form method="post" onsubmit="return confirm('Delete this task permanently? This cannot be undone.')"><?=csrf_field()?><input type="hidden" name="action" value="delete_task"><input type="hidden" name="id" value="<?=$id?>"><input type="hidden" name="return" value="?"><button class="btn btn-outline-danger w-100">Delete permanently</button></form><?php else: ?><form method="post" onsubmit="return confirm('Archive this task? It will be hidden from the task list but can be restored from the archive.')"><?=csrf_field()?><input type="hidden" name="action" value="archive_task"><input type="hidden" name="id" value="<?=$id?>"><button class="btn btn-outline-danger w-100">Archive task</button></form><?php endif; ?></div></div></div>
     <?php render_footer(); exit;
 }
 
@@ -445,6 +497,7 @@ $statuses=$pdo->query('SELECT * FROM statuses ORDER BY sort_order,id')->fetchAll
 $users=$pdo->query('SELECT id,display_name FROM users ORDER BY display_name')->fetchAll();
 $parents=$pdo->query('SELECT DISTINCT t.parent_id, p.title parent_title FROM tasks t JOIN tasks p ON p.id=t.parent_id WHERE t.parent_id IS NOT NULL ORDER BY t.parent_id DESC')->fetchAll();
 $where=[];$params=[];
+$where[]='t.archived_at IS NULL'; // archived tasks (#12) are shown only in the archive
 if (!empty($_GET['assignee'])) {if ($_GET['assignee']==='unassigned') {$where[]='NOT EXISTS(SELECT 1 FROM task_assignees ax WHERE ax.task_id=t.id)';} else {$where[]='EXISTS(SELECT 1 FROM task_assignees ax WHERE ax.task_id=t.id AND ax.user_id=?)';$params[]=(int)$_GET['assignee'];}}
 if (!empty($_GET['status'])) {$where[]='t.status_id=?';$params[]=(int)$_GET['status'];}
 if (!empty($_GET['parent'])) {if ($_GET['parent']==='none') {$where[]='t.parent_id IS NULL';} else {$where[]='t.parent_id=?';$params[]=(int)$_GET['parent'];}}
@@ -462,13 +515,13 @@ $listUrl=function(array $override=[]): string {
     return '?' . http_build_query(array_merge($qs,$override));
 };
 render_header('Tasks',$config); ?>
-<div class="d-flex justify-content-between align-items-center mb-3"><div><h1 class="h3 mb-0">Tasks</h1><div class="muted"><?=$totalTasks?> task<?=$totalTasks===1?'':'s'?></div></div><a class="btn btn-primary" href="?page=new">+ New task</a></div>
+<div class="d-flex justify-content-between align-items-center mb-3"><div><h1 class="h3 mb-0">Tasks</h1><div class="muted"><?=$totalTasks?> task<?=$totalTasks===1?'':'s'?></div></div><div class="d-flex gap-2"><a class="btn btn-outline-secondary" href="?page=archive">Archive</a><a class="btn btn-primary" href="?page=new">+ New task</a></div></div>
 <div class="card p-3 mb-3"><form class="row g-2"><input type="hidden" name="page" value="tasks"><div class="col-md-3"><input class="form-control" name="q" value="<?=h($_GET['q']??'')?>" placeholder="Search tasks"></div><div class="col-md-2"><select class="form-select" name="assignee"><option value="">All assignees</option><option value="unassigned" <?=($_GET['assignee']??'')==='unassigned'?'selected':''?>>Unassigned</option><?php foreach($users as $u): ?><option value="<?=$u['id']?>" <?=($_GET['assignee']??'')==$u['id']?'selected':''?>><?=h($u['display_name'])?></option><?php endforeach; ?></select></div><div class="col-md-2"><select class="form-select" name="status"><option value="">All statuses</option><?php foreach($statuses as $st): ?><option value="<?=$st['id']?>" <?=($_GET['status']??'')==$st['id']?'selected':''?>><?=h($st['name'])?></option><?php endforeach; ?></select></div><div class="col-md-2"><select class="form-select" name="parent"><option value="">All parents</option><option value="none" <?=($_GET['parent']??'')==='none'?'selected':''?>>No parent</option><?php foreach($parents as $pt): ?><option value="<?=$pt['parent_id']?>" <?=($_GET['parent']??'')==(string)$pt['parent_id']?'selected':''?>>#<?=$pt['parent_id']?> · <?=h($pt['parent_title'])?></option><?php endforeach; ?></select></div><div class="col-md-3 d-grid"><button class="btn btn-outline-primary">Filter</button></div></form></div>
-<form method="post" id="bulk-form" onsubmit="return confirm('Delete all selected tasks permanently?')"><?=csrf_field()?><input type="hidden" name="action" value="bulk_delete_tasks"><input type="hidden" name="return" value="<?=h($listUrl(['p'=>$taskPage]))?>"><?php foreach (['q','assignee','status','parent'] as $fk): if(($_GET[$fk]??'')!==''): ?><input type="hidden" name="<?=$fk?>" value="<?=h($_GET[$fk])?>"><?php endif; endforeach; ?>
-<div class="card"><div class="table-responsive"><table class="table table-hover align-middle mb-0"><thead><tr><th class="ps-3" style="width:36px"><input type="checkbox" class="form-check-input" id="check-all" aria-label="Select all tasks on this page"></th><th>Task</th><th>Status</th><th>Assignees</th><th>Parent</th><th>Updated</th><th>Actions</th></tr></thead><tbody><?php foreach($tasks as $t): $canDelete=is_admin()||(int)$t['created_by']===(int)user()['id']; ?><tr><td class="ps-3"><input type="checkbox" class="form-check-input row-check" name="task_ids[]" value="<?=$t['id']?>" aria-label="Select task #<?=$t['id']?>"></td><td><a class="fw-semibold text-decoration-none" href="?page=task&id=<?=$t['id']?>">#<?=$t['id']?> · <?=h($t['title'])?></a></td><td><span class="badge text-bg-light border"><?=h($t['status_name'])?></span></td><td><?php $as=$pdo->prepare('SELECT u.display_name FROM task_assignees a JOIN users u ON u.id=a.user_id WHERE a.task_id=?');$as->execute([$t['id']]);echo h(implode(', ',array_column($as->fetchAll(),'display_name')) ?: '—'); ?></td><td><?php if($t['parent_id']): ?><a class="text-decoration-none" href="?page=task&id=<?=$t['parent_id']?>">#<?=$t['parent_id']?><?=($t['parent_title']??'')!==''&&$t['parent_title']!==null?' · '.h($t['parent_title']):''?></a><?php else: ?><span class="muted">—</span><?php endif; ?></td><td class="small muted"><?=h($t['updated_at'])?></td><td class="text-nowrap"><a class="btn btn-sm btn-outline-secondary" href="?page=edit&id=<?=$t['id']?>">Edit</a><?php if($canDelete): ?> <button type="submit" class="btn btn-sm btn-outline-danger" form="delete-<?=$t['id']?>">Delete</button><?php endif; ?></td></tr><?php endforeach; if(!$tasks): ?><tr><td colspan="7" class="text-center muted py-4">No tasks found.</td></tr><?php endif; ?></tbody></table></div></div>
-<div class="d-flex justify-content-between align-items-center mt-3 gap-2 flex-wrap"><?php if($totalPages>1): ?><nav aria-label="Task list pages"><ul class="pagination mb-0"><li class="page-item <?=$taskPage<=1?'disabled':''?>"><a class="page-link" href="<?=h($listUrl(['p'=>max(1,$taskPage-1)]))?>">&laquo;</a></li><?php $winStart=max(1,$taskPage-2);$winEnd=min($totalPages,$winStart+4);if($winEnd-$winStart<4)$winStart=max(1,$winEnd-4);if($winStart>1): ?><li class="page-item"><a class="page-link" href="<?=h($listUrl(['p'=>1]))?>">1</a></li><?php if($winStart>2): ?><li class="page-item disabled"><span class="page-link">&hellip;</span></li><?php endif; endif; for($i=$winStart;$i<=$winEnd;$i++): ?><li class="page-item <?=$i===$taskPage?'active':''?>"><a class="page-link" href="<?=h($listUrl(['p'=>$i]))?>"><?=$i?></a></li><?php endfor; if($winEnd<$totalPages): ?><?php if($winEnd<$totalPages-1): ?><li class="page-item disabled"><span class="page-link">&hellip;</span></li><?php endif; ?><li class="page-item"><a class="page-link" href="<?=h($listUrl(['p'=>$totalPages]))?>"><?=$totalPages?></a></li><?php endif; ?><li class="page-item <?=$taskPage>=$totalPages?'disabled':''?>"><a class="page-link" href="<?=h($listUrl(['p'=>min($totalPages,$taskPage+1)]))?>">&raquo;</a></li></ul></nav><span class="small muted">Page <?=$taskPage?> of <?=$totalPages?></span><?php endif; ?><button type="submit" class="btn btn-outline-danger" id="bulk-delete-btn" disabled>Delete selected (<span id="bulk-count">0</span>)</button></div>
+<form method="post" id="bulk-form" onsubmit="return confirm('Archive all selected tasks? They can be restored from the archive.')"><?=csrf_field()?><input type="hidden" name="action" value="bulk_archive_tasks"><input type="hidden" name="return" value="<?=h($listUrl(['p'=>$taskPage]))?>"><?php foreach (['q','assignee','status','parent'] as $fk): if(($_GET[$fk]??'')!==''): ?><input type="hidden" name="<?=$fk?>" value="<?=h($_GET[$fk])?>"><?php endif; endforeach; ?>
+<div class="card"><div class="table-responsive"><table class="table table-hover align-middle mb-0"><thead><tr><th class="ps-3" style="width:36px"><input type="checkbox" class="form-check-input" id="check-all" aria-label="Select all tasks on this page"></th><th>Task</th><th>Status</th><th>Assignees</th><th>Parent</th><th>Updated</th><th>Actions</th></tr></thead><tbody><?php foreach($tasks as $t): $canArchive=is_admin()||(int)$t['created_by']===(int)user()['id']; ?><tr><td class="ps-3"><input type="checkbox" class="form-check-input row-check" name="task_ids[]" value="<?=$t['id']?>" aria-label="Select task #<?=$t['id']?>"></td><td><a class="fw-semibold text-decoration-none" href="?page=task&id=<?=$t['id']?>">#<?=$t['id']?> · <?=h($t['title'])?></a></td><td><span class="badge text-bg-light border"><?=h($t['status_name'])?></span></td><td><?php $as=$pdo->prepare('SELECT u.display_name FROM task_assignees a JOIN users u ON u.id=a.user_id WHERE a.task_id=?');$as->execute([$t['id']]);echo h(implode(', ',array_column($as->fetchAll(),'display_name')) ?: '—'); ?></td><td><?php if($t['parent_id']): ?><a class="text-decoration-none" href="?page=task&id=<?=$t['parent_id']?>">#<?=$t['parent_id']?><?=($t['parent_title']??'')!==''&&$t['parent_title']!==null?' · '.h($t['parent_title']):''?></a><?php else: ?><span class="muted">—</span><?php endif; ?></td><td class="small muted"><?=h($t['updated_at'])?></td><td class="text-nowrap"><a class="btn btn-sm btn-outline-secondary" href="?page=edit&id=<?=$t['id']?>">Edit</a><?php if($canArchive): ?> <button type="submit" class="btn btn-sm btn-outline-danger" form="archive-<?=$t['id']?>">Archive</button><?php endif; ?></td></tr><?php endforeach; if(!$tasks): ?><tr><td colspan="7" class="text-center muted py-4">No tasks found.</td></tr><?php endif; ?></tbody></table></div></div>
+<div class="d-flex justify-content-between align-items-center mt-3 gap-2 flex-wrap"><?php if($totalPages>1): ?><nav aria-label="Task list pages"><ul class="pagination mb-0"><li class="page-item <?=$taskPage<=1?'disabled':''?>"><a class="page-link" href="<?=h($listUrl(['p'=>max(1,$taskPage-1)]))?>">&laquo;</a></li><?php $winStart=max(1,$taskPage-2);$winEnd=min($totalPages,$winStart+4);if($winEnd-$winStart<4)$winStart=max(1,$winEnd-4);if($winStart>1): ?><li class="page-item"><a class="page-link" href="<?=h($listUrl(['p'=>1]))?>">1</a></li><?php if($winStart>2): ?><li class="page-item disabled"><span class="page-link">&hellip;</span></li><?php endif; endif; for($i=$winStart;$i<=$winEnd;$i++): ?><li class="page-item <?=$i===$taskPage?'active':''?>"><a class="page-link" href="<?=h($listUrl(['p'=>$i]))?>"><?=$i?></a></li><?php endfor; if($winEnd<$totalPages): ?><?php if($winEnd<$totalPages-1): ?><li class="page-item disabled"><span class="page-link">&hellip;</span></li><?php endif; ?><li class="page-item"><a class="page-link" href="<?=h($listUrl(['p'=>$totalPages]))?>"><?=$totalPages?></a></li><?php endif; ?><li class="page-item <?=$taskPage>=$totalPages?'disabled':''?>"><a class="page-link" href="<?=h($listUrl(['p'=>min($totalPages,$taskPage+1)]))?>">&raquo;</a></li></ul></nav><span class="small muted">Page <?=$taskPage?> of <?=$totalPages?></span><?php endif; ?><button type="submit" class="btn btn-outline-danger" id="bulk-delete-btn" disabled>Archive selected (<span id="bulk-count">0</span>)</button></div>
 </form>
-<?php foreach($tasks as $t): if(is_admin()||(int)$t['created_by']===(int)user()['id']): ?><form method="post" id="delete-<?=$t['id']?>" class="d-none" onsubmit="return confirm('Delete task #<?=$t['id']?> permanently?')"><?=csrf_field()?><input type="hidden" name="action" value="delete_task"><input type="hidden" name="id" value="<?=$t['id']?>"><input type="hidden" name="return" value="<?=h($listUrl(['p'=>$taskPage]))?>"></form><?php endif; endforeach; ?>
+<?php foreach($tasks as $t): if(is_admin()||(int)$t['created_by']===(int)user()['id']): ?><form method="post" id="archive-<?=$t['id']?>" class="d-none" onsubmit="return confirm('Archive task #<?=$t['id']?>? It can be restored from the archive.')"><?=csrf_field()?><input type="hidden" name="action" value="archive_task"><input type="hidden" name="id" value="<?=$t['id']?>"><input type="hidden" name="return" value="<?=h($listUrl(['p'=>$taskPage]))?>"></form><?php endif; endforeach; ?>
 <script>
 (function(){
 var all=document.getElementById('check-all');

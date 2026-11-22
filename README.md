@@ -8,6 +8,7 @@ A lightweight multi-user task and message board for PHP 8.2+ and MySQL/MariaDB s
 - Task CRUD, multi-assignee selection, status and parent task
 - Filter by assignee/status/parent task and search by title/description
 - Paginated task list with per-task Edit/Delete shortcuts and multi-select bulk delete
+- Task archive: Delete/Archive actions soft-delete a task (hidden from lists, restorable); permanent deletion happens only from the Archive page, by an administrator or the creator
 - Comments, attachments, history and task relationships
 - Admin can add status labels and mark completion statuses
 - Per-task auto-reopen schedule: an external cron job resets overdue tasks to TODO, unassigns them and comments "Reopen by auto-scheduler"
@@ -70,6 +71,23 @@ Tasks that are already TODO **and** unassigned are left untouched (no comment sp
 on tasks nobody has picked up yet). Tasks without a schedule are never touched.
 The controller answers in plain text, e.g. `Auto-scheduler reopened 2 task(s): #12, #14.`
 or `Auto-scheduler: nothing to reopen.`, which is convenient to watch in cron logs.
+
+## Task archive
+Deleting a task never removes it right away. The **Archive** button on the task page,
+the per-row **Archive** buttons and the bulk **Archive selected** action on the task
+list move tasks to the archive instead (`tasks.archived_at` is set; the same pattern
+applies to projects once project CRUD exists). Archived tasks:
+
+- disappear from the task list, filters and counts,
+- stay viewable on their task page (read-only, with an *Archived* badge),
+- can no longer be edited or selected as a parent or relationship target until restored,
+- are skipped by the auto-scheduler cron job.
+
+The **Archive** button on the task list opens the archive, where archived tasks can
+be viewed, restored (returns the task unchanged to the list) or deleted permanently.
+Permanent deletion requires the task to be archived and is limited to an
+administrator or the task creator; it cascades comments, attachments metadata,
+history and links exactly like the old direct delete did.
 
 ## Requirements
 - PHP 8.2+ recommended

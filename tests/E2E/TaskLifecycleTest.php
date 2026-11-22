@@ -138,12 +138,20 @@ final class TaskLifecycleTest extends E2eTestCase
         $admin = $this->adminSession();
         $id = $admin->createTask('Doomed task');
 
-        $delete = $admin->post('/?page=task&id=' . $id, ['action' => 'delete_task', 'id' => (string)$id]);
-        $this->assertSame(302, $delete->status);
-        $this->assertSame('?', (string)$delete->header('location'));
+        // Deleting now archives first (#12); the permanent delete happens from the archive.
+        $archive = $admin->post('/?page=task&id=' . $id, ['action' => 'archive_task', 'id' => (string)$id]);
+        $this->assertSame(302, $archive->status);
+        $this->assertSame('?page=task&id=' . $id, (string)$archive->header('location'));
 
-        $after = $admin->get('/?');
-        $this->assertTrue($after->contains('Task deleted.'));
+        $after = $admin->get('/?page=task&id=' . $id);
+        $this->assertTrue($after->contains('Task archived. Find it under Archive.'));
+        $this->assertSame(1, (int)TestServer::pdo()->query('SELECT COUNT(*) FROM tasks')->fetchColumn());
+
+        $delete = $admin->post('/?page=task&id=' . $id, ['action' => 'delete_task', 'id' => (string)$id, 'return' => '?page=archive']);
+        $this->assertSame(302, $delete->status);
+        $this->assertSame('?page=archive', (string)$delete->header('location'));
+
+        $this->assertTrue($admin->get('/?page=archive')->contains('Task deleted permanently.'));
         $this->assertSame(0, (int)TestServer::pdo()->query('SELECT COUNT(*) FROM tasks')->fetchColumn());
         $this->assertSame(404, $admin->taskPage($id)->status);
     }
@@ -164,18 +172,27 @@ final class TaskLifecycleTest extends E2eTestCase
         ]);
         $carol = new \TaskBoard\Tests\Support\AppSession('carol', 'CarolPass12345');
 
-        $denied = $carol->post('/?page=task&id=' . $ownTask, ['action' => 'delete_task', 'id' => (string)$ownTask]);
+        // Carol cannot archive somebody else's task...
+        $deniedArchive = $carol->post('/?page=task&id=' . $ownTask, ['action' => 'archive_task', 'id' => (string)$ownTask]);
+        $this->assertSame(200, $deniedArchive->status);
+        $this->assertTrue($deniedArchive->contains('Only an administrator or task creator can archive this task.'));
+        $this->assertSame(1, (int)TestServer::pdo()->query('SELECT COUNT(*) FROM tasks WHERE id=' . $ownTask)->fetchColumn());
+
+        // ...and even an archived task of the administrator cannot be hard-deleted by her.
+        $admin->post('/?page=task&id=' . $ownTask, ['action' => 'archive_task', 'id' => (string)$ownTask]);
+        $denied = $carol->post('/?page=task&id=' . $ownTask, ['action' => 'delete_task', 'id' => (string)$ownTask, 'return' => '?page=archive']);
         $this->assertSame(200, $denied->status);
         $this->assertTrue($denied->contains('Only an administrator or task creator can delete this task.'));
         $this->assertSame(1, (int)TestServer::pdo()->query('SELECT COUNT(*) FROM tasks WHERE id=' . $ownTask)->fetchColumn());
 
-        // Give carol a task of her own: she may delete that one.
+        // Give carol a task of her own: she may archive and then delete that one.
         $carolsTask = $carol->createTask('Carols own task');
-        $allowed = $carol->post('/?page=task&id=' . $carolsTask, ['action' => 'delete_task', 'id' => (string)$carolsTask]);
+        $carol->post('/?page=task&id=' . $carolsTask, ['action' => 'archive_task', 'id' => (string)$carolsTask]);
+        $allowed = $carol->post('/?page=task&id=' . $carolsTask, ['action' => 'delete_task', 'id' => (string)$carolsTask, 'return' => '?page=archive']);
         $this->assertSame(302, $allowed->status);
         $this->assertSame(0, (int)TestServer::pdo()->query('SELECT COUNT(*) FROM tasks WHERE id=' . $carolsTask)->fetchColumn());
 
-        // Deleting the other task's id by carol stays blocked (task list still shows both after).
+        // Deleting the other task's id by carol stays blocked (the archive still shows it after).
         $this->assertSame(1, (int)TestServer::pdo()->query('SELECT COUNT(*) FROM tasks WHERE id=' . $ownTask)->fetchColumn());
     }
 

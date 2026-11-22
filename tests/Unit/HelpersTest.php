@@ -19,6 +19,7 @@ final class HelpersTest extends TestCase
             session_start();
         }
         $_SESSION = [];
+        $_GET = [];
         $_POST = [];
         $_SERVER['REQUEST_METHOD'] = 'GET';
     }
@@ -241,5 +242,117 @@ final class HelpersTest extends TestCase
         // Session values that are not a valid theme fall back to light.
         $_SESSION['user'] = ['id' => 7, 'username' => 'tester', 'display_name' => 'Tester', 'role' => 'user', 'theme' => 'something-else'];
         $this->assertSame('light', current_theme());
+    }
+
+    // --- Multi-select list filters (Task #25) --------------------------------
+
+    public function test_filter_values_returns_an_empty_array_when_the_key_is_missing(): void
+    {
+        $this->assertSame([], filter_values('assignee'));
+    }
+
+    public function test_filter_values_normalizes_a_legacy_scalar_url(): void
+    {
+        $_GET = ['assignee' => '5'];
+        $this->assertSame(['5'], filter_values('assignee'));
+    }
+
+    public function test_filter_values_reads_a_multiselect_array(): void
+    {
+        $_GET = ['assignee' => ['2', '5']];
+        $this->assertSame(['2', '5'], filter_values('assignee'));
+    }
+
+    public function test_filter_values_drops_nulls_blanks_and_duplicates_and_ignores_keys(): void
+    {
+        $_GET = ['assignee' => [3 => '2', 9 => '', 0 => '2', 1 => null, 4 => '7']];
+        $this->assertSame(['2', '7'], filter_values('assignee'));
+    }
+
+    public function test_filter_values_keeps_the_unassigned_and_none_keywords_as_strings(): void
+    {
+        $_GET = ['assignee' => ['unassigned'], 'parent' => ['none']];
+        $this->assertSame(['unassigned'], filter_values('assignee'));
+        $this->assertSame(['none'], filter_values('parent'));
+    }
+
+    public function test_filter_values_casts_scalars_to_string(): void
+    {
+        // A hand-crafted request could put any scalar type in $_GET in tests;
+        // the helper must always return strings.
+        $_GET = ['status' => ['3', 4]];
+        $this->assertSame(['3', '4'], filter_values('status'));
+    }
+
+    public function test_filter_split_separates_keywords_from_ids_in_first_seen_order(): void
+    {
+        $split = filter_split(['unassigned', '3', 'none', '1', '3'], ['unassigned', 'none']);
+        $this->assertSame(['unassigned', 'none'], $split['keywords']);
+        $this->assertSame([3, 1], $split['ids']);
+    }
+
+    public function test_filter_split_ignores_unknown_strings_zeros_and_negatives(): void
+    {
+        $split = filter_split(['DROP TABLE tasks', '0', '-2', 'x', ''], []);
+        $this->assertSame([], $split['keywords']);
+        $this->assertSame([], $split['ids']);
+    }
+
+    public function test_filter_split_does_not_apply_numeric_prefix_casting(): void
+    {
+        // PHP casts "1) OR 1=1--" to 1 with (int); the strict validation must
+        // drop such values entirely instead of silently filtering by id 1.
+        $split = filter_split(['1) OR 1=1--', '2abc', '999999999999999999999999', '4294967296'], []);
+        $this->assertSame([], $split['ids']);
+        $split = filter_split(['4294967295'], []);
+        $this->assertSame([4294967295], $split['ids'], 'The INT UNSIGNED maximum stays a valid filter id');
+    }
+
+    public function test_filter_split_without_keywords_returns_only_ids(): void
+    {
+        $split = filter_split(['2', 'unassigned'], []);
+        $this->assertSame([], $split['keywords']);
+        $this->assertSame([2], $split['ids']);
+    }
+
+    public function test_filter_split_deduplicates_keywords_and_ids(): void
+    {
+        $split = filter_split(['none', 'none', '4', '4', '04'], ['none']);
+        $this->assertSame(['none'], $split['keywords']);
+        $this->assertSame([4], $split['ids']);
+    }
+
+    public function test_tb_in_placeholders_builds_the_right_placeholder_count(): void
+    {
+        $this->assertSame('?', tb_in_placeholders(1));
+        $this->assertSame('?,?', tb_in_placeholders(2));
+        $this->assertSame('?,?,?', tb_in_placeholders(3));
+        $this->assertSame('?', tb_in_placeholders(0), 'a non-positive count stays well-formed SQL');
+    }
+
+    public function test_filter_query_value_passes_scalars_through_and_drops_blanks(): void
+    {
+        $_GET = ['q' => 'beta', 'assignee' => ''];
+        $this->assertSame('beta', filter_query_value('q'));
+        $this->assertNull(filter_query_value('assignee'));
+        $this->assertNull(filter_query_value('missing'));
+    }
+
+    public function test_filter_query_value_cleans_up_arrays_for_the_url_builder(): void
+    {
+        $_GET = ['assignee' => ['2', '', '5'], 'status' => []];
+        $this->assertSame(['2', '5'], filter_query_value('assignee'));
+        $this->assertNull(filter_query_value('status'), 'an empty array is dropped so no empty parameter is emitted');
+    }
+
+    public function test_filter_query_value_arrays_are_re_emitted_by_http_build_query(): void
+    {
+        $_GET = ['assignee' => ['2', '5']];
+        $qs = [];
+        if (($fv = filter_query_value('assignee')) !== null) $qs['assignee'] = $fv;
+        $url = http_build_query($qs);
+        $this->assertSame('assignee%5B0%5D=2&assignee%5B1%5D=5', $url);
+        parse_str($url, $back);
+        $this->assertSame(['2', '5'], $back['assignee'], 'PHP parses the URL back into the same array');
     }
 }

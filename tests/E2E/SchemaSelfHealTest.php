@@ -73,7 +73,9 @@ final class SchemaSelfHealTest extends E2eTestCase
 
         $page = $admin->get('/?page=tasks');
         $this->assertSame(200, $page->status);
-        $this->assertTrue($page->contains('All projects'), 'The project filter must be back after the self-heal.');
+        // #25 replaced the placeholder option with a labeled multi-select, so
+        // the project filter is now rendered as id="filter-project".
+        $this->assertTrue($page->contains('id="filter-project"'), 'The project filter must be back after the self-heal.');
 
         $response = $admin->post('/?page=project_new', [
             'action' => 'save_project',
@@ -95,7 +97,9 @@ final class SchemaSelfHealTest extends E2eTestCase
         $admin = $this->adminSession();
         $page = $admin->get('/?page=tasks');
         $this->assertSame(200, $page->status);
-        $this->assertTrue($page->contains('All projects'));
+        // #25 replaced the placeholder option with a labeled multi-select, so
+        // the project filter is now rendered as id="filter-project".
+        $this->assertTrue($page->contains('id="filter-project"'));
 
         $pdo = TestServer::pdo();
         if ($pdo->getAttribute(PDO::ATTR_DRIVER_NAME) === 'mysql') {

@@ -750,17 +750,19 @@ if ($page==='projects') {
 }
 
 if ($page==='templates') {
-    $typeFilter = $_GET['type'] ?? '';
-    if (!in_array($typeFilter, ['task','project'], true)) $typeFilter = '';
-    if ($typeFilter !== '') {
-        $s = $pdo->prepare('SELECT t.*,u.display_name creator FROM templates t JOIN users u ON u.id=t.created_by WHERE t.type=? ORDER BY t.name'); $s->execute([$typeFilter]);
+    // Multi-select filter (#25): the type dropdown submits type[] as an array,
+    // legacy scalar ?type=task links still work through filter_values().
+    // Values outside the two real template types are ignored.
+    $typeFilter=array_values(array_intersect(filter_values('type'),['task','project']));
+    if ($typeFilter) {
+        $s = $pdo->prepare('SELECT t.*,u.display_name creator FROM templates t JOIN users u ON u.id=t.created_by WHERE t.type IN ('.tb_in_placeholders(count($typeFilter)).') ORDER BY t.type,t.name'); $s->execute($typeFilter);
     } else {
         $s = $pdo->query('SELECT t.*,u.display_name creator FROM templates t JOIN users u ON u.id=t.created_by ORDER BY t.type,t.name');
     }
     $templates = $s->fetchAll();
     render_header('Templates',$config,$error); ?>
     <div class="d-flex justify-content-between align-items-center mb-3"><div><h1 class="h3 mb-0">Templates</h1><div class="muted"><?=count($templates)?> template<?=count($templates)===1?'':'s'?></div></div><a class="btn btn-primary" href="?page=template_new">+ New template</a></div>
-    <div class="card p-3 mb-3"><form class="row g-2"><input type="hidden" name="page" value="templates"><div class="col-md-3"><select class="form-select" name="type"><option value="">All types</option><option value="task" <?=$typeFilter==='task'?'selected':''?>>Task templates</option><option value="project" <?=$typeFilter==='project'?'selected':''?>>Project templates</option></select></div><div class="col-md-3 d-grid"><button class="btn btn-outline-primary">Filter</button></div></form></div>
+    <div class="card p-3 mb-3"><form class="row g-2"><input type="hidden" name="page" value="templates"><div class="col-md-3"><label class="form-label small muted mb-1">Template types</label><select class="form-select" name="type[]" multiple size="2" aria-label="Filter by template types"><option value="task" <?=in_array('task',$typeFilter,true)?'selected':''?>>Task templates</option><option value="project" <?=in_array('project',$typeFilter,true)?'selected':''?>>Project templates</option></select><div class="form-text">Hold Ctrl/Cmd to select several.</div></div><div class="col-md-3 d-grid align-self-end"><button class="btn btn-outline-primary">Filter</button></div></form></div>
     <div class="card"><div class="table-responsive"><table class="table table-hover align-middle mb-0"><thead><tr><th>Name</th><th>Type</th><th>Description</th><th>Updated</th><th>Actions</th></tr></thead><tbody><?php foreach($templates as $tp): $canDelete=is_admin()||(int)$tp['created_by']===(int)user()['id']; $desc=(string)$tp['description']; $short=preg_replace('/^(.{0,140}).*$/su','$1',$desc); ?><tr><td><a class="fw-semibold text-decoration-none" href="?page=template_edit&id=<?=$tp['id']?>"><?=h($tp['name'])?></a></td><td><span class="badge text-bg-light border"><?=h($tp['type'])?></span></td><td class="small muted" style="max-width:32rem"><?=h($short)?><?=strlen($desc)>strlen($short)?'&hellip;':''?></td><td class="small muted"><?=h($tp['updated_at'])?></td><td class="text-nowrap"><a class="btn btn-sm btn-outline-secondary" href="?page=template_edit&id=<?=$tp['id']?>">Edit</a><?php if($canDelete): ?> <form method="post" class="d-inline" onsubmit="return confirm('Delete this template permanently?')"><?=csrf_field()?><input type="hidden" name="action" value="delete_template"><input type="hidden" name="id" value="<?=$tp['id']?>"><button class="btn btn-sm btn-outline-danger">Delete</button></form><?php endif; ?></td></tr><?php endforeach; if(!$templates): ?><tr><td colspan="5" class="text-center muted py-4">No templates found.</td></tr><?php endif; ?></tbody></table></div></div>
     <?php render_footer(); exit;
 }
@@ -777,12 +779,42 @@ $statuses=all_statuses($pdo);
 $users=user_options($pdo);
 $parents=$pdo->query('SELECT DISTINCT t.parent_id, p.title parent_title FROM tasks t JOIN tasks p ON p.id=t.parent_id WHERE t.parent_id IS NOT NULL ORDER BY t.parent_id DESC')->fetchAll();
 $projectOptions=$pdo->query('SELECT id,name FROM projects ORDER BY name')->fetchAll();
+// Multi-select list filters (#25): every dropdown submits its values as an
+// array (name="assignee[]" etc.). filter_values() also normalizes the legacy
+// scalar URLs (?status=1, ?assignee=unassigned) so old links and bookmarks
+// keep working. Several values inside one dropdown match any of them (OR),
+// different dropdowns combine (AND); unknown values are ignored, and every
+// id reaches the query as a bound parameter, so URLs cannot inject SQL.
 $where=[];$params=[];
 $where[]='t.archived_at IS NULL'; // archived tasks (#12) are shown only in the archive
-if (!empty($_GET['assignee'])) {if ($_GET['assignee']==='unassigned') {$where[]='NOT EXISTS(SELECT 1 FROM task_assignees ax WHERE ax.task_id=t.id)';} else {$where[]='EXISTS(SELECT 1 FROM task_assignees ax WHERE ax.task_id=t.id AND ax.user_id=?)';$params[]=(int)$_GET['assignee'];}}
-if (!empty($_GET['status'])) {$where[]='t.status_id=?';$params[]=(int)$_GET['status'];}
-if (!empty($_GET['parent'])) {if ($_GET['parent']==='none') {$where[]='t.parent_id IS NULL';} else {$where[]='t.parent_id=?';$params[]=(int)$_GET['parent'];}}
-if (!empty($_GET['project'])) {$where[]='t.project_id=?';$params[]=(int)$_GET['project'];}
+$fAssignees=filter_values('assignee');
+$assigneeFilter=filter_split($fAssignees,['unassigned']);
+if ($assigneeFilter['keywords'] || $assigneeFilter['ids']) {
+    $assigneeConds=[];
+    if ($assigneeFilter['keywords']) $assigneeConds[]='NOT EXISTS(SELECT 1 FROM task_assignees ax WHERE ax.task_id=t.id)';
+    if ($assigneeFilter['ids']) {
+        $assigneeConds[]='EXISTS(SELECT 1 FROM task_assignees ax WHERE ax.task_id=t.id AND ax.user_id IN ('.tb_in_placeholders(count($assigneeFilter['ids'])).'))';
+        array_push($params,...$assigneeFilter['ids']);
+    }
+    $where[]='('.implode(' OR ',$assigneeConds).')';
+}
+$fStatuses=filter_values('status');
+$statusIds=filter_split($fStatuses,[])['ids'];
+if ($statusIds) {$where[]='t.status_id IN ('.tb_in_placeholders(count($statusIds)).')';array_push($params,...$statusIds);}
+$fParents=filter_values('parent');
+$parentFilter=filter_split($fParents,['none']);
+if ($parentFilter['keywords'] || $parentFilter['ids']) {
+    $parentConds=[];
+    if ($parentFilter['keywords']) $parentConds[]='t.parent_id IS NULL';
+    if ($parentFilter['ids']) {
+        $parentConds[]='t.parent_id IN ('.tb_in_placeholders(count($parentFilter['ids'])).')';
+        array_push($params,...$parentFilter['ids']);
+    }
+    $where[]='('.implode(' OR ',$parentConds).')';
+}
+$fProjects=filter_values('project');
+$projectIds=filter_split($fProjects,[])['ids'];
+if ($projectIds) {$where[]='t.project_id IN ('.tb_in_placeholders(count($projectIds)).')';array_push($params,...$projectIds);}
 if (!empty($_GET['q'])) {$tbTerm=str_replace(['|','%','_'],['||','|%','|_'],(string)$_GET['q']);$where[]="(t.title LIKE ? ESCAPE '|' OR t.description LIKE ? ESCAPE '|')";$params[]='%'.$tbTerm.'%';$params[]='%'.$tbTerm.'%';}
 $perPage=20;
 $taskPage=max(1,(int)($_GET['p']??1));
@@ -806,13 +838,25 @@ $s=$pdo->prepare($sql);$s->execute($params);$tasks=$s->fetchAll();
 $taskAssigneeNames=task_assignee_names_by_task($pdo, array_column($tasks,'id'));
 $listUrl=function(array $override=[]): string {
     $qs=['page'=>'tasks'];
-    foreach (['q','assignee','status','parent','project','sort','dir'] as $fk) {if (isset($_GET[$fk]) && $_GET[$fk]!=='' && $_GET[$fk]!==null) $qs[$fk]=(string)$_GET[$fk];}
+    // filter_query_value() passes multi-select filters through as arrays, so
+    // pagination, sort headers and bulk-action return links keep every chosen
+    // value (?assignee[]=2&assignee[]=5) instead of only the first one.
+    foreach (['q','assignee','status','parent','project','sort','dir'] as $fk) {if (($fv=filter_query_value($fk))!==null) $qs[$fk]=$fv;}
     return '?' . http_build_query(array_merge($qs,$override));
 };
+// Header badge for the project filter: resolve every selected project id to
+// its name so the badge line can show more than one (#25).
+$projectFilterNames=[];
+if ($projectIds) {
+    $pfq=$pdo->prepare('SELECT id,name FROM projects WHERE id IN ('.tb_in_placeholders(count($projectIds)).')');
+    $pfq->execute($projectIds);
+    $projectNamesById=array_column($pfq->fetchAll(),'name','id');
+    foreach ($projectIds as $pid) {if (isset($projectNamesById[$pid])) $projectFilterNames[]=$projectNamesById[$pid];}
+}
 render_header('Tasks',$config,$error); ?>
-<div class="d-flex justify-content-between align-items-center mb-3"><div><h1 class="h3 mb-0">Tasks</h1><div class="muted"><?=$totalTasks?> task<?=$totalTasks===1?'':'s'?></div><?php if(($_GET['project']??'')!==''): $pfq=$pdo->prepare('SELECT name FROM projects WHERE id=?');$pfq->execute([(int)$_GET['project']]);$projectFilterName=$pfq->fetchColumn(); ?><?php if($projectFilterName!==false): ?><div class="mt-1"><span class="badge text-bg-info">Project: <?=h($projectFilterName)?></span> <a class="small" href="<?=h($listUrl(['project'=>null]))?>">Show all tasks</a></div><?php endif; endif; ?></div><div class="d-flex gap-2"><a class="btn btn-outline-secondary" href="?page=archive">Archive</a><a class="btn btn-primary" href="?page=new">+ New task</a></div></div>
-<div class="card p-3 mb-3"><form class="row g-2"><input type="hidden" name="page" value="tasks"><div class="col-md-2"><input class="form-control" name="q" value="<?=h($_GET['q']??'')?>" placeholder="Search tasks"></div><div class="col-md-2"><select class="form-select" name="assignee"><option value="">All assignees</option><option value="unassigned" <?=($_GET['assignee']??'')==='unassigned'?'selected':''?>>Unassigned</option><?php foreach($users as $u): ?><option value="<?=$u['id']?>" <?=($_GET['assignee']??'')==$u['id']?'selected':''?>><?=h($u['display_name'])?></option><?php endforeach; ?></select></div><div class="col-md-2"><select class="form-select" name="status"><option value="">All statuses</option><?php foreach($statuses as $st): ?><option value="<?=$st['id']?>" <?=($_GET['status']??'')==$st['id']?'selected':''?>><?=h($st['name'])?></option><?php endforeach; ?></select></div><div class="col-md-2"><select class="form-select" name="parent"><option value="">All parents</option><option value="none" <?=($_GET['parent']??'')==='none'?'selected':''?>>No parent</option><?php foreach($parents as $pt): ?><option value="<?=$pt['parent_id']?>" <?=($_GET['parent']??'')==(string)$pt['parent_id']?'selected':''?>>#<?=$pt['parent_id']?> · <?=h($pt['parent_title'])?></option><?php endforeach; ?></select></div><div class="col-md-2"><select class="form-select" name="project"><option value="">All projects</option><?php foreach($projectOptions as $po): ?><option value="<?=$po['id']?>" <?=($_GET['project']??'')==(string)$po['id']?'selected':''?>>#<?=$po['id']?> · <?=h($po['name'])?></option><?php endforeach; ?></select></div><div class="col-md-2 d-grid"><button class="btn btn-outline-primary">Filter</button></div></form></div>
-<form method="post" id="bulk-form" onsubmit="return confirm((event.submitter&&event.submitter.dataset.confirm)||'Apply this bulk action to all selected tasks?')"><?=csrf_field()?><input type="hidden" name="return" value="<?=h($listUrl(['p'=>$taskPage]))?>"><?php foreach (['q','assignee','status','parent','project','sort','dir'] as $fk): if(($_GET[$fk]??'')!==''): ?><input type="hidden" name="<?=$fk?>" value="<?=h($_GET[$fk])?>"><?php endif; endforeach; ?>
+<div class="d-flex justify-content-between align-items-center mb-3"><div><h1 class="h3 mb-0">Tasks</h1><div class="muted"><?=$totalTasks?> task<?=$totalTasks===1?'':'s'?></div><?php if($projectFilterNames): ?><div class="mt-1"><span class="badge text-bg-info">Project<?=count($projectFilterNames)===1?'':'s'?>: <?=h(implode(', ',$projectFilterNames))?></span> <a class="small" href="<?=h($listUrl(['project'=>null]))?>">Show all tasks</a></div><?php endif; ?></div><div class="d-flex gap-2"><a class="btn btn-outline-secondary" href="?page=archive">Archive</a><a class="btn btn-primary" href="?page=new">+ New task</a></div></div>
+<div class="card p-3 mb-3"><form class="row g-2 align-items-end"><input type="hidden" name="page" value="tasks"><div class="col-md-2"><input class="form-control" name="q" value="<?=h($_GET['q']??'')?>" placeholder="Search tasks" aria-label="Search tasks"></div><div class="col-md-2"><label class="form-label small muted mb-1" for="filter-assignee">Assignees</label><select class="form-select" id="filter-assignee" name="assignee[]" multiple size="4"><option value="unassigned" <?=in_array('unassigned',$fAssignees,true)?'selected':''?>>Unassigned</option><?php foreach($users as $u): ?><option value="<?=$u['id']?>" <?=in_array((string)$u['id'],$fAssignees,true)?'selected':''?>><?=h($u['display_name'])?></option><?php endforeach; if(!$users): ?><option value="" disabled>No users yet</option><?php endif; ?></select></div><div class="col-md-2"><label class="form-label small muted mb-1" for="filter-status">Statuses</label><select class="form-select" id="filter-status" name="status[]" multiple size="4"><?php foreach($statuses as $st): ?><option value="<?=$st['id']?>" <?=in_array((string)$st['id'],$fStatuses,true)?'selected':''?>><?=h($st['name'])?></option><?php endforeach; ?></select></div><div class="col-md-2"><label class="form-label small muted mb-1" for="filter-parent">Parents</label><select class="form-select" id="filter-parent" name="parent[]" multiple size="4"><option value="none" <?=in_array('none',$fParents,true)?'selected':''?>>No parent</option><?php foreach($parents as $pt): ?><option value="<?=$pt['parent_id']?>" <?=in_array((string)$pt['parent_id'],$fParents,true)?'selected':''?>>#<?=$pt['parent_id']?> · <?=h($pt['parent_title'])?></option><?php endforeach; ?></select></div><div class="col-md-2"><label class="form-label small muted mb-1" for="filter-project">Projects</label><select class="form-select" id="filter-project" name="project[]" multiple size="4"><?php foreach($projectOptions as $po): ?><option value="<?=$po['id']?>" <?=in_array((string)$po['id'],$fProjects,true)?'selected':''?>>#<?=$po['id']?> · <?=h($po['name'])?></option><?php endforeach; ?></select></div><div class="col-md-2 d-grid"><button class="btn btn-outline-primary">Filter</button></div><div class="col-12"><div class="form-text mb-0">Hold Ctrl/Cmd to pick several values in a dropdown; an empty dropdown filters nothing. Values inside one dropdown match any of them, different dropdowns combine.</div></div></form></div>
+<form method="post" id="bulk-form" onsubmit="return confirm((event.submitter&&event.submitter.dataset.confirm)||'Apply this bulk action to all selected tasks?')"><?=csrf_field()?><input type="hidden" name="return" value="<?=h($listUrl(['p'=>$taskPage]))?>"><?php foreach (['q','assignee','status','parent','project','sort','dir'] as $fk): foreach (filter_values($fk) as $fv): ?><input type="hidden" name="<?=$fk?>[]" value="<?=h($fv)?>"><?php endforeach; endforeach; ?>
 <div class="card"><div class="table-responsive"><table class="table table-hover align-middle mb-0"><thead><tr><th class="ps-3" style="width:36px"><input type="checkbox" class="form-check-input" id="check-all" aria-label="Select all tasks on this page"></th><?=sort_header('Task','id',$sort,$listUrl(sort_toggle('id',$sort)))?><?=sort_header('Status','status',$sort,$listUrl(sort_toggle('status',$sort)))?><?=sort_header('Assignees','assignees',$sort,$listUrl(sort_toggle('assignees',$sort)))?><?=sort_header('Parent','parent',$sort,$listUrl(sort_toggle('parent',$sort)))?><?=sort_header('Updated','updated',$sort,$listUrl(sort_toggle('updated',$sort)))?><th>Actions</th></tr></thead><tbody><?php foreach($tasks as $t): $canArchive=is_admin()||(int)$t['created_by']===(int)user()['id']; ?><tr><td class="ps-3"><input type="checkbox" class="form-check-input row-check" name="task_ids[]" value="<?=$t['id']?>" aria-label="Select task #<?=$t['id']?>"></td><td><a class="fw-semibold text-decoration-none" href="?page=task&id=<?=$t['id']?>">#<?=$t['id']?> · <?=h($t['title'])?></a></td><td><span class="badge text-bg-light border"><?=h($t['status_name'])?></span></td><td><?php echo h(implode(', ', $taskAssigneeNames[(int)$t['id']] ?? []) ?: '—'); ?></td><td><?php if($t['parent_id']): ?><a class="text-decoration-none" href="?page=task&id=<?=$t['parent_id']?>">#<?=$t['parent_id']?><?=($t['parent_title']??'')!==''&&$t['parent_title']!==null?' · '.h($t['parent_title']):''?></a><?php else: ?><span class="muted">—</span><?php endif; ?></td><td class="small muted"><?=h($t['updated_at'])?></td><td class="text-nowrap"><a class="btn btn-sm btn-outline-secondary" href="?page=edit&id=<?=$t['id']?>">Edit</a><?php if($canArchive): ?> <button type="submit" class="btn btn-sm btn-outline-danger" form="archive-<?=$t['id']?>">Archive</button><?php endif; ?></td></tr><?php endforeach; if(!$tasks): ?><tr><td colspan="7" class="text-center muted py-4">No tasks found.</td></tr><?php endif; ?></tbody></table></div></div>
 <div class="d-flex justify-content-between align-items-center mt-3 gap-2 flex-wrap"><?php if($totalPages>1): ?><nav aria-label="Task list pages"><ul class="pagination mb-0"><li class="page-item <?=$taskPage<=1?'disabled':''?>"><a class="page-link" href="<?=h($listUrl(['p'=>max(1,$taskPage-1)]))?>">&laquo;</a></li><?php $winStart=max(1,$taskPage-2);$winEnd=min($totalPages,$winStart+4);if($winEnd-$winStart<4)$winStart=max(1,$winEnd-4);if($winStart>1): ?><li class="page-item"><a class="page-link" href="<?=h($listUrl(['p'=>1]))?>">1</a></li><?php if($winStart>2): ?><li class="page-item disabled"><span class="page-link">&hellip;</span></li><?php endif; endif; for($i=$winStart;$i<=$winEnd;$i++): ?><li class="page-item <?=$i===$taskPage?'active':''?>"><a class="page-link" href="<?=h($listUrl(['p'=>$i]))?>"><?=$i?></a></li><?php endfor; if($winEnd<$totalPages): ?><?php if($winEnd<$totalPages-1): ?><li class="page-item disabled"><span class="page-link">&hellip;</span></li><?php endif; ?><li class="page-item"><a class="page-link" href="<?=h($listUrl(['p'=>$totalPages]))?>"><?=$totalPages?></a></li><?php endif; ?><li class="page-item <?=$taskPage>=$totalPages?'disabled':''?>"><a class="page-link" href="<?=h($listUrl(['p'=>min($totalPages,$taskPage+1)]))?>">&raquo;</a></li></ul></nav><span class="small muted">Page <?=$taskPage?> of <?=$totalPages?></span><?php endif; ?><div class="d-flex align-items-center gap-2 flex-wrap ms-auto"><select class="form-select" name="project_id" id="bulk-move-project" aria-label="Target project for the selected tasks"><option value="">Choose project&hellip;</option><?php foreach($projectOptions as $po): ?><option value="<?=$po['id']?>">#<?=$po['id']?> &middot; <?=h($po['name'])?></option><?php endforeach; ?></select><button type="submit" class="btn btn-outline-primary" name="action" value="bulk_move_tasks" id="bulk-move-btn" disabled data-confirm="Move all selected tasks to the chosen project?">Move to project</button><button type="submit" class="btn btn-outline-danger" name="action" value="bulk_archive_tasks" id="bulk-delete-btn" disabled data-confirm="Archive all selected tasks? They can be restored from the archive.">Archive selected (<span id="bulk-count">0</span>)</button></div></div>
 </form>

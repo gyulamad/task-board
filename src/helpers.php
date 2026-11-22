@@ -275,6 +275,107 @@ function sort_header(string $label, string $key, array $current, string $url): s
     return '<th' . $ariaSort . '><a class="text-decoration-none" href="' . h($url) . '" title="Order by ' . h($label) . '" aria-label="Order by ' . h($label) . ', currently ' . ($isActive ? $current['dir'] : 'unsorted') . ', activate to sort ' . $nextDir . '">' . h($label) . $arrow . '</a></th>';
 }
 
+// --- Multi-select list filters (Task #25) -----------------------------------
+//
+// The CRUD list pages (Tasks, Templates) filter their rows through dropdowns.
+// Since #25 those dropdowns accept several values at once: the form fields
+// submit arrays (?assignee[]=2&assignee[]=5). These helpers normalize filter
+// input, keep it safe (ids are cast, keywords are matched exactly, everything
+// else is ignored) and preserve multi-value filters across the generated
+// list URLs (pagination, sort headers, bulk-action return links).
+
+/**
+ * Reads one list-filter query parameter from $_GET and normalizes it to a
+ * clean array of scalar strings, regardless of how it arrived:
+ *  - missing or empty                        -> []
+ *  - a scalar ("?assignee=5")                -> ['5']      (legacy links)
+ *  - an array ("?assignee[]=5&assignee[]=7") -> ['5','7']  (multi-select form)
+ * Nulls, empty strings and duplicates are dropped and array keys are ignored,
+ * so "?assignee[]=5" and "?assignee[0]=5" behave identically. The values stay
+ * strings; casting to ids or matching keywords happens in filter_split().
+ *
+ * @return string[]
+ */
+function filter_values(string $key): array {
+    $raw = $_GET[$key] ?? [];
+    if (!is_array($raw)) {
+        $raw = [$raw];
+    }
+    $values = [];
+    foreach ($raw as $value) {
+        if ($value === null) {
+            continue;
+        }
+        $value = (string)$value;
+        if ($value === '') {
+            continue;
+        }
+        $values[] = $value;
+    }
+    return array_values(array_unique($values));
+}
+
+/**
+ * Splits normalized filter values (see filter_values()) into recognized
+ * special keywords and positive integer ids, keeping first-seen order.
+ * Anything else is ignored, so a hand-crafted URL can never inject anything
+ * unexpected: every id reaches the query as a bound parameter and every
+ * keyword is compared as an exact string. Ids are validated strictly with
+ * FILTER_VALIDATE_INT (no numeric-prefix surprises like (int)"1) OR 1=1--"
+ * silently becoming 1) and capped to the INT UNSIGNED range of the id
+ * columns, so even an out-of-range value can never upset a strict MySQL.
+ *
+ * @param string[] $values   normalized filter values
+ * @param string[] $keywords special values to recognize, e.g. ['unassigned', 'none']
+ * @return array{keywords: string[], ids: int[]}
+ */
+function filter_split(array $values, array $keywords): array {
+    $keywords = array_flip($keywords);
+    $out = ['keywords' => [], 'ids' => []];
+    foreach ($values as $value) {
+        if (isset($keywords[$value])) {
+            $out['keywords'][] = $value;
+            continue;
+        }
+        $id = filter_var($value, FILTER_VALIDATE_INT);
+        if ($id !== false && $id > 0 && $id <= 4294967295) {
+            $out['ids'][] = $id;
+        }
+    }
+    $out['keywords'] = array_values(array_unique($out['keywords']));
+    $out['ids'] = array_values(array_unique($out['ids']));
+    return $out;
+}
+
+/**
+ * Builds the "?,?,?" placeholder list for an IN (...) clause. $count below 1
+ * yields a single placeholder so the generated SQL is always well-formed;
+ * callers only use the result when they actually have ids to bind.
+ */
+function tb_in_placeholders(int $count): string {
+    return implode(',', array_fill(0, max(1, $count), '?'));
+}
+
+/**
+ * Carries one filter parameter from the current request into a query string
+ * builder: scalars pass through as strings, arrays pass through as arrays so
+ * http_build_query() re-emits them as filter[0]=...&filter[1]=... (which PHP
+ * parses back into an array). Empty and blank values are dropped entirely.
+ *
+ * @return string[]|string|null
+ */
+function filter_query_value(string $key) {
+    $value = $_GET[$key] ?? null;
+    if ($value === null || $value === '') {
+        return null;
+    }
+    if (is_array($value)) {
+        $value = array_values(array_filter(array_map('strval', $value), fn($v) => $v !== ''));
+        return $value === [] ? null : $value;
+    }
+    return (string)$value;
+}
+
 // --- Theme settings (Task #11) -------------------------------------------
 
 /** Themes a user can pick from. 'light' is the original look of the board. */

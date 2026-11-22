@@ -6,7 +6,10 @@ A lightweight multi-user task and message board for PHP 8.2+ and MySQL/MariaDB s
 - Session login; password hashes using PHP `password_hash()`
 - Admin and regular user roles; admin can create users
 - Task CRUD, multi-assignee selection, status and parent task
-- Filter by assignee/status/parent task and search by title/description
+- Project CRUD with the same building blocks as tasks: name, description, status, multi-assignee selection, sortable and paginated list with bulk delete
+- Each task can belong to a project (Project dropdown on the task form); the task detail page links back to it
+- Projects menu; per-project [Tasks…] button and a Project filter on the task list that shows which project is listed
+- Filter by assignee/status/parent task/project and search by title/description
 - Paginated task list with per-task Edit/Delete shortcuts and multi-select bulk delete
 - Task archive: Delete/Archive actions soft-delete a task (hidden from lists, restorable); permanent deletion happens only from the Archive page, by an administrator or the creator
 - Comments, attachments, history and task relationships
@@ -45,6 +48,39 @@ A lightweight multi-user task and message board for PHP 8.2+ and MySQL/MariaDB s
 - Task history currently records task creation, updates, comments, attachments and relationship changes. For a detailed field-by-field audit trail, extend `save_task` to compare old and new values.
 - Admin user management currently supports creating users. Password reset and editing/deactivating users are not yet included.
 - Deleting a task cascades its comments, attachments metadata, history and links. Uploaded physical files may remain orphaned in `uploads`; periodically clean them up.
+- Deleting a project keeps its tasks; they only lose the project reference.
+- Project history, comments and attachments are not included: those features stay task-specific for now.
+
+## Upgrading an existing installation
+Newer versions can add tables and columns. The updater never touches the database, so
+apply the SQL below in phpMyAdmin once when upgrading to the version that introduces
+projects (fresh installs get it automatically from `schema.sql`):
+
+```sql
+CREATE TABLE projects (
+    id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+    name VARCHAR(200) NOT NULL,
+    description TEXT NULL,
+    status_id INT UNSIGNED NOT NULL,
+    created_by INT UNSIGNED NOT NULL,
+    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    CONSTRAINT fk_project_status FOREIGN KEY (status_id) REFERENCES statuses(id),
+    CONSTRAINT fk_project_creator FOREIGN KEY (created_by) REFERENCES users(id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE project_assignees (
+    project_id INT UNSIGNED NOT NULL,
+    user_id INT UNSIGNED NOT NULL,
+    PRIMARY KEY (project_id, user_id),
+    FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE,
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+ALTER TABLE tasks
+    ADD COLUMN project_id INT UNSIGNED NULL AFTER parent_id,
+    ADD CONSTRAINT fk_task_project FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE SET NULL;
+```
 
 ## Task scheduler (auto-reopen)
 Tasks can be scheduled to recur: when editing a task, pick a period under

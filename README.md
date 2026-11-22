@@ -10,6 +10,7 @@ A lightweight multi-user task and message board for PHP 8.2+ and MySQL/MariaDB s
 - Paginated task list with per-task Edit/Delete shortcuts and multi-select bulk delete
 - Comments, attachments, history and task relationships
 - Admin can add status labels and mark completion statuses
+- Per-task auto-reopen schedule: an external cron job resets overdue tasks to TODO, unassigns them and comments "Reopen by auto-scheduler"
 - Admin-only software updater for the latest GitHub release or a selected repository branch
 - PDO prepared statements, output escaping, CSRF tokens and upload MIME checks
 
@@ -37,10 +38,38 @@ A lightweight multi-user task and message board for PHP 8.2+ and MySQL/MariaDB s
 - The updater requires PHP's ZIP extension (`ZipArchive`), outbound HTTPS access to GitHub, and write permission for the allowlisted application files. It updates only `index.php`, `updater.php`, `src/helpers.php`, `version.json`, `schema.sql`, `README.md`, `config.example.php`, `.gitignore` and `uploads/.htaccess`; it creates missing sub-directories such as `src/` on demand and never replaces `config.php` or user-uploaded files.
 - The updater rechecks the source at install time, validates archive paths, rejects symbolic links, stages file replacements, and creates a temporary backup before writing. If a write fails, it attempts to restore files already replaced. Keep an independent backup of both files and the database before updating; temporary hosting storage may be cleared by the host.
 - The updater does not run database migrations. Review release notes and apply any required `schema.sql` changes manually after backing up the database. Do not install experimental branches on a production board.
+- The task scheduler needs the `tasks.schedule_period` column. Fresh installs get it from `schema.sql`; existing boards are upgraded automatically (an idempotent `ALTER TABLE ... ADD COLUMN` runs once on the first request after deployment, so the database user needs ALTER permission for that moment).
 - Database relationships are one-directional as entered: for example, on task A choose "blocks" and task B to mean A blocks B.
 - Task history currently records task creation, updates, comments, attachments and relationship changes. For a detailed field-by-field audit trail, extend `save_task` to compare old and new values.
 - Admin user management currently supports creating users. Password reset, editing/deactivating users and status rename/delete are not yet included.
 - Deleting a task cascades its comments, attachments metadata, history and links. Uploaded physical files may remain orphaned in `uploads`; periodically clean them up.
+
+## Task scheduler (auto-reopen)
+Tasks can be scheduled to recur: when editing a task, pick a period under
+**Auto-reopen schedule** (hourly, daily, weekly, every 2 weeks or monthly).
+
+An external trigger (cron job, web cron or similar) must call the controller URL
+periodically, for example every 5 minutes:
+
+```
+https://your-domain.example/?page=cronjob
+```
+
+The controller needs no login. On every call it reopens each scheduled task that
+has not been updated for longer than its period:
+
+- status is reset to the `TODO` status (looked up by name, falling back to the first
+  non-completion status),
+- all assignees are removed,
+- the comment `Reopen by auto-scheduler` and a `Reopened by auto-scheduler` history
+  entry are recorded,
+- the task's `updated_at` is refreshed, so the next reopen can only happen after a
+  full period has passed again.
+
+Tasks that are already TODO **and** unassigned are left untouched (no comment spam
+on tasks nobody has picked up yet). Tasks without a schedule are never touched.
+The controller answers in plain text, e.g. `Auto-scheduler reopened 2 task(s): #12, #14.`
+or `Auto-scheduler: nothing to reopen.`, which is convenient to watch in cron logs.
 
 ## Requirements
 - PHP 8.2+ recommended

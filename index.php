@@ -57,6 +57,25 @@ if (user()) {
     header('Pragma: no-cache');
 }
 
+// Task scheduler (#18): make sure the schedule_period column exists on tasks.
+// Fresh installs get it from schema.sql; this idempotent check upgrades existing
+// databases in place so no manual migration is required.
+try {
+    if ($pdo->getAttribute(PDO::ATTR_DRIVER_NAME) === 'mysql') {
+        $scheduleColumn = $pdo->query("SHOW COLUMNS FROM tasks LIKE 'schedule_period'")->fetchColumn();
+        if (!$scheduleColumn) {
+            $pdo->exec("ALTER TABLE tasks ADD COLUMN schedule_period VARCHAR(20) NULL DEFAULT NULL AFTER parent_id");
+        }
+    } else {
+        $scheduleColumns = array_column($pdo->query('PRAGMA table_info(tasks)')->fetchAll(PDO::FETCH_ASSOC), 'name');
+        if (!in_array('schedule_period', $scheduleColumns, true)) {
+            $pdo->exec('ALTER TABLE tasks ADD COLUMN schedule_period TEXT NULL DEFAULT NULL');
+        }
+    }
+} catch (Throwable $e) {
+    // Ignore: the cron endpoint reports a clear error if the column is still missing.
+}
+
 if (empty($_SESSION['csrf'])) $_SESSION['csrf'] = bin2hex(random_bytes(32));
 verify_csrf();
 
@@ -154,6 +173,9 @@ if (user()) {
                 $description = trim($_POST['description'] ?? '');
                 $statusId = (int)($_POST['status_id'] ?? 0);
                 $parentId = (int)($_POST['parent_id'] ?? 0) ?: null;
+                $schedulePeriod = trim((string)($_POST['schedule_period'] ?? ''));
+                if ($schedulePeriod === '') $schedulePeriod = null;
+                elseif (!array_key_exists($schedulePeriod, schedule_periods())) throw new RuntimeException('Invalid schedule period.');
                 if ($title === '') throw new RuntimeException('Task title is required.');
                 if (tb_char_length($title) > 200) throw new RuntimeException('Task title must be 200 characters or fewer.');
                 if ($parentId && ($parentId === $id || !task_exists($pdo, $parentId))) throw new RuntimeException('Invalid parent task.');
@@ -163,11 +185,11 @@ if (user()) {
                 if ($id) {
                     $s = $pdo->prepare('SELECT * FROM tasks WHERE id=?'); $s->execute([$id]); $old = $s->fetch();
                     if (!$old) throw new RuntimeException('Task not found.');
-                    $pdo->prepare('UPDATE tasks SET title=?,description=?,status_id=?,parent_id=? WHERE id=?')->execute([$title,$description,$statusId,$parentId,$id]);
+                    $pdo->prepare('UPDATE tasks SET title=?,description=?,status_id=?,parent_id=?,schedule_period=? WHERE id=?')->execute([$title,$description,$statusId,$parentId,$schedulePeriod,$id]);
                     $pdo->prepare('DELETE FROM task_assignees WHERE task_id=?')->execute([$id]);
-                    history($pdo, $id, 'Task updated', 'Title/status/description/parent or assignees may have changed.');
+                    history($pdo, $id, 'Task updated', 'Title/status/description/parent/schedule or assignees may have changed.');
                 } else {
-                    $pdo->prepare('INSERT INTO tasks(title,description,status_id,parent_id,created_by) VALUES(?,?,?,?,?)')->execute([$title,$description,$statusId,$parentId,user()['id']]);
+                    $pdo->prepare('INSERT INTO tasks(title,description,status_id,parent_id,schedule_period,created_by) VALUES(?,?,?,?,?,?)')->execute([$title,$description,$statusId,$parentId,$schedulePeriod,user()['id']]);
                     $id = (int)$pdo->lastInsertId();
                     history($pdo, $id, 'Task created', $title);
                 }
@@ -261,6 +283,93 @@ function render_header(string $title, array $config): void {
 }
 function render_footer(): void { ?></main><script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script></body></html><?php }
 
+// ---- Task scheduler (#18) -----------------------------------------------------------------
+// Tasks may opt in to a recurring schedule. An external cron job calls ?page=cronjob
+// every few minutes; whenever a scheduled task has not been updated for longer than its
+// period, it is reset to TODO, unassigned, and an automatic comment is recorded.
+
+/** Allowed schedule periods keyed by the value stored in tasks.schedule_period. */
+function schedule_periods(): array {
+    return [
+        'hourly'   => 'Hourly',
+        'daily'    => 'Daily',
+        'weekly'   => 'Weekly',
+        'biweekly' => 'Every 2 weeks',
+        'monthly'  => 'Monthly',
+    ];
+}
+
+/** SQL expression (per driver) that computes the database clock minus the period. */
+function schedule_interval_sql(string $driver, string $period): ?string {
+    switch ($period) {
+        case 'hourly':   return $driver === 'mysql' ? 'NOW() - INTERVAL 1 HOUR'  : "datetime('now','-1 hour')";
+        case 'daily':    return $driver === 'mysql' ? 'NOW() - INTERVAL 1 DAY'   : "datetime('now','-1 day')";
+        case 'weekly':   return $driver === 'mysql' ? 'NOW() - INTERVAL 1 WEEK'  : "datetime('now','-7 days')";
+        case 'biweekly': return $driver === 'mysql' ? 'NOW() - INTERVAL 2 WEEK'  : "datetime('now','-14 days')";
+        case 'monthly':  return $driver === 'mysql' ? 'NOW() - INTERVAL 1 MONTH' : "datetime('now','-1 month')";
+    }
+    return null;
+}
+
+/** The id of the status used to reopen tasks: the "TODO" status, or the first non-completion one. */
+function scheduler_todo_status_id(PDO $pdo): ?int {
+    $s = $pdo->query("SELECT id FROM statuses WHERE name='TODO' ORDER BY id LIMIT 1")->fetchColumn();
+    if (!$s) $s = $pdo->query('SELECT id FROM statuses WHERE is_done=0 ORDER BY sort_order,id LIMIT 1')->fetchColumn();
+    return $s ? (int)$s : null;
+}
+
+/**
+ * Reopens every scheduled task that was not updated within its period.
+ * Returns the ids of the reopened tasks.
+ */
+function reopen_due_tasks(PDO $pdo): array {
+    $todoId = scheduler_todo_status_id($pdo);
+    if ($todoId === null) return [];
+    $driver = $pdo->getAttribute(PDO::ATTR_DRIVER_NAME);
+    $reopened = [];
+    foreach (array_keys(schedule_periods()) as $period) {
+        $cutoff = schedule_interval_sql($driver, $period);
+        if ($cutoff === null) continue;
+        // $cutoff only ever comes from schedule_interval_sql(), never from user input.
+        $find = $pdo->prepare('SELECT id, title, created_by, status_id FROM tasks WHERE schedule_period=? AND updated_at < ' . $cutoff);
+        $find->execute([$period]);
+        foreach ($find->fetchAll() as $task) {
+            // A task that is already TODO and has no assignees would not change:
+            // leave it (and its comment stream) alone instead of pinging it every run.
+            $a = $pdo->prepare('SELECT COUNT(*) FROM task_assignees WHERE task_id=?');
+            $a->execute([(int)$task['id']]);
+            if ((int)$task['status_id'] === $todoId && (int)$a->fetchColumn() === 0) continue;
+            $pdo->prepare('UPDATE tasks SET status_id=?, updated_at=CURRENT_TIMESTAMP WHERE id=?')->execute([$todoId, (int)$task['id']]);
+            $pdo->prepare('DELETE FROM task_assignees WHERE task_id=?')->execute([(int)$task['id']]);
+            $pdo->prepare('INSERT INTO comments(task_id,user_id,body) VALUES(?,?,?)')->execute([(int)$task['id'], (int)$task['created_by'], 'Reopen by auto-scheduler']);
+            $pdo->prepare('INSERT INTO task_history(task_id,user_id,event,details) VALUES(?,?,?,?)')->execute([
+                (int)$task['id'], (int)$task['created_by'], 'Reopened by auto-scheduler',
+                'Not updated within the schedule period ('.$period.'). Status reset to TODO and assignees removed.',
+            ]);
+            $reopened[] = (int)$task['id'];
+        }
+    }
+    return $reopened;
+}
+// ---- End task scheduler -------------------------------------------------------------------
+
+// ---- Task scheduler cron controller (#18) -------------------------------------------------
+// Called by the external cron job (e.g. every 5 minutes) without a user session:
+//   GET ?page=cronjob
+// Reopens scheduled tasks that were not updated within their period. Always exits.
+if ($page==='cronjob') {
+    header('Content-Type: text/plain; charset=utf-8');
+    try {
+        $reopened = reopen_due_tasks($pdo);
+    } catch (Throwable $e) {
+        http_response_code(500);
+        exit('Auto-scheduler error: ' . $e->getMessage());
+    }
+    if (!$reopened) exit('Auto-scheduler: nothing to reopen.');
+    exit('Auto-scheduler reopened ' . count($reopened) . ' task(s): ' . implode(', ', array_map(fn(int $id): string => '#' . $id, $reopened)) . '.');
+}
+// ---- End task scheduler cron controller ---------------------------------------------------
+
 if (!user() && !in_array($page,['login','install'],true)) redirect('?page=login');
 
 if ($page==='login') {
@@ -304,11 +413,11 @@ if ($page==='admin' && is_admin()) {
 }
 
 if ($page==='edit' || $page==='new') {
-    $id=(int)($_GET['id']??0); $task=['id'=>0,'title'=>'','description'=>'','status_id'=>0,'parent_id'=>null]; $selected=[];
+    $id=(int)($_GET['id']??0); $task=['id'=>0,'title'=>'','description'=>'','status_id'=>0,'parent_id'=>null,'schedule_period'=>null]; $selected=[];
     if($id){$s=$pdo->prepare('SELECT * FROM tasks WHERE id=?');$s->execute([$id]);$task=$s->fetch() ?: $task;$s=$pdo->prepare('SELECT user_id FROM task_assignees WHERE task_id=?');$s->execute([$id]);$selected=array_map('intval',array_column($s->fetchAll(),'user_id'));}
     $users=$pdo->query('SELECT id,display_name FROM users ORDER BY display_name')->fetchAll();$statuses=$pdo->query('SELECT * FROM statuses ORDER BY sort_order,id')->fetchAll();$tasks=$pdo->prepare('SELECT id,title FROM tasks WHERE id<>? ORDER BY id DESC LIMIT 200');$tasks->execute([$id]);
     render_header($id?'Edit task':'New task',$config); ?>
-    <div class="card p-4"><h2 class="h4"><?= $id?'Edit task':'Create task' ?></h2><form method="post"><?=csrf_field()?><input type="hidden" name="action" value="save_task"><input type="hidden" name="id" value="<?=$id?>"><div class="mb-3"><label class="form-label">Title</label><input class="form-control" name="title" maxlength="200" value="<?=h($task['title'])?>" required></div><div class="mb-3"><label class="form-label">Description</label><textarea class="form-control" name="description" rows="5"><?=h($task['description'])?></textarea></div><div class="row"><div class="col-md-6 mb-3"><label class="form-label">Status</label><select class="form-select" name="status_id" required><?php foreach($statuses as $st): ?><option value="<?=$st['id']?>" <?=$task['status_id']==$st['id']?'selected':''?>><?=h($st['name'])?></option><?php endforeach; ?></select></div><div class="col-md-6 mb-3"><label class="form-label">Parent task</label><select class="form-select" name="parent_id"><option value="">None</option><?php foreach($tasks->fetchAll() as $t): ?><option value="<?=$t['id']?>" <?=$task['parent_id']==$t['id']?'selected':''?>>#<?=$t['id']?> - <?=h($t['title'])?></option><?php endforeach; ?></select></div></div><div class="mb-3"><label class="form-label">Assignees</label><div class="border rounded p-2" style="max-height:12rem;overflow-y:auto"><?php foreach($users as $u): ?><div class="form-check"><input class="form-check-input" type="checkbox" name="assignees[]" value="<?=$u['id']?>" id="assignee-<?=$u['id']?>" <?=in_array((int)$u['id'],$selected,true)?'checked':''?>><label class="form-check-label" for="assignee-<?=$u['id']?>"><?=h($u['display_name'])?></label></div><?php endforeach; if(!$users): ?><div class="small muted">No users can be assigned yet.</div><?php endif; ?></div><div class="form-text">Tick a name to assign the task. Untick a name to unassign them - leaving everybody unticked keeps the task unassigned.</div></div><button class="btn btn-primary">Save task</button> <a class="btn btn-outline-secondary" href="?">Cancel</a></form></div>
+    <div class="card p-4"><h2 class="h4"><?= $id?'Edit task':'Create task' ?></h2><form method="post"><?=csrf_field()?><input type="hidden" name="action" value="save_task"><input type="hidden" name="id" value="<?=$id?>"><div class="mb-3"><label class="form-label">Title</label><input class="form-control" name="title" maxlength="200" value="<?=h($task['title'])?>" required></div><div class="mb-3"><label class="form-label">Description</label><textarea class="form-control" name="description" rows="5"><?=h($task['description'])?></textarea></div><div class="row"><div class="col-md-4 mb-3"><label class="form-label">Status</label><select class="form-select" name="status_id" required><?php foreach($statuses as $st): ?><option value="<?=$st['id']?>" <?=$task['status_id']==$st['id']?'selected':''?>><?=h($st['name'])?></option><?php endforeach; ?></select></div><div class="col-md-4 mb-3"><label class="form-label">Parent task</label><select class="form-select" name="parent_id"><option value="">None</option><?php foreach($tasks->fetchAll() as $t): ?><option value="<?=$t['id']?>" <?=$task['parent_id']==$t['id']?'selected':''?>>#<?=$t['id']?> - <?=h($t['title'])?></option><?php endforeach; ?></select></div><div class="col-md-4 mb-3"><label class="form-label">Auto-reopen schedule</label><select class="form-select" name="schedule_period"><option value="">None</option><?php foreach(schedule_periods() as $periodKey=>$periodLabel): ?><option value="<?=h($periodKey)?>" <?=$task['schedule_period']===$periodKey?'selected':''?>><?=h($periodLabel)?></option><?php endforeach; ?></select><div class="form-text">When set, the cron job resets this task to TODO, unassigns it and comments &quot;Reopen by auto-scheduler&quot; if it has not been updated within the selected period.</div></div></div><div class="mb-3"><label class="form-label">Assignees</label><div class="border rounded p-2" style="max-height:12rem;overflow-y:auto"><?php foreach($users as $u): ?><div class="form-check"><input class="form-check-input" type="checkbox" name="assignees[]" value="<?=$u['id']?>" id="assignee-<?=$u['id']?>" <?=in_array((int)$u['id'],$selected,true)?'checked':''?>><label class="form-check-label" for="assignee-<?=$u['id']?>"><?=h($u['display_name'])?></label></div><?php endforeach; if(!$users): ?><div class="small muted">No users can be assigned yet.</div><?php endif; ?></div><div class="form-text">Tick a name to assign the task. Untick a name to unassign them - leaving everybody unticked keeps the task unassigned.</div></div><button class="btn btn-primary">Save task</button> <a class="btn btn-outline-secondary" href="?">Cancel</a></form></div>
     <?php render_footer(); exit;
 }
 
@@ -323,7 +432,7 @@ if ($page==='task') {
     $all=$pdo->prepare('SELECT id,title FROM tasks WHERE id<>? ORDER BY id DESC LIMIT 200');$all->execute([$id]);
     render_header('Task #'.$id,$config); ?>
     <div class="d-flex justify-content-between align-items-start mb-3"><div><div class="muted">Task #<?=$id?> · <?=h($t['status_name'])?></div><h1 class="h3"><?=h($t['title'])?></h1></div><a class="btn btn-primary" href="?page=edit&id=<?=$id?>">Edit task</a></div>
-    <div class="row g-4"><div class="col-lg-8"><div class="card p-4 mb-4"><div class="prewrap"><?=h($t['description'])?></div><hr><div class="small muted">Created by <?=h($t['creator'])?> · <?=h($t['created_at'])?> · Updated <?=h($t['updated_at'])?></div><div class="mt-2"><strong>Assignees:</strong> <?=h(implode(', ',array_column($assignees,'display_name')) ?: 'Unassigned')?></div><?php if($t['parent_id']): ?><div><strong>Parent:</strong> <a href="?page=task&id=<?=$t['parent_id']?>">Task #<?=$t['parent_id']?></a></div><?php endif; ?></div>
+    <div class="row g-4"><div class="col-lg-8"><div class="card p-4 mb-4"><div class="prewrap"><?=h($t['description'])?></div><hr><div class="small muted">Created by <?=h($t['creator'])?> · <?=h($t['created_at'])?> · Updated <?=h($t['updated_at'])?></div><div class="mt-2"><strong>Assignees:</strong> <?=h(implode(', ',array_column($assignees,'display_name')) ?: 'Unassigned')?></div><?php if(!empty($t['schedule_period'])): ?><div><strong>Schedule:</strong> <?=h(schedule_periods()[$t['schedule_period']] ?? $t['schedule_period'])?> <span class="badge text-bg-info">auto-reopen</span></div><?php endif; ?><?php if($t['parent_id']): ?><div><strong>Parent:</strong> <a href="?page=task&id=<?=$t['parent_id']?>">Task #<?=$t['parent_id']?></a></div><?php endif; ?></div>
     <div class="card p-4 mb-4" id="comments"><h2 class="h5">Comments</h2><?php foreach($comments as $c): ?><div class="border-bottom py-3"><strong><?=h($c['display_name'])?></strong> <span class="small muted"><?=h($c['created_at'])?></span><div class="prewrap mt-1"><?=h($c['body'])?></div></div><?php endforeach; ?><form method="post" class="mt-3"><?=csrf_field()?><input type="hidden" name="action" value="comment"><input type="hidden" name="task_id" value="<?=$id?>"><textarea class="form-control mb-2" name="body" rows="3" placeholder="Write a comment..." required></textarea><button class="btn btn-primary">Add comment</button></form></div>
     <div class="card p-4 mb-4"><h2 class="h5">Attachments</h2><?php foreach($attachments as $a): ?><div class="d-flex justify-content-between border-bottom py-2"><a href="?page=download&id=<?=$a['id']?>"><?=h($a['original_name'])?></a><span class="small muted"><?=h($a['display_name'])?> · <?=number_format($a['file_size']/1024,1)?> KB</span></div><?php endforeach; ?><form method="post" enctype="multipart/form-data" class="mt-3"><?=csrf_field()?><input type="hidden" name="action" value="upload"><input type="hidden" name="task_id" value="<?=$id?>"><div class="input-group"><input class="form-control" type="file" name="file" required><button class="btn btn-outline-primary">Upload</button></div><div class="form-text">Max <?=round($config['max_upload_bytes']/1024/1024)?> MB. Allowed: common images, PDF, TXT, ZIP, DOCX and XLSX.</div></form></div>
     <div class="card p-4"><h2 class="h5">History</h2><?php foreach($historyRows as $r): ?><div class="border-bottom py-2"><strong><?=h($r['event'])?></strong> <span class="small muted">by <?=h($r['display_name'])?> · <?=h($r['created_at'])?></span><?php if($r['details']): ?><div class="small"><?=h($r['details'])?></div><?php endif; ?></div><?php endforeach; ?></div></div>

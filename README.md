@@ -4,7 +4,7 @@ A lightweight multi-user task and message board for PHP 8.2+ and MySQL/MariaDB s
 
 ## Included
 - Session login; password hashes using PHP `password_hash()`
-- Admin and regular user roles; admin can create users
+- Admin and regular user roles; admin can create, edit (username, display name, role, password reset) and delete users
 - Task CRUD, multi-assignee selection, status and parent task
 - Project CRUD with the same building blocks as tasks: name, description, status, multi-assignee selection, sortable and paginated list with bulk delete
 - Each task can belong to a project (Project dropdown on the task form); the task detail page links back to it
@@ -46,9 +46,10 @@ A lightweight multi-user task and message board for PHP 8.2+ and MySQL/MariaDB s
 - The updater rechecks the source at install time, validates archive paths, rejects symbolic links, stages file replacements, and creates a temporary backup before writing. If a write fails, it attempts to restore files already replaced. Keep an independent backup of both files and the database before updating; temporary hosting storage may be cleared by the host.
 - The updater does not run database migrations. Review release notes and apply any required `schema.sql` changes manually after backing up the database. Do not install experimental branches on a production board.
 - The task scheduler needs the `tasks.schedule_period` column. Fresh installs get it from `schema.sql`; existing boards are upgraded automatically (an idempotent `ALTER TABLE ... ADD COLUMN` runs once on the first request after deployment, so the database user needs ALTER permission for that moment).
+- User deletion relies on `ON DELETE SET NULL` foreign keys for `tasks.created_by`, `projects.created_by`, `comments.user_id`, `attachments.user_id` and `task_history.user_id`. Fresh installs get this from `schema.sql`. Boards installed before this change must apply it manually (nullable columns + `ON DELETE SET NULL` on those five foreign keys; check the exact constraint names with `SHOW CREATE TABLE`) before deleting users.
 - Database relationships are one-directional as entered: for example, on task A choose "blocks" and task B to mean A blocks B.
 - Task history currently records task creation, updates, comments, attachments and relationship changes. For a detailed field-by-field audit trail, extend `save_task` to compare old and new values.
-- Admin user management currently supports creating users. Password reset and editing/deactivating users are not yet included.
+- Admin user management supports creating, editing (username, display name, role, password reset) and deleting users. Deleting a user keeps their tasks, comments, attachments and history; the removed account is rendered as "Deleted user", assignee links are removed. You cannot delete your own account and the last administrator cannot be demoted or deleted.
 - Deleting a task cascades its comments, attachments metadata, history and links. Uploaded physical files may remain orphaned in `uploads`; periodically clean them up.
 - Deleting a project keeps its tasks; they only lose the project reference.
 - Project history, comments and attachments are not included: those features stay task-specific for now.

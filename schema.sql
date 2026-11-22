@@ -19,11 +19,13 @@ CREATE TABLE projects (
     name VARCHAR(200) NOT NULL,
     description TEXT NULL,
     status_id INT UNSIGNED NOT NULL,
-    created_by INT UNSIGNED NOT NULL,
+    -- Nullable since user management (task #17): deleting a user keeps their
+    -- projects and clears the creator (rendered as "Deleted user").
+    created_by INT UNSIGNED NULL,
     created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
     CONSTRAINT fk_project_status FOREIGN KEY (status_id) REFERENCES statuses(id),
-    CONSTRAINT fk_project_creator FOREIGN KEY (created_by) REFERENCES users(id)
+    CONSTRAINT fk_project_creator FOREIGN KEY (created_by) REFERENCES users(id) ON DELETE SET NULL
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 CREATE TABLE project_assignees (
@@ -42,14 +44,16 @@ CREATE TABLE tasks (
     parent_id INT UNSIGNED NULL,
     schedule_period VARCHAR(20) NULL DEFAULT NULL,
     project_id INT UNSIGNED NULL,
-    created_by INT UNSIGNED NOT NULL,
+    -- Nullable since user management (task #17): deleting a user keeps their
+    -- tasks and clears the creator (rendered as "Deleted user").
+    created_by INT UNSIGNED NULL,
     created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
     archived_at TIMESTAMP NULL DEFAULT NULL,
     CONSTRAINT fk_task_status FOREIGN KEY (status_id) REFERENCES statuses(id),
     CONSTRAINT fk_task_parent FOREIGN KEY (parent_id) REFERENCES tasks(id) ON DELETE SET NULL,
     CONSTRAINT fk_task_project FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE SET NULL,
-    CONSTRAINT fk_task_creator FOREIGN KEY (created_by) REFERENCES users(id)
+    CONSTRAINT fk_task_creator FOREIGN KEY (created_by) REFERENCES users(id) ON DELETE SET NULL
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 CREATE TABLE task_assignees (
@@ -63,35 +67,41 @@ CREATE TABLE task_assignees (
 CREATE TABLE comments (
     id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
     task_id INT UNSIGNED NOT NULL,
-    user_id INT UNSIGNED NOT NULL,
+    -- Nullable since user management (task #17): deleting a user keeps their
+    -- comments and clears the author (rendered as "Deleted user").
+    user_id INT UNSIGNED NULL,
     body TEXT NOT NULL,
     created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY (task_id) REFERENCES tasks(id) ON DELETE CASCADE,
-    FOREIGN KEY (user_id) REFERENCES users(id)
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE SET NULL
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 CREATE TABLE attachments (
     id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
     task_id INT UNSIGNED NOT NULL,
-    user_id INT UNSIGNED NOT NULL,
+    -- Nullable since user management (task #17): deleting a user keeps their
+    -- attachments and clears the uploader (rendered as "Deleted user").
+    user_id INT UNSIGNED NULL,
     stored_name VARCHAR(255) NOT NULL,
     original_name VARCHAR(255) NOT NULL,
     mime_type VARCHAR(120) NOT NULL,
     file_size INT UNSIGNED NOT NULL,
     created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY (task_id) REFERENCES tasks(id) ON DELETE CASCADE,
-    FOREIGN KEY (user_id) REFERENCES users(id)
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE SET NULL
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 CREATE TABLE task_history (
     id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
     task_id INT UNSIGNED NOT NULL,
-    user_id INT UNSIGNED NOT NULL,
+    -- Nullable since user management (task #17): deleting a user keeps their
+    -- history entries and clears the actor (rendered as "Deleted user").
+    user_id INT UNSIGNED NULL,
     event VARCHAR(80) NOT NULL,
     details TEXT NULL,
     created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY (task_id) REFERENCES tasks(id) ON DELETE CASCADE,
-    FOREIGN KEY (user_id) REFERENCES users(id)
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE SET NULL
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 CREATE TABLE task_links (

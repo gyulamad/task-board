@@ -290,10 +290,30 @@ if (user()) {
             }
             if ($action === 'add_status' && is_admin()) {
                 $name=trim($_POST['name'] ?? '');
-                if ($name==='') throw new RuntimeException('Status name is required.');
-                if (tb_char_length($name) > 40) throw new RuntimeException('Status name must be 40 characters or fewer.');
+                if ($e=status_validation_error($pdo,$name)) throw new RuntimeException($e);
                 $pdo->prepare('INSERT INTO statuses(name,sort_order,is_done) VALUES(?,?,?)')->execute([$name,(int)$pdo->query('SELECT COALESCE(MAX(sort_order),0)+1 FROM statuses')->fetchColumn(),isset($_POST['is_done'])?1:0]);
                 flash('Status added.'); redirect('?page=admin');
+            }
+            if ($action === 'edit_status' && is_admin()) {
+                $id=(int)($_POST['id'] ?? 0);
+                $s=$pdo->prepare('SELECT id FROM statuses WHERE id=?'); $s->execute([$id]);
+                if (!$s->fetch()) throw new RuntimeException('Status not found.');
+                $name=trim($_POST['name'] ?? '');
+                if ($e=status_validation_error($pdo,$name,$id)) throw new RuntimeException($e);
+                $pdo->prepare('UPDATE statuses SET name=?,sort_order=?,is_done=? WHERE id=?')->execute([$name,(int)($_POST['sort_order'] ?? 0),isset($_POST['is_done'])?1:0,$id]);
+                flash('Status updated.'); redirect('?page=admin');
+            }
+            if ($action === 'delete_status' && is_admin()) {
+                $id=(int)($_POST['id'] ?? 0);
+                $s=$pdo->prepare('SELECT name FROM statuses WHERE id=?'); $s->execute([$id]);
+                $name=(string)$s->fetchColumn();
+                if ($name==='') throw new RuntimeException('Status not found.');
+                $s=$pdo->prepare('SELECT COUNT(*) FROM tasks WHERE status_id=?'); $s->execute([$id]);
+                $used=(int)$s->fetchColumn();
+                if ($used>0) throw new RuntimeException('Cannot delete \''.$name.'\': '.$used.' task'.($used===1?' still uses':'s still use').' this status.');
+                if ((int)$pdo->query('SELECT COUNT(*) FROM statuses')->fetchColumn()<=1) throw new RuntimeException('Cannot delete \''.$name.'\': at least one status must remain.');
+                $pdo->prepare('DELETE FROM statuses WHERE id=?')->execute([$id]);
+                flash('Status deleted.'); redirect('?page=admin');
             }
             if ($action === 'add_user' && is_admin()) {
                 $name=trim($_POST['username'] ?? ''); $display=trim($_POST['display_name'] ?? ''); $pass=$_POST['password'] ?? '';
@@ -304,6 +324,17 @@ if (user()) {
             }
         } catch (Throwable $e) { $error = $e->getMessage(); }
     }
+}
+
+// Returns the validation message for a status name, or null when it is usable.
+// $ignoreId lets a status keep its own name when editing (0 = adding).
+function status_validation_error(PDO $pdo, string $name, int $ignoreId = 0): ?string {
+    if ($name==='') return 'Status name is required.';
+    if (preg_match_all('/./us',$name)>40) return 'Status name must be 40 characters or fewer.';
+    $s=$pdo->prepare('SELECT id FROM statuses WHERE name=?'.($ignoreId>0?' AND id<>'.(int)$ignoreId:''));
+    $s->execute([$name]);
+    if ($s->fetchColumn()) return 'A status with this name already exists.';
+    return null;
 }
 
 function render_header(string $title, array $config): void {
@@ -453,7 +484,7 @@ if ($page==='admin' && is_admin()) {
     render_header('Administration',$config); ?>
     <div class="row g-4"><div class="col-lg-6"><div class="card p-4"><h2 class="h5">Create user</h2><form method="post"><?=csrf_field()?><input type="hidden" name="action" value="add_user"><div class="mb-2"><input class="form-control" name="username" placeholder="Username" required></div><div class="mb-2"><input class="form-control" name="display_name" placeholder="Display name" required></div><div class="mb-2"><input class="form-control" type="password" name="password" placeholder="Password (10+ characters)" minlength="10" required></div><div class="mb-3"><select class="form-select" name="role"><option value="user">User</option><option value="admin">Administrator</option></select></div><button class="btn btn-primary">Create user</button></form></div>
     <div class="card p-4 mt-4"><h2 class="h5">Users</h2><ul class="list-group"><?php foreach($users as $u): ?><li class="list-group-item d-flex justify-content-between"><?=h($u['display_name'])?> <span class="badge text-bg-secondary"><?=h($u['role'])?></span></li><?php endforeach; ?></ul></div></div>
-    <div class="col-lg-6"><div class="card p-4"><h2 class="h5">Task statuses</h2><ul class="list-group mb-3"><?php foreach($statuses as $st): ?><li class="list-group-item d-flex justify-content-between"><?=h($st['name'])?><?php if($st['is_done']): ?><span class="badge text-bg-success">Completion status</span><?php endif; ?></li><?php endforeach; ?></ul><form method="post"><?=csrf_field()?><input type="hidden" name="action" value="add_status"><div class="mb-2"><input class="form-control" name="name" placeholder="New status label" required></div><div class="form-check mb-3"><input class="form-check-input" type="checkbox" name="is_done" id="done"><label class="form-check-label" for="done">Treat as completed</label></div><button class="btn btn-primary">Add status</button></form><p class="small muted mt-3">Existing statuses cannot currently be renamed or deleted from the interface; edit the statuses table in phpMyAdmin if needed.</p></div></div></div>
+    <div class="col-lg-6"><div class="card p-4"><h2 class="h5">Task statuses</h2><p class="small muted">Rename statuses, change their display order, mark them as completion statuses or delete the ones no task uses.</p><ul class="list-group mb-3"><?php foreach($statuses as $st): ?><li class="list-group-item"><form method="post" class="row g-2 align-items-center"><?=csrf_field()?><input type="hidden" name="action" value="edit_status"><input type="hidden" name="id" value="<?=$st['id']?>"><div class="col-12 col-md-5"><label class="visually-hidden" for="status-name-<?=$st['id']?>">Status name</label><input class="form-control form-control-sm" name="name" id="status-name-<?=$st['id']?>" value="<?=h($st['name'])?>" maxlength="40" required></div><div class="col-4 col-md-2"><label class="visually-hidden" for="status-sort-<?=$st['id']?>">Sort order</label><input class="form-control form-control-sm" type="number" name="sort_order" id="status-sort-<?=$st['id']?>" value="<?=$st['sort_order']?>" title="Display order, lower numbers first"></div><div class="col-8 col-md-3 form-check ms-md-1 mb-0"><input class="form-check-input" type="checkbox" name="is_done" id="status-done-<?=$st['id']?>" <?=$st['is_done']?'checked':''?>><label class="form-check-label small" for="status-done-<?=$st['id']?>">Completed</label><?php if($st['is_done']): ?><span class="badge text-bg-success ms-1">Completion status</span><?php endif; ?></div><div class="col-12 col-md-2 d-flex gap-1 justify-content-md-end"><button class="btn btn-sm btn-outline-primary">Save</button><button type="submit" class="btn btn-sm btn-outline-danger" form="delete-status-<?=$st['id']?>">Delete</button></div></form><form method="post" id="delete-status-<?=$st['id']?>" class="d-none" onsubmit="return confirm('Delete this status?');"><?=csrf_field()?><input type="hidden" name="action" value="delete_status"><input type="hidden" name="id" value="<?=$st['id']?>"></form></li><?php endforeach; ?></ul><form method="post"><?=csrf_field()?><input type="hidden" name="action" value="add_status"><div class="mb-2"><input class="form-control" name="name" placeholder="New status label" required></div><div class="form-check mb-3"><input class="form-check-input" type="checkbox" name="is_done" id="done"><label class="form-check-label" for="done">Treat as completed</label></div><button class="btn btn-primary">Add status</button></form><p class="small muted mt-3">Statuses are shown in display order. A status that tasks still use and the last remaining status cannot be deleted.</p></div></div></div>
     <?php render_footer(); exit;
 }
 

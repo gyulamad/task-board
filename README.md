@@ -10,6 +10,7 @@ A lightweight multi-user task and message board for PHP 8.2+ and MySQL/MariaDB s
 - Paginated task list with per-task Edit/Delete shortcuts and multi-select bulk delete
 - Task archive: Delete/Archive actions soft-delete a task (hidden from lists, restorable); permanent deletion happens only from the Archive page, by an administrator or the creator
 - Comments, attachments, history and task relationships
+- Admin can add status labels and mark completion statuses; existing statuses can be renamed, reordered and deleted from the Administration page (a status still used by tasks and the last remaining status cannot be deleted)
 - Admin can add status labels and mark completion statuses
 - Per-task auto-reopen schedule: an external cron job resets overdue tasks to TODO, unassigns them and comments "Reopen by auto-scheduler"
 - Admin-only software updater for the latest GitHub release or a selected repository branch
@@ -42,7 +43,7 @@ A lightweight multi-user task and message board for PHP 8.2+ and MySQL/MariaDB s
 - The task scheduler needs the `tasks.schedule_period` column. Fresh installs get it from `schema.sql`; existing boards are upgraded automatically (an idempotent `ALTER TABLE ... ADD COLUMN` runs once on the first request after deployment, so the database user needs ALTER permission for that moment).
 - Database relationships are one-directional as entered: for example, on task A choose "blocks" and task B to mean A blocks B.
 - Task history currently records task creation, updates, comments, attachments and relationship changes. For a detailed field-by-field audit trail, extend `save_task` to compare old and new values.
-- Admin user management currently supports creating users. Password reset, editing/deactivating users and status rename/delete are not yet included.
+- Admin user management currently supports creating users. Password reset and editing/deactivating users are not yet included.
 - Deleting a task cascades its comments, attachments metadata, history and links. Uploaded physical files may remain orphaned in `uploads`; periodically clean them up.
 
 ## Task scheduler (auto-reopen)

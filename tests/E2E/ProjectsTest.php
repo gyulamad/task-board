@@ -174,6 +174,64 @@ final class ProjectsTest extends E2eTestCase
         $this->assertTrue($filtered->contains('No tasks found.'));
     }
 
+    public function test_bulk_move_moves_selected_tasks_to_a_project(): void
+    {
+        $admin = $this->adminSession();
+        $projectId = $this->createProject($admin, 'Move target');
+        $first = $admin->createTask('Move one');
+        $second = $admin->createTask('Move two');
+        $staying = $admin->createTask('Stays outside');
+
+        // The task list offers the bulk move control next to the bulk archive button.
+        $list = $admin->get('/?');
+        $this->assertTrue($list->contains('id="bulk-move-btn"'));
+        $this->assertTrue($list->contains('value="bulk_move_tasks"'));
+        $this->assertTrue($list->contains('id="bulk-move-project"'));
+        $this->assertTrue($list->contains('value="bulk_archive_tasks"'));
+
+        $response = $admin->post('/?', [
+            'action' => 'bulk_move_tasks',
+            'return' => '?',
+            'project_id' => (string)$projectId,
+            'task_ids' => [(string)$first, (string)$second],
+        ]);
+        $this->assertSame(302, $response->status);
+        $this->assertSame('?', (string)$response->header('location'));
+
+        $after = $admin->get('/?');
+        $this->assertTrue($after->contains('2 tasks moved to project Move target.'));
+
+        $moved = [];
+        foreach (TestServer::pdo()->query('SELECT id, project_id FROM tasks')->fetchAll() as $row) {
+            $moved[(int)$row['id']] = (int)$row['project_id'];
+        }
+        $this->assertSame($projectId, $moved[$first]);
+        $this->assertSame($projectId, $moved[$second]);
+        $this->assertSame(0, $moved[$staying]);
+
+        // Every moved task gets a history entry recording the move.
+        $this->assertSame(2, (int)TestServer::pdo()->query(
+            "SELECT COUNT(*) FROM task_history WHERE event='Task moved to project'"
+        )->fetchColumn());
+
+        // Clear errors instead of silent no-ops for missing selection or project.
+        $noSelection = $admin->post('/?', [
+            'action' => 'bulk_move_tasks',
+            'return' => '?',
+            'project_id' => (string)$projectId,
+            'task_ids' => [],
+        ]);
+        $this->assertTrue($noSelection->contains('Select at least one task to move.'));
+
+        $badProject = $admin->post('/?', [
+            'action' => 'bulk_move_tasks',
+            'return' => '?',
+            'project_id' => '9999',
+            'task_ids' => [(string)$first],
+        ]);
+        $this->assertTrue($badProject->contains('Choose a valid project.'));
+    }
+
     public function test_projects_list_shows_projects_with_counts_and_a_tasks_button(): void
     {
         $admin = $this->adminSession();

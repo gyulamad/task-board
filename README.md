@@ -11,7 +11,7 @@ A lightweight multi-user task and message board for PHP 8.2+ and MySQL/MariaDB s
 - Projects menu; per-project [Tasks…] button and a Project filter on the task list that shows which project is listed
 - Task and project templates (Templates CRUD); on the task create page a template selector prefills the description with the template text
 - Filter by assignee/status/parent task/project and search by title/description; the project filter also offers a "No project" option for the tasks that belong to no project (#28)
-- Paginated task list with per-task Edit/Delete shortcuts and multi-select bulk actions (archive, and move the selected tasks into a project)
+- Paginated task list with a sortable Project column (which project each task belongs to) and per-task Edit/Delete shortcuts and multi-select bulk actions (archive, and move the selected tasks into a project)
 - Task archive: Delete/Archive actions soft-delete a task (hidden from lists, restorable); permanent deletion happens only from the Archive page, by an administrator or the creator
 - Sortable task list: clicking a column name (Task, Status, Assignees, Parent, Updated) orders the list; shared helpers make it easy to reuse on other CRUD lists
 - Saved searches on the task list: a Save search button stores the current list filters under a name and the Saved searches dropdown re-opens them; the searches are per user and travel as plain URLs

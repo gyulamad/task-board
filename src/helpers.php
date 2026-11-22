@@ -226,3 +226,51 @@ function tb_login_throttle_fail(string $key): void {
 function tb_login_throttle_clear(string $key): void {
     @unlink(tb_login_throttle_file($key));
 }
+
+// Sortable list helpers, shared by every CRUD list page (Tasks today,
+// Projects and future CRUDs later). Clicking a column name reorders the
+// list; the sort column/direction travel in the ?sort= and ?dir= query
+// parameters and are validated against an allowlist, so the values can
+// never inject SQL.
+
+/**
+ * Reads the requested sort from $_GET and validates it against $columns
+ * (user-facing key => raw SQL fragment). Each fragment must contain the
+ * {dir} placeholder, which is replaced with ASC or DESC so every part of
+ * a multi-column fragment follows the chosen direction. Returns the safe
+ * state to render headers with: the chosen key, the direction, and the
+ * ORDER BY fragment. Anything unknown falls back to the given defaults.
+ */
+function sort_state(array $columns, string $defaultKey, string $defaultDir = 'asc'): array {
+    $key = (string)($_GET['sort'] ?? '');
+    if (!array_key_exists($key, $columns)) $key = $defaultKey;
+    $dir = strtolower(trim((string)($_GET['dir'] ?? '')));
+    if (!in_array($dir, ['asc', 'desc'], true)) $dir = $defaultDir;
+    return ['key' => $key, 'dir' => $dir, 'sql' => str_replace('{dir}', strtoupper($dir), $columns[$key])];
+}
+
+/**
+ * Returns the query parameter override that a column header link needs to
+ * order the list by $key: clicking an unsorted (or ascending) column sorts
+ * ascending first, clicking it again flips to descending. Merge the result
+ * into the page's own URL builder so existing filters are kept; the page
+ * number is intentionally not carried over so a new sort starts at page 1.
+ */
+function sort_toggle(string $key, array $current): array {
+    $dir = ($current['key'] === $key && $current['dir'] === 'asc') ? 'desc' : 'asc';
+    return ['sort' => $key, 'dir' => $dir];
+}
+
+/**
+ * Renders a sortable <th> header cell. $url is the fully built link the
+ * column header should point to (typically the page's list URL merged with
+ * sort_toggle()). The active column shows a direction arrow and exposes
+ * aria-sort for assistive technology.
+ */
+function sort_header(string $label, string $key, array $current, string $url): string {
+    $isActive = ($current['key'] === $key);
+    $ariaSort = $isActive ? ' aria-sort="' . ($current['dir'] === 'asc' ? 'ascending' : 'descending') . '"' : '';
+    $arrow = $isActive ? '<span aria-hidden="true"> ' . ($current['dir'] === 'asc' ? '&#9650;' : '&#9660;') . '</span>' : '';
+    $nextDir = (!$isActive || $current['dir'] === 'asc') ? 'descending' : 'ascending';
+    return '<th' . $ariaSort . '><a class="text-decoration-none" href="' . h($url) . '" title="Order by ' . h($label) . '" aria-label="Order by ' . h($label) . ', currently ' . ($isActive ? $current['dir'] : 'unsorted') . ', activate to sort ' . $nextDir . '">' . h($label) . $arrow . '</a></th>';
+}

@@ -138,4 +138,80 @@ final class HelpersTest extends TestCase
         $this->assertSame([], $_SESSION);
         $this->addToAssertionCount(1); // session_destroy() ran without errors
     }
+
+    /** @return array<string, string> */
+    private function sortColumns(): array
+    {
+        return ['id' => 't.id {dir}', 'title' => 't.title {dir}', 'status' => 's.name {dir}', 'updated' => 't.updated_at {dir}'];
+    }
+
+    public function test_sort_state_defaults_without_query_parameters(): void
+    {
+        $_GET = [];
+        $sort = sort_state($this->sortColumns(), 'updated', 'desc');
+        $this->assertSame(['key' => 'updated', 'dir' => 'desc', 'sql' => 't.updated_at DESC'], $sort);
+    }
+
+    public function test_sort_state_reads_sort_and_dir_from_the_query(): void
+    {
+        $_GET = ['sort' => 'title', 'dir' => 'asc'];
+        $sort = sort_state($this->sortColumns(), 'updated', 'desc');
+        $this->assertSame(['key' => 'title', 'dir' => 'asc', 'sql' => 't.title ASC'], $sort);
+    }
+
+    public function test_sort_state_rejects_unknown_columns_and_directions(): void
+    {
+        $_GET = ['sort' => 't.id; DROP TABLE tasks', 'dir' => 'DESC; DROP TABLE tasks'];
+        $sort = sort_state($this->sortColumns(), 'updated', 'desc');
+        $this->assertSame('updated', $sort['key']);
+        $this->assertSame('desc', $sort['dir']);
+        $this->assertSame('t.updated_at DESC', $sort['sql']);
+    }
+
+    public function test_sort_state_accepts_uppercase_direction_but_rejects_unknown_column_casing(): void
+    {
+        $_GET = ['sort' => 'STATUS', 'dir' => 'DESC'];
+        $sort = sort_state($this->sortColumns(), 'updated', 'desc');
+        $this->assertSame('updated', $sort['key'], 'column keys are matched case-sensitively against the allowlist');
+        $this->assertSame('desc', $sort['dir'], 'directions are accepted case-insensitively');
+        $this->assertSame('t.updated_at DESC', $sort['sql']);
+    }
+
+    public function test_sort_toggle_sorts_ascending_first_then_flips(): void
+    {
+        $current = ['key' => 'updated', 'dir' => 'desc'];
+        $this->assertSame(['sort' => 'id', 'dir' => 'asc'], sort_toggle('id', $current));
+        $current = ['key' => 'id', 'dir' => 'asc'];
+        $this->assertSame(['sort' => 'id', 'dir' => 'desc'], sort_toggle('id', $current));
+        $current = ['key' => 'id', 'dir' => 'desc'];
+        $this->assertSame(['sort' => 'id', 'dir' => 'asc'], sort_toggle('id', $current));
+    }
+
+    public function test_sort_header_renders_link_arrow_and_aria_sort(): void
+    {
+        $current = ['key' => 'id', 'dir' => 'asc'];
+        $html = sort_header('Task', 'id', $current, '?page=tasks&sort=id&dir=desc');
+        $this->assertStringStartsWith('<th aria-sort="ascending">', $html);
+        $this->assertStringContainsString('href="?page=tasks&amp;sort=id&amp;dir=desc"', $html);
+        $this->assertStringContainsString('aria-label="Order by Task, currently asc, activate to sort descending"', $html);
+        $this->assertStringContainsString('&#9650;', $html);
+    }
+
+    public function test_sort_header_for_an_inactive_column_has_no_arrow_or_aria_sort(): void
+    {
+        $current = ['key' => 'id', 'dir' => 'asc'];
+        $html = sort_header('Status', 'status', $current, '?page=tasks&sort=status&dir=asc');
+        $this->assertTrue(str_starts_with($html, '<th><a '), 'Inactive columns render a plain th.');
+        $this->assertStringNotContainsString('aria-sort', $html);
+        $this->assertStringNotContainsString('&#9650;', $html);
+        $this->assertStringNotContainsString('&#9660;', $html);
+    }
+
+    public function test_sort_header_escapes_hostile_urls(): void
+    {
+        $current = ['key' => 'id', 'dir' => 'asc'];
+        $html = sort_header('Task', 'id', $current, '?page=tasks" onmouseover="alert(1)');
+        $this->assertStringNotContainsString('" onmouseover=', $html);
+        $this->assertStringContainsString('&quot;', $html);
+    }
 }

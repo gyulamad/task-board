@@ -13,6 +13,7 @@ A lightweight multi-user task and message board for PHP 8.2+ and MySQL/MariaDB s
 - Filter by assignee/status/parent task/project and search by title/description
 - Paginated task list with per-task Edit/Delete shortcuts and multi-select bulk delete
 - Task archive: Delete/Archive actions soft-delete a task (hidden from lists, restorable); permanent deletion happens only from the Archive page, by an administrator or the creator
+- Sortable task list: clicking a column name (Task, Status, Assignees, Parent, Updated) orders the list; shared helpers make it easy to reuse on other CRUD lists
 - Comments, attachments, history and task relationships
 - Admin can add status labels and mark completion statuses; existing statuses can be renamed, reordered and deleted from the Administration page (a status still used by tasks and the last remaining status cannot be deleted)
 - Admin can add status labels and mark completion statuses

@@ -45,6 +45,7 @@ if (!is_file(__DIR__ . '/src/helpers.php')) {
     exit('Application files are incomplete: src/helpers.php was not found on the server. Upload the full repository, including the src/ directory, and try again.');
 }
 require __DIR__ . '/src/helpers.php';
+ensure_users_theme_column($pdo);
 
 // Basic response hardening for every page (including CSRF/403 rejections).
 header('X-Content-Type-Options: nosniff');
@@ -129,7 +130,7 @@ if ($page === 'login' && $_SERVER['REQUEST_METHOD'] === 'POST') {
         if ($tbOk && is_array($u)) {
             tb_login_throttle_clear($tbIp);
             session_regenerate_id(true);
-            $_SESSION['user'] = ['id' => (int)$u['id'], 'username' => $u['username'], 'display_name' => $u['display_name'], 'role' => $u['role']];
+            $_SESSION['user'] = ['id' => (int)$u['id'], 'username' => $u['username'], 'display_name' => $u['display_name'], 'role' => $u['role'], 'theme' => normalize_theme($u['theme'] ?? null)];
             redirect('?');
         }
         tb_login_throttle_fail($tbIp);
@@ -313,6 +314,18 @@ if (user()) {
                 $pdo->prepare('INSERT INTO attachments(task_id,user_id,stored_name,original_name,mime_type,file_size) VALUES(?,?,?,?,?,?)')->execute([$id,user()['id'],$stored,basename($file['name']),$mime,$file['size']]);
                 history($pdo,$id,'Attachment added',basename($file['name'])); redirect('?page=task&id='.$id);
             }
+            if ($action === 'save_theme') {
+                $theme = $_POST['theme'] ?? '';
+                if (!in_array($theme, valid_themes(), true)) throw new RuntimeException('Invalid theme selection.');
+                // Send the visitor back to the page the switcher was used on.
+                // Only same-site relative URLs (path or query strings) are allowed.
+                $returnUrl = '?';
+                $uri = $_SERVER['REQUEST_URI'] ?? '';
+                if (is_string($uri) && $uri !== '' && $uri[0] === '/' && ($uri[1] ?? '') !== '/') $returnUrl = $uri;
+                $pdo->prepare('UPDATE users SET theme=? WHERE id=?')->execute([$theme, user()['id']]);
+                $_SESSION['user']['theme'] = $theme;
+                flash('Theme saved.'); redirect($returnUrl);
+            }
             if ($action === 'add_status' && is_admin()) {
                 $name=trim($_POST['name'] ?? '');
                 if ($e=status_validation_error($pdo,$name)) throw new RuntimeException($e);
@@ -438,10 +451,11 @@ function status_validation_error(PDO $pdo, string $name, int $ignoreId = 0): ?st
 }
 
 function render_header(string $title, array $config, string $error = ''): void {
-    ?><!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title><?=h($title)?> - <?=h($config['app_name'])?></title>
+    $theme = current_theme();
+    ?><!doctype html><html lang="en" data-bs-theme="<?=h($theme)?>"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title><?=h($title)?> - <?=h($config['app_name'])?></title>
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
-    <style>body{background:#f5f6f8}.card{border:0;box-shadow:0 1px 5px #0000000d}.muted{color:#687386}.prewrap{white-space:pre-wrap}.navbar-brand{font-weight:700}</style></head><body>
-    <nav class="navbar navbar-expand-lg navbar-dark bg-dark"><div class="container"><a class="navbar-brand" href="?"><?=h($config['app_name'])?></a><?php if(user()): ?><div class="navbar-nav ms-auto align-items-center"><a class="nav-link" href="?">Tasks</a><a class="nav-link" href="?page=projects">Projects</a><a class="nav-link" href="?page=templates">Templates</a><?php if(is_admin()): ?><a class="nav-link" href="?page=admin">Administration</a><a class="nav-link" href="?page=updates">Software updates</a><?php endif; ?><span class="navbar-text mx-2"><?=h(user()['display_name'])?></span><form method="post" action="?page=logout" class="d-inline m-0"><?=csrf_field()?><button type="submit" class="btn btn-link nav-link p-0 text-white text-decoration-none">Sign out</button></form></div><?php endif; ?></div></nav><main class="container py-4">
+    <style>body{background:#f5f6f8}.card{border:0;box-shadow:0 1px 5px #0000000d}.muted{color:#687386}.prewrap{white-space:pre-wrap}.navbar-brand{font-weight:700}html[data-bs-theme="dark"] body{background:#14181f}html[data-bs-theme="dark"] .card{box-shadow:0 1px 6px #00000059}html[data-bs-theme="dark"] .muted{color:#8b96a5}</style></head><body>
+    <nav class="navbar navbar-expand-lg navbar-dark bg-dark"><div class="container"><a class="navbar-brand" href="?"><?=h($config['app_name'])?></a><?php if(user()): ?><div class="navbar-nav ms-auto align-items-center"><a class="nav-link" href="?">Tasks</a><a class="nav-link" href="?page=projects">Projects</a><a class="nav-link" href="?page=templates">Templates</a><?php if(is_admin()): ?><a class="nav-link" href="?page=admin">Administration</a><a class="nav-link" href="?page=updates">Software updates</a><?php endif; ?><form method="post" class="d-flex align-items-center mx-2"><?=csrf_field()?><input type="hidden" name="action" value="save_theme"><select name="theme" class="form-select form-select-sm bg-dark text-light border-secondary" aria-label="Theme" title="Theme" onchange="this.form.submit()"><option value="light" <?=$theme==='light'?'selected':''?>>Light</option><option value="dark" <?=$theme==='dark'?'selected':''?>>Dark</option></select><noscript><button class="btn btn-sm btn-outline-light ms-1">Save</button></noscript></form><span class="navbar-text mx-2"><?=h(user()['display_name'])?></span><form method="post" action="?page=logout" class="d-inline m-0"><?=csrf_field()?><button type="submit" class="btn btn-link nav-link p-0 text-white text-decoration-none">Sign out</button></form></div><?php endif; ?></div></nav><main class="container py-4">
     <?php if (!empty($_SESSION['flash'])): ?><div class="alert alert-success"><?=h($_SESSION['flash'])?></div><?php unset($_SESSION['flash']); endif; ?>
     <?php if($error): ?><div class="alert alert-danger"><?=h($error)?></div><?php endif;
 }

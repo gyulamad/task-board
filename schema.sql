@@ -4,6 +4,7 @@ CREATE TABLE users (
     password_hash VARCHAR(255) NOT NULL,
     display_name VARCHAR(120) NOT NULL,
     role ENUM('admin','user') NOT NULL DEFAULT 'user',
+    theme VARCHAR(20) NOT NULL DEFAULT 'light',
     created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 

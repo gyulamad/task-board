@@ -274,3 +274,34 @@ function sort_header(string $label, string $key, array $current, string $url): s
     $nextDir = (!$isActive || $current['dir'] === 'asc') ? 'descending' : 'ascending';
     return '<th' . $ariaSort . '><a class="text-decoration-none" href="' . h($url) . '" title="Order by ' . h($label) . '" aria-label="Order by ' . h($label) . ', currently ' . ($isActive ? $current['dir'] : 'unsorted') . ', activate to sort ' . $nextDir . '">' . h($label) . $arrow . '</a></th>';
 }
+
+// --- Theme settings (Task #11) -------------------------------------------
+
+/** Themes a user can pick from. 'light' is the original look of the board. */
+function valid_themes(): array { return ['light', 'dark']; }
+
+/** Maps any stored or submitted value to a valid theme, falling back to 'light'. */
+function normalize_theme(?string $theme): string { return in_array($theme, valid_themes(), true) ? $theme : 'light'; }
+
+/** The theme of the signed-in user (falls back to 'light' for anonymous visitors). */
+function current_theme(): string { return normalize_theme(user()['theme'] ?? null); }
+
+/**
+ * Adds the users.theme column in place for boards whose database was created
+ * before the theme feature existed, so the feature works without a manual
+ * schema migration on the live board. No-op when the column already exists
+ * (fresh installs get it from schema.sql).
+ */
+function ensure_users_theme_column(PDO $pdo): void {
+    try {
+        $pdo->query('SELECT theme FROM users LIMIT 1');
+        return;
+    } catch (Throwable $e) {
+        // Column missing: fall through and add it.
+    }
+    if ($pdo->getAttribute(PDO::ATTR_DRIVER_NAME) === 'sqlite') {
+        $pdo->exec("ALTER TABLE users ADD COLUMN theme TEXT NOT NULL DEFAULT 'light'");
+    } else {
+        $pdo->exec("ALTER TABLE users ADD COLUMN theme VARCHAR(20) NOT NULL DEFAULT 'light'");
+    }
+}

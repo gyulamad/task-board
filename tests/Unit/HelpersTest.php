@@ -214,4 +214,32 @@ final class HelpersTest extends TestCase
         $this->assertStringNotContainsString('" onmouseover=', $html);
         $this->assertStringContainsString('&quot;', $html);
     }
+
+    public function test_valid_themes_lists_light_and_dark(): void
+    {
+        $this->assertSame(['light', 'dark'], valid_themes());
+    }
+
+    public function test_normalize_theme_accepts_only_known_theme_names(): void
+    {
+        $this->assertSame('light', normalize_theme('light'));
+        $this->assertSame('dark', normalize_theme('dark'));
+        $this->assertSame('light', normalize_theme(null));
+        $this->assertSame('light', normalize_theme(''));
+        $this->assertSame('light', normalize_theme('blue'));
+        $this->assertSame('light', normalize_theme('DARK'));
+        $this->assertSame('light', normalize_theme('dark '));
+    }
+
+    public function test_current_theme_defaults_to_light_and_reads_the_session(): void
+    {
+        $this->assertSame('light', current_theme());
+
+        $_SESSION['user'] = ['id' => 7, 'username' => 'tester', 'display_name' => 'Tester', 'role' => 'user', 'theme' => 'dark'];
+        $this->assertSame('dark', current_theme());
+
+        // Session values that are not a valid theme fall back to light.
+        $_SESSION['user'] = ['id' => 7, 'username' => 'tester', 'display_name' => 'Tester', 'role' => 'user', 'theme' => 'something-else'];
+        $this->assertSame('light', current_theme());
+    }
 }

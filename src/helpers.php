@@ -26,6 +26,135 @@ function task_exists(PDO $pdo, int $id): bool {
     $s = $pdo->prepare('SELECT 1 FROM tasks WHERE id=?'); $s->execute([$id]); return (bool)$s->fetchColumn();
 }
 
+// ---- Shared data-access helpers -----------------------------------------------------------
+// Small, single-purpose lookups that used to be copy-pasted as raw SQL across
+// the pages. Keeping them here gives one place to read and unit test them.
+
+/** Relationship link types allowed for tasks; mirrors the task_links ENUM in schema.sql. */
+const TASK_BOARD_LINK_TYPES = [
+    'blocks' => 'Blocks',
+    'depends_on' => 'Depends on',
+    'relates_to' => 'Relates to',
+];
+
+/** Number of registered accounts; used by the installer gate and login hint. */
+function user_count(PDO $pdo): int {
+    return (int)$pdo->query('SELECT COUNT(*) FROM users')->fetchColumn();
+}
+
+/** Full task row by id, or null when the task does not exist. */
+function find_task(PDO $pdo, int $id): ?array {
+    $s = $pdo->prepare('SELECT * FROM tasks WHERE id=?');
+    $s->execute([$id]);
+    $task = $s->fetch();
+    return $task === false ? null : $task;
+}
+
+/** Full project row by id, or null when the project does not exist. */
+function find_project(PDO $pdo, int $id): ?array {
+    $s = $pdo->prepare('SELECT * FROM projects WHERE id=?');
+    $s->execute([$id]);
+    $project = $s->fetch();
+    return $project === false ? null : $project;
+}
+
+function status_exists(PDO $pdo, int $id): bool {
+    $s = $pdo->prepare('SELECT 1 FROM statuses WHERE id=?');
+    $s->execute([$id]);
+    return (bool)$s->fetchColumn();
+}
+
+function project_exists(PDO $pdo, int $id): bool {
+    $s = $pdo->prepare('SELECT 1 FROM projects WHERE id=?');
+    $s->execute([$id]);
+    return (bool)$s->fetchColumn();
+}
+
+/** Every status in display order; drives the status dropdowns and the admin page. */
+function all_statuses(PDO $pdo): array {
+    return $pdo->query('SELECT * FROM statuses ORDER BY sort_order,id')->fetchAll();
+}
+
+/** Assignable users in display-name order; drives the assignee pickers and filters. */
+function user_options(PDO $pdo): array {
+    return $pdo->query('SELECT id,display_name FROM users ORDER BY display_name')->fetchAll();
+}
+
+/**
+ * Assignee display names for several tasks in one query, keyed by task id.
+ * Tasks without any assignee are simply absent from the result. Replaces the
+ * per-row query the task list used to run for every rendered row.
+ *
+ * @return array<int, string[]>
+ */
+function task_assignee_names_by_task(PDO $pdo, array $taskIds): array {
+    $ids = array_values(array_unique(array_filter(array_map('intval', $taskIds), fn($v) => $v > 0)));
+    if (!$ids) return [];
+    $placeholders = implode(',', array_fill(0, count($ids), '?'));
+    $s = $pdo->prepare('SELECT a.task_id, u.display_name FROM task_assignees a JOIN users u ON u.id=a.user_id WHERE a.task_id IN (' . $placeholders . ')');
+    $s->execute($ids);
+    $names = [];
+    foreach ($s->fetchAll() as $row) {
+        $names[(int)$row['task_id']][] = $row['display_name'];
+    }
+    return $names;
+}
+
+/**
+ * Assignee display names for several projects in one query, keyed by project
+ * id (the project list equivalent of task_assignee_names_by_task()).
+ *
+ * @return array<int, string[]>
+ */
+function project_assignee_names_by_project(PDO $pdo, array $projectIds): array {
+    $ids = array_values(array_unique(array_filter(array_map('intval', $projectIds), fn($v) => $v > 0)));
+    if (!$ids) return [];
+    $placeholders = implode(',', array_fill(0, count($ids), '?'));
+    $s = $pdo->prepare('SELECT pa.project_id, u.display_name FROM project_assignees pa JOIN users u ON u.id=pa.user_id WHERE pa.project_id IN (' . $placeholders . ')');
+    $s->execute($ids);
+    $names = [];
+    foreach ($s->fetchAll() as $row) {
+        $names[(int)$row['project_id']][] = $row['display_name'];
+    }
+    return $names;
+}
+
+/** A task is archived when its archived_at column carries a non-empty value. */
+function task_is_archived(array $task): bool {
+    $archivedAt = $task['archived_at'] ?? null;
+    return $archivedAt !== null && $archivedAt !== '';
+}
+
+/**
+ * Applies a creator-or-admin guarded action to a list of ids, one query pair
+ * reused for the whole batch. Returns how many were applied and skipped.
+ *
+ * @return array{done: int, skipped: int}
+ */
+function tb_bulk_apply(PDO $pdo, array $ids, string $checkSql, string $actionSql): array {
+    $check = $pdo->prepare($checkSql);
+    $act = $pdo->prepare($actionSql);
+    $done = 0;
+    $skipped = 0;
+    foreach ($ids as $id) {
+        $check->execute([(int)$id]);
+        $creator = (int)$check->fetchColumn();
+        if (is_admin() || $creator === (int)user()['id']) {
+            $act->execute([(int)$id]);
+            $done++;
+        } else {
+            $skipped++;
+        }
+    }
+    return ['done' => $done, 'skipped' => $skipped];
+}
+
+/** Flash text for a bulk action, e.g. "2 tasks archived. 1 skipped: ...". */
+function tb_bulk_flash(int $done, int $skipped, string $noun, string $doneLabel, string $skipHint): string {
+    return $done . ' ' . $noun . ($done === 1 ? '' : 's') . ' ' . $doneLabel . '.'
+        . ($skipped ? ' ' . $skipped . ' skipped: ' . $skipHint : '');
+}
+
 /**
  * Destroys the current session completely: clears the session data, removes
  * the server-side storage and expires the session cookie on the client.

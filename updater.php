@@ -114,7 +114,6 @@ function tb_update_archive_files(string $archiveData): array {
         if (!isset($files['index.php']) || !isset($files['updater.php'])) throw new RuntimeException('The archive is missing required application files.');
         return $files;
     } finally {
-        if ($zip->status !== ZipArchive::ER_OK && $zip->numFiles === 0) { /* close below */ }
         $zip->close();
         @unlink($tmp);
     }

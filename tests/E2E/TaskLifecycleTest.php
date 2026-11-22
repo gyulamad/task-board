@@ -204,6 +204,35 @@ final class TaskLifecycleTest extends E2eTestCase
         $this->assertTrue($list->contains('#' . $id . ' · Visible on the list'));
     }
 
+    public function test_task_list_renders_assignee_names_per_row(): void
+    {
+        $admin = $this->adminSession();
+        $admin->post('/?page=admin', [
+            'action' => 'add_user',
+            'username' => 'dave',
+            'display_name' => 'Dave Row',
+            'password' => 'DavePass12345',
+            'role' => 'user',
+        ]);
+        $daves = $admin->createTask('Daves task', ['assignees' => ['2']]);
+        $admins = $admin->createTask('Admins task', ['assignees' => ['1']]);
+        $nobodys = $admin->createTask('Nobodys task', ['assignees' => []]);
+
+        $list = $admin->get('/?');
+        // Every row must carry the names of exactly its own task: the names are
+        // fetched with one grouped query for the whole page, not per row.
+        $this->assertTrue($list->contains(
+            '#' . $daves . ' · Daves task</a></td><td><span class="badge text-bg-light border">TODO</span></td><td>Dave Row</td>'
+        ));
+        $this->assertTrue($list->contains(
+            '#' . $admins . ' · Admins task</a></td><td><span class="badge text-bg-light border">TODO</span></td><td>Administrator</td>'
+        ));
+        // A task without assignees keeps the em-dash placeholder cell.
+        $this->assertTrue($list->contains(
+            '#' . $nobodys . ' · Nobodys task</a></td><td><span class="badge text-bg-light border">TODO</span></td><td>—</td>'
+        ));
+    }
+
     public function test_edit_form_renders_assignees_as_checkboxes(): void
     {
         $admin = $this->adminSession();

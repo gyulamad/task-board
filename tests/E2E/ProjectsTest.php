@@ -197,6 +197,23 @@ final class ProjectsTest extends E2eTestCase
         $this->assertTrue($tasks->contains('Counted task'));
     }
 
+    public function test_projects_list_renders_assignee_names_per_row(): void
+    {
+        $admin = $this->adminSession();
+        $staffed = $this->createProject($admin, 'Staffed project', ['assignees' => ['1']]);
+        $unstaffed = $this->createProject($admin, 'Unstaffed project', ['assignees' => []]);
+
+        $list = $admin->get('/?page=projects');
+        // The names are fetched with one grouped query for the whole page and
+        // must still land in the row of exactly their own project.
+        $this->assertTrue($list->contains(
+            '#' . $staffed . ' · Staffed project</a></td><td><span class="badge text-bg-light border">TODO</span></td><td>Administrator</td>'
+        ));
+        $this->assertTrue($list->contains(
+            '#' . $unstaffed . ' · Unstaffed project</a></td><td><span class="badge text-bg-light border">TODO</span></td><td>—</td>'
+        ));
+    }
+
     public function test_the_projects_list_supports_sorting(): void
     {
         $admin = $this->adminSession();

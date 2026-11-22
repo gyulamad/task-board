@@ -569,9 +569,21 @@ if ($page==='project_edit' || $page==='project_new') {
         if(!$found){http_response_code(404);exit('Project not found.');}
         $project=$found;
         $s=$pdo->prepare('SELECT user_id FROM project_assignees WHERE project_id=?');$s->execute([$id]);$selected=array_map('intval',array_column($s->fetchAll(),'user_id'));}
-    $users=user_options($pdo);$statuses=all_statuses($pdo);
+    $users=user_options($pdo);$statuses=all_statuses($pdo);$ptpls=$id?[]:$pdo->query("SELECT id,name,description FROM templates WHERE type='project' ORDER BY name")->fetchAll();
     render_header($id?'Edit project':'New project',$config,$error); ?>
-    <div class="card p-4"><h2 class="h4"><?= $id?'Edit project':'Create project' ?></h2><form method="post"><?=csrf_field()?><input type="hidden" name="action" value="save_project"><input type="hidden" name="id" value="<?=$id?>"><div class="mb-3"><label class="form-label">Name</label><input class="form-control" name="name" maxlength="200" value="<?=h($project['name'])?>" required></div><div class="mb-3"><label class="form-label">Description</label><textarea class="form-control" name="description" rows="5"><?=h($project['description'])?></textarea></div><div class="row"><div class="col-md-6 mb-3"><label class="form-label">Status</label><select class="form-select" name="status_id" required><?php foreach($statuses as $st): ?><option value="<?=$st['id']?>" <?=$project['status_id']==$st['id']?'selected':''?>><?=h($st['name'])?></option><?php endforeach; ?></select></div></div><div class="mb-3"><label class="form-label">Assignees</label><select class="form-select" name="assignees[]" multiple size="5"><?php foreach($users as $u): ?><option value="<?=$u['id']?>" <?=in_array((int)$u['id'],$selected,true)?'selected':''?>><?=h($u['display_name'])?></option><?php endforeach; ?></select><div class="form-text">Use Ctrl/Cmd to select multiple people.</div></div><button class="btn btn-primary">Save project</button> <a class="btn btn-outline-secondary" href="?page=projects">Cancel</a></form></div>
+    <div class="card p-4"><h2 class="h4"><?= $id?'Edit project':'Create project' ?></h2><form method="post"><?=csrf_field()?><input type="hidden" name="action" value="save_project"><input type="hidden" name="id" value="<?=$id?>"><?php if(!$id && $ptpls): ?><div class="mb-3"><label class="form-label">Template</label><select class="form-select" id="project-template"><option value="">No template</option><?php foreach($ptpls as $tp): ?><option value="<?=$tp['id']?>" data-description="<?=h($tp['description'])?>"><?=h($tp['name'])?></option><?php endforeach; ?></select><div class="form-text">Choosing a template fills the description below with the template text.</div></div><?php endif; ?><div class="mb-3"><label class="form-label">Name</label><input class="form-control" name="name" maxlength="200" value="<?=h($project['name'])?>" required></div><div class="mb-3"><label class="form-label">Description</label><textarea class="form-control" name="description" rows="5"><?=h($project['description'])?></textarea></div><div class="row"><div class="col-md-6 mb-3"><label class="form-label">Status</label><select class="form-select" name="status_id" required><?php foreach($statuses as $st): ?><option value="<?=$st['id']?>" <?=$project['status_id']==$st['id']?'selected':''?>><?=h($st['name'])?></option><?php endforeach; ?></select></div></div><div class="mb-3"><label class="form-label">Assignees</label><select class="form-select" name="assignees[]" multiple size="5"><?php foreach($users as $u): ?><option value="<?=$u['id']?>" <?=in_array((int)$u['id'],$selected,true)?'selected':''?>><?=h($u['display_name'])?></option><?php endforeach; ?></select><div class="form-text">Use Ctrl/Cmd to select multiple people.</div></div><button class="btn btn-primary">Save project</button> <a class="btn btn-outline-secondary" href="?page=projects">Cancel</a></form></div>
+    <?php if(!$id && $ptpls): ?><script>
+(function(){
+var sel=document.getElementById('project-template');
+if(!sel)return;
+sel.addEventListener('change',function(){
+    var o=sel.options[sel.selectedIndex];
+    if(!o||o.value==='')return;
+    var d=o.getAttribute('data-description');
+    if(d!==null){document.querySelector('textarea[name=description]').value=d;}
+});
+})();
+</script><?php endif; ?>
     <?php render_footer(); exit;
 }
 

@@ -47,6 +47,39 @@ final class TaskFiltersTest extends E2eTestCase
         $this->assertFalse($assigned->contains('#' . $beta . ' · Beta item'));
     }
 
+    public function test_unassigned_filter_returns_only_tasks_without_assignees(): void
+    {
+        [$admin, $alpha, $beta, $gamma] = $this->seedTasks();
+
+        $unassigned = $admin->get('/?page=tasks&assignee=unassigned');
+        $this->assertTrue($unassigned->contains('#' . $alpha . ' · Alpha search token'));
+        $this->assertTrue($unassigned->contains('#' . $beta . ' · Beta item'));
+        $this->assertFalse($unassigned->contains('#' . $gamma . ' · Gamma item'));
+    }
+
+    public function test_unassigned_filter_combines_with_other_filters(): void
+    {
+        [$admin, $alpha, $beta, $gamma] = $this->seedTasks();
+
+        $combined = $admin->get('/?page=tasks&assignee=unassigned&status=1');
+        $this->assertTrue($combined->contains('#' . $alpha . ' · Alpha search token'));
+        $this->assertFalse($combined->contains('#' . $beta . ' · Beta item'));
+        $this->assertFalse($combined->contains('#' . $gamma . ' · Gamma item'));
+    }
+
+    public function test_filter_dropdown_offers_the_unassigned_option(): void
+    {
+        $admin = $this->adminSession();
+        $this->seedTasks();
+
+        $list = $admin->get('/?page=tasks');
+        $this->assertTrue($list->contains('<option value="unassigned"'));
+        $this->assertTrue($list->contains('>Unassigned</option>'));
+
+        $filtered = $admin->get('/?page=tasks&assignee=unassigned');
+        $this->assertTrue($filtered->contains('<option value="unassigned" selected'));
+    }
+
     public function test_search_matches_title_and_description(): void
     {
         [$admin, $alpha, $beta] = $this->seedTasks();

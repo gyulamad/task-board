@@ -253,6 +253,34 @@ if (user()) {
                 flash(tb_bulk_flash($result['done'], $result['skipped'], 'task', 'archived', 'only administrators or the task creator can archive a task.'));
                 redirect($returnUrl);
             }
+            if ($action === 'save_template') {
+                $id = (int)($_POST['id'] ?? 0);
+                $type = $_POST['type'] ?? 'task';
+                $name = trim($_POST['name'] ?? '');
+                $description = trim($_POST['description'] ?? '');
+                if (!in_array($type, ['task','project'], true)) throw new RuntimeException('Choose a valid template type.');
+                if ($name === '') throw new RuntimeException('Template name is required.');
+                if ($id) {
+                    $s = $pdo->prepare('SELECT id FROM templates WHERE id=?'); $s->execute([$id]);
+                    if (!$s->fetch()) throw new RuntimeException('Template not found.');
+                    $pdo->prepare('UPDATE templates SET type=?,name=?,description=? WHERE id=?')->execute([$type,$name,$description,$id]);
+                    flash('Template updated.');
+                } else {
+                    $pdo->prepare('INSERT INTO templates(type,name,description,created_by) VALUES(?,?,?,?)')->execute([$type,$name,$description,user()['id']]);
+                    flash('Template created.');
+                }
+                redirect('?page=templates');
+            }
+            if ($action === 'delete_template') {
+                $id = (int)$_POST['id'];
+                $s = $pdo->prepare('SELECT created_by FROM templates WHERE id=?'); $s->execute([$id]);
+                $creator = $s->fetchColumn();
+                if ($creator === false) throw new RuntimeException('Template not found.');
+                if (!is_admin() && (int)$creator !== (int)user()['id']) throw new RuntimeException('Only an administrator or template creator can delete this template.');
+                $pdo->prepare('DELETE FROM templates WHERE id=?')->execute([$id]);
+                flash('Template deleted.');
+                redirect('?page=templates');
+            }
             if ($action === 'comment') {
                 $id = (int)$_POST['task_id']; $body = trim($_POST['body'] ?? '');
                 if (!task_exists($pdo,$id) || $body === '') throw new RuntimeException('Comment cannot be empty.');
@@ -382,7 +410,7 @@ function render_header(string $title, array $config, string $error = ''): void {
     ?><!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title><?=h($title)?> - <?=h($config['app_name'])?></title>
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
     <style>body{background:#f5f6f8}.card{border:0;box-shadow:0 1px 5px #0000000d}.muted{color:#687386}.prewrap{white-space:pre-wrap}.navbar-brand{font-weight:700}</style></head><body>
-    <nav class="navbar navbar-expand-lg navbar-dark bg-dark"><div class="container"><a class="navbar-brand" href="?"><?=h($config['app_name'])?></a><?php if(user()): ?><div class="navbar-nav ms-auto align-items-center"><a class="nav-link" href="?">Tasks</a><a class="nav-link" href="?page=projects">Projects</a><?php if(is_admin()): ?><a class="nav-link" href="?page=admin">Administration</a><a class="nav-link" href="?page=updates">Software updates</a><?php endif; ?><span class="navbar-text mx-2"><?=h(user()['display_name'])?></span><form method="post" action="?page=logout" class="d-inline m-0"><?=csrf_field()?><button type="submit" class="btn btn-link nav-link p-0 text-white text-decoration-none">Sign out</button></form></div><?php endif; ?></div></nav><main class="container py-4">
+    <nav class="navbar navbar-expand-lg navbar-dark bg-dark"><div class="container"><a class="navbar-brand" href="?"><?=h($config['app_name'])?></a><?php if(user()): ?><div class="navbar-nav ms-auto align-items-center"><a class="nav-link" href="?">Tasks</a><a class="nav-link" href="?page=projects">Projects</a><a class="nav-link" href="?page=templates">Templates</a><?php if(is_admin()): ?><a class="nav-link" href="?page=admin">Administration</a><a class="nav-link" href="?page=updates">Software updates</a><?php endif; ?><span class="navbar-text mx-2"><?=h(user()['display_name'])?></span><form method="post" action="?page=logout" class="d-inline m-0"><?=csrf_field()?><button type="submit" class="btn btn-link nav-link p-0 text-white text-decoration-none">Sign out</button></form></div><?php endif; ?></div></nav><main class="container py-4">
     <?php if (!empty($_SESSION['flash'])): ?><div class="alert alert-success"><?=h($_SESSION['flash'])?></div><?php unset($_SESSION['flash']); endif; ?>
     <?php if($error): ?><div class="alert alert-danger"><?=h($error)?></div><?php endif;
 }
@@ -536,9 +564,21 @@ if ($page==='edit' || $page==='new') {
         <div class="card p-4"><h2 class="h4">This task is archived</h2><p class="muted mb-3">Archived tasks are read-only. Restore task #<?=$task['id']?> from the archive first if you want to edit it.</p><div class="d-flex gap-2"><a class="btn btn-outline-secondary" href="?page=task&id=<?=$task['id']?>">View the task</a><a class="btn btn-outline-primary" href="?page=archive">Open the archive</a><form method="post" class="d-inline"><?=csrf_field()?><input type="hidden" name="action" value="restore_task"><input type="hidden" name="id" value="<?=$task['id']?>"><button class="btn btn-primary">Restore now</button></form></div></div>
         <?php render_footer(); exit;
     }
-    $users=user_options($pdo);$statuses=all_statuses($pdo);$tasks=$pdo->prepare('SELECT id,title FROM tasks WHERE id<>? AND archived_at IS NULL ORDER BY id DESC LIMIT 200');$tasks->execute([$id]);$projects=$pdo->query('SELECT id,name FROM projects ORDER BY name')->fetchAll();
+    $users=user_options($pdo);$statuses=all_statuses($pdo);$tasks=$pdo->prepare('SELECT id,title FROM tasks WHERE id<>? AND archived_at IS NULL ORDER BY id DESC LIMIT 200');$tasks->execute([$id]);$projects=$pdo->query('SELECT id,name FROM projects ORDER BY name')->fetchAll();$tpls=$id?[]:$pdo->query("SELECT id,name,description FROM templates WHERE type='task' ORDER BY name")->fetchAll();
     render_header($id?'Edit task':'New task',$config,$error); ?>
-    <div class="card p-4"><h2 class="h4"><?= $id?'Edit task':'Create task' ?></h2><form method="post"><?=csrf_field()?><input type="hidden" name="action" value="save_task"><input type="hidden" name="id" value="<?=$id?>"><div class="mb-3"><label class="form-label">Title</label><input class="form-control" name="title" maxlength="200" value="<?=h($task['title'])?>" required></div><div class="mb-3"><label class="form-label">Description</label><textarea class="form-control" name="description" rows="5"><?=h($task['description'])?></textarea></div><div class="row"><div class="col-md-3 mb-3"><label class="form-label">Status</label><select class="form-select" name="status_id" required><?php foreach($statuses as $st): ?><option value="<?=$st['id']?>" <?=$task['status_id']==$st['id']?'selected':''?>><?=h($st['name'])?></option><?php endforeach; ?></select></div><div class="col-md-3 mb-3"><label class="form-label">Parent task</label><select class="form-select" name="parent_id"><option value="">None</option><?php foreach($tasks->fetchAll() as $t): ?><option value="<?=$t['id']?>" <?=$task['parent_id']==$t['id']?'selected':''?>>#<?=$t['id']?> - <?=h($t['title'])?></option><?php endforeach; ?></select></div><div class="col-md-3 mb-3"><label class="form-label">Auto-reopen schedule</label><select class="form-select" name="schedule_period"><option value="">None</option><?php foreach(schedule_periods() as $periodKey=>$periodLabel): ?><option value="<?=h($periodKey)?>" <?=$task['schedule_period']===$periodKey?'selected':''?>><?=h($periodLabel)?></option><?php endforeach; ?></select><div class="form-text">When set, the cron job resets this task to TODO, unassigns it and comments &quot;Reopen by auto-scheduler&quot; if it has not been updated within the selected period.</div></div><div class="col-md-3 mb-3"><label class="form-label">Project</label><select class="form-select" name="project_id"><option value="">None</option><?php foreach($projects as $pr): ?><option value="<?=$pr['id']?>" <?=$task['project_id']==$pr['id']?'selected':''?>>#<?=$pr['id']?> - <?=h($pr['name'])?></option><?php endforeach; ?></select></div></div><div class="mb-3"><label class="form-label">Assignees</label><div class="border rounded p-2" style="max-height:12rem;overflow-y:auto"><?php foreach($users as $u): ?><div class="form-check"><input class="form-check-input" type="checkbox" name="assignees[]" value="<?=$u['id']?>" id="assignee-<?=$u['id']?>" <?=in_array((int)$u['id'],$selected,true)?'checked':''?>><label class="form-check-label" for="assignee-<?=$u['id']?>"><?=h($u['display_name'])?></label></div><?php endforeach; if(!$users): ?><div class="small muted">No users can be assigned yet.</div><?php endif; ?></div><div class="form-text">Tick a name to assign the task. Untick a name to unassign them - leaving everybody unticked keeps the task unassigned.</div></div><button class="btn btn-primary">Save task</button> <a class="btn btn-outline-secondary" href="?">Cancel</a></form></div>
+    <div class="card p-4"><h2 class="h4"><?= $id?'Edit task':'Create task' ?></h2><form method="post"><?=csrf_field()?><input type="hidden" name="action" value="save_task"><input type="hidden" name="id" value="<?=$id?>"><?php if(!$id && $tpls): ?><div class="mb-3"><label class="form-label">Template</label><select class="form-select" id="task-template"><option value="">No template</option><?php foreach($tpls as $tp): ?><option value="<?=$tp['id']?>" data-description="<?=h($tp['description'])?>"><?=h($tp['name'])?></option><?php endforeach; ?></select><div class="form-text">Choosing a template fills the description below with the template text.</div></div><?php endif; ?><div class="mb-3"><label class="form-label">Title</label><input class="form-control" name="title" maxlength="200" value="<?=h($task['title'])?>" required></div><div class="mb-3"><label class="form-label">Description</label><textarea class="form-control" name="description" rows="5"><?=h($task['description'])?></textarea></div><div class="row"><div class="col-md-3 mb-3"><label class="form-label">Status</label><select class="form-select" name="status_id" required><?php foreach($statuses as $st): ?><option value="<?=$st['id']?>" <?=$task['status_id']==$st['id']?'selected':''?>><?=h($st['name'])?></option><?php endforeach; ?></select></div><div class="col-md-3 mb-3"><label class="form-label">Parent task</label><select class="form-select" name="parent_id"><option value="">None</option><?php foreach($tasks->fetchAll() as $t): ?><option value="<?=$t['id']?>" <?=$task['parent_id']==$t['id']?'selected':''?>>#<?=$t['id']?> - <?=h($t['title'])?></option><?php endforeach; ?></select></div><div class="col-md-3 mb-3"><label class="form-label">Auto-reopen schedule</label><select class="form-select" name="schedule_period"><option value="">None</option><?php foreach(schedule_periods() as $periodKey=>$periodLabel): ?><option value="<?=h($periodKey)?>" <?=$task['schedule_period']===$periodKey?'selected':''?>><?=h($periodLabel)?></option><?php endforeach; ?></select><div class="form-text">When set, the cron job resets this task to TODO, unassigns it and comments &quot;Reopen by auto-scheduler&quot; if it has not been updated within the selected period.</div></div><div class="col-md-3 mb-3"><label class="form-label">Project</label><select class="form-select" name="project_id"><option value="">None</option><?php foreach($projects as $pr): ?><option value="<?=$pr['id']?>" <?=$task['project_id']==$pr['id']?'selected':''?>>#<?=$pr['id']?> - <?=h($pr['name'])?></option><?php endforeach; ?></select></div></div><div class="mb-3"><label class="form-label">Assignees</label><div class="border rounded p-2" style="max-height:12rem;overflow-y:auto"><?php foreach($users as $u): ?><div class="form-check"><input class="form-check-input" type="checkbox" name="assignees[]" value="<?=$u['id']?>" id="assignee-<?=$u['id']?>" <?=in_array((int)$u['id'],$selected,true)?'checked':''?>><label class="form-check-label" for="assignee-<?=$u['id']?>"><?=h($u['display_name'])?></label></div><?php endforeach; if(!$users): ?><div class="small muted">No users can be assigned yet.</div><?php endif; ?></div><div class="form-text">Tick a name to assign the task. Untick a name to unassign them - leaving everybody unticked keeps the task unassigned.</div></div><button class="btn btn-primary">Save task</button> <a class="btn btn-outline-secondary" href="?">Cancel</a></form></div>
+    <?php if(!$id && $tpls): ?><script>
+(function(){
+var sel=document.getElementById('task-template');
+if(!sel)return;
+sel.addEventListener('change',function(){
+    var o=sel.options[sel.selectedIndex];
+    if(!o||o.value==='')return;
+    var d=o.getAttribute('data-description');
+    if(d!==null){document.querySelector('textarea[name=description]').value=d;}
+});
+})();
+</script><?php endif; ?>
     <?php render_footer(); exit;
 }
 
@@ -654,6 +694,30 @@ if ($page==='projects') {
     sync();
     })();
     </script>
+    <?php render_footer(); exit;
+}
+
+if ($page==='templates') {
+    $typeFilter = $_GET['type'] ?? '';
+    if (!in_array($typeFilter, ['task','project'], true)) $typeFilter = '';
+    if ($typeFilter !== '') {
+        $s = $pdo->prepare('SELECT t.*,u.display_name creator FROM templates t JOIN users u ON u.id=t.created_by WHERE t.type=? ORDER BY t.name'); $s->execute([$typeFilter]);
+    } else {
+        $s = $pdo->query('SELECT t.*,u.display_name creator FROM templates t JOIN users u ON u.id=t.created_by ORDER BY t.type,t.name');
+    }
+    $templates = $s->fetchAll();
+    render_header('Templates',$config,$error); ?>
+    <div class="d-flex justify-content-between align-items-center mb-3"><div><h1 class="h3 mb-0">Templates</h1><div class="muted"><?=count($templates)?> template<?=count($templates)===1?'':'s'?></div></div><a class="btn btn-primary" href="?page=template_new">+ New template</a></div>
+    <div class="card p-3 mb-3"><form class="row g-2"><input type="hidden" name="page" value="templates"><div class="col-md-3"><select class="form-select" name="type"><option value="">All types</option><option value="task" <?=$typeFilter==='task'?'selected':''?>>Task templates</option><option value="project" <?=$typeFilter==='project'?'selected':''?>>Project templates</option></select></div><div class="col-md-3 d-grid"><button class="btn btn-outline-primary">Filter</button></div></form></div>
+    <div class="card"><div class="table-responsive"><table class="table table-hover align-middle mb-0"><thead><tr><th>Name</th><th>Type</th><th>Description</th><th>Updated</th><th>Actions</th></tr></thead><tbody><?php foreach($templates as $tp): $canDelete=is_admin()||(int)$tp['created_by']===(int)user()['id']; $desc=(string)$tp['description']; $short=preg_replace('/^(.{0,140}).*$/su','$1',$desc); ?><tr><td><a class="fw-semibold text-decoration-none" href="?page=template_edit&id=<?=$tp['id']?>"><?=h($tp['name'])?></a></td><td><span class="badge text-bg-light border"><?=h($tp['type'])?></span></td><td class="small muted" style="max-width:32rem"><?=h($short)?><?=strlen($desc)>strlen($short)?'&hellip;':''?></td><td class="small muted"><?=h($tp['updated_at'])?></td><td class="text-nowrap"><a class="btn btn-sm btn-outline-secondary" href="?page=template_edit&id=<?=$tp['id']?>">Edit</a><?php if($canDelete): ?> <form method="post" class="d-inline" onsubmit="return confirm('Delete this template permanently?')"><?=csrf_field()?><input type="hidden" name="action" value="delete_template"><input type="hidden" name="id" value="<?=$tp['id']?>"><button class="btn btn-sm btn-outline-danger">Delete</button></form><?php endif; ?></td></tr><?php endforeach; if(!$templates): ?><tr><td colspan="5" class="text-center muted py-4">No templates found.</td></tr><?php endif; ?></tbody></table></div></div>
+    <?php render_footer(); exit;
+}
+
+if ($page==='template_new' || $page==='template_edit') {
+    $id=(int)($_GET['id']??0); $tpl=['id'=>0,'type'=>'task','name'=>'','description'=>''];
+    if($id){$s=$pdo->prepare('SELECT * FROM templates WHERE id=?');$s->execute([$id]);$tpl=$s->fetch() ?: $tpl;}
+    render_header($id?'Edit template':'New template',$config,$error); ?>
+    <div class="card p-4"><h2 class="h4"><?= $id?'Edit template':'Create template' ?></h2><form method="post"><?=csrf_field()?><input type="hidden" name="action" value="save_template"><input type="hidden" name="id" value="<?=$id?>"><div class="row"><div class="col-md-4 mb-3"><label class="form-label">Type</label><select class="form-select" name="type"><option value="task" <?=$tpl['type']==='task'?'selected':''?>>Task</option><option value="project" <?=$tpl['type']==='project'?'selected':''?>>Project</option></select></div><div class="col-md-8 mb-3"><label class="form-label">Name</label><input class="form-control" name="name" maxlength="120" value="<?=h($tpl['name'])?>" required></div></div><div class="mb-3"><label class="form-label">Description</label><textarea class="form-control" name="description" rows="6"><?=h($tpl['description'])?></textarea><div class="form-text">Selecting this template on a create page fills the description with this text.</div></div><button class="btn btn-primary">Save template</button> <a class="btn btn-outline-secondary" href="?page=templates">Cancel</a></form></div>
     <?php render_footer(); exit;
 }
 

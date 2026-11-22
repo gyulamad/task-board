@@ -104,5 +104,16 @@ CREATE TABLE task_links (
     CHECK (task_id <> related_task_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
+CREATE TABLE templates (
+    id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+    type ENUM('task','project') NOT NULL DEFAULT 'task',
+    name VARCHAR(120) NOT NULL,
+    description TEXT NULL,
+    created_by INT UNSIGNED NOT NULL,
+    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    CONSTRAINT fk_template_creator FOREIGN KEY (created_by) REFERENCES users(id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
 INSERT INTO statuses (name, sort_order, is_done) VALUES
 ('TODO', 1, 0), ('IN PROGRESS', 2, 0), ('DONE', 3, 1);

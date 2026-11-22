@@ -47,6 +47,17 @@ if (!is_file(__DIR__ . '/src/helpers.php')) {
 require __DIR__ . '/src/helpers.php';
 ensure_users_theme_column($pdo);
 
+// Capture the database's wall clock once per request (#14): every last_seen_at
+// stamp is written with CURRENT_TIMESTAMP on this clock, so the activity dot
+// and the 'active: ...' label must age them against it — comparing with PHP's
+// time() makes a PHP/database timezone difference render every user as hours
+// stale (the "the dot is always red" report on #30). One tiny read per request.
+try {
+    $GLOBALS['TB_DB_NOW_TS'] = strtotime((string) $pdo->query('SELECT CURRENT_TIMESTAMP')->fetchColumn());
+} catch (Throwable $e) {
+    $GLOBALS['TB_DB_NOW_TS'] = null;   // a database that cannot tell time falls back to PHP's clock
+}
+
 // Basic response hardening for every page (including CSRF/403 rejections).
 header('X-Content-Type-Options: nosniff');
 header('X-Frame-Options: DENY');

@@ -67,8 +67,14 @@ final class UserActivityTest extends E2eTestCase
         $this->assertSame($first, $this->lastSeen($id), 'A request inside the interval must not rewrite the stamp.');
 
         $this->backdateMinutes($id, 10);   // ten minutes old: outside the window
+        $stale = $this->lastSeen($id);
+        // The refresh is asserted against the backdated stamp, not $first: the
+        // stamps carry one-second resolution and this whole scenario (three
+        // requests over loopback) runs inside one wall-clock second, so the
+        // refreshed write may legitimately equal $first while still being a
+        // real refresh ten minutes newer than the stale value.
         $admin->get('/?page=tasks');
-        $this->assertNotSame($first, $this->lastSeen($id), 'A request outside the interval must refresh the stamp.');
+        $this->assertNotSame($stale, $this->lastSeen($id), 'A request outside the interval must refresh the stamp.');
     }
 
     public function test_the_admin_page_shows_the_last_active_column(): void

@@ -220,12 +220,15 @@ final class TaskLifecycleTest extends E2eTestCase
 
         $list = $admin->get('/?');
         // Every row must carry the names of exactly its own task: the names are
-        // fetched with one grouped query for the whole page, not per row.
+        // fetched with one grouped query for the whole page, not per row. Since
+        // #30 v2 the renderer puts the activity dot before the name: Dave has
+        // never logged in (red), the admin session has just requested pages
+        // (green).
         $this->assertTrue($list->contains(
-            '#' . $daves . ' · Daves task</a></td><td><span class="badge text-bg-light border">TODO</span></td><td>Dave Row</td>'
+            '#' . $daves . ' · Daves task</a></td><td><span class="badge text-bg-light border">TODO</span></td><td><span class="tb-activity-dot tb-activity-red" title="Inactive for over an hour"></span>Dave Row</td>'
         ));
         $this->assertTrue($list->contains(
-            '#' . $admins . ' · Admins task</a></td><td><span class="badge text-bg-light border">TODO</span></td><td>Administrator</td>'
+            '#' . $admins . ' · Admins task</a></td><td><span class="badge text-bg-light border">TODO</span></td><td><span class="tb-activity-dot tb-activity-green" title="Active in the last 15 minutes"></span>Administrator</td>'
         ));
         // A task without assignees keeps the em-dash placeholder cell.
         $this->assertTrue($list->contains(

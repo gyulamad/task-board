@@ -263,9 +263,11 @@ final class ProjectsTest extends E2eTestCase
 
         $list = $admin->get('/?page=projects');
         // The names are fetched with one grouped query for the whole page and
-        // must still land in the row of exactly their own project.
+        // must still land in the row of exactly their own project. Since #30 v2
+        // the renderer puts the activity dot before the name; the admin session
+        // has just requested pages, so its dot is green.
         $this->assertTrue($list->contains(
-            '#' . $staffed . ' · Staffed project</a></td><td><span class="badge text-bg-light border">TODO</span></td><td>Administrator</td>'
+            '#' . $staffed . ' · Staffed project</a></td><td><span class="badge text-bg-light border">TODO</span></td><td><span class="tb-activity-dot tb-activity-green" title="Active in the last 15 minutes"></span>Administrator</td>'
         ));
         $this->assertTrue($list->contains(
             '#' . $unstaffed . ' · Unstaffed project</a></td><td><span class="badge text-bg-light border">TODO</span></td><td>—</td>'

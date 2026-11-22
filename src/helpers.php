@@ -511,7 +511,7 @@ function tb_last_seen_label(?string $lastSeenAt, ?int $now = null): string {
     if ($lastSeenAt === null || $lastSeenAt === '') return 'never';
     $ts = strtotime($lastSeenAt);
     if ($ts === false) return 'unknown';
-    $s = ($now ?? time()) - $ts;
+    $s = ($now ?? tb_default_now_ts()) - $ts;
     if ($s < 0) $s = 0;   // a clock hiccup must not read negative
     if ($s < 60) return 'just now';
     if ($s < 3600) {   // whole minutes: the task's '23 minutes ago'
@@ -538,6 +538,21 @@ const TB_ACTIVITY_GREEN_AFTER_MINUTES = 15;
 const TB_ACTIVITY_YELLOW_AFTER_MINUTES = 60;
 
 /**
+ * The clock the activity ages are computed against (#14): the database's own
+ * wall clock, captured once per request in index.php — every last_seen_at
+ * stamp is written with CURRENT_TIMESTAMP on that clock, so comparing against
+ * PHP's time() instead makes a PHP/database timezone mismatch age every user
+ * by the offset (admin's "the dot is always red" report on #30: labels said
+ * '1 minute ago' while the same stamp read as hours old). Tests and other
+ * callers that need a pinned clock pass $now explicitly; anything that does
+ * not gets the DB clock when the page captured one, else PHP's clock.
+ */
+function tb_default_now_ts(): int {
+    $db = $GLOBALS['TB_DB_NOW_TS'] ?? null;
+    return is_int($db) ? $db : time();
+}
+
+/**
  * The activity level of a user stamp: 'green', 'yellow' or 'red' (#30). Pure:
  * pass $now (a unix timestamp) to pin the clock — call sites that already read
  * the database's clock feed it here; tests pass a fixed one. A user without a
@@ -548,9 +563,12 @@ function tb_activity_level(?string $lastSeenAt, ?int $now = null): string {
     if ($lastSeenAt === null || $lastSeenAt === '') return 'red';
     $ts = strtotime($lastSeenAt);
     if ($ts === false) return 'red';
-    $m = intdiv(max(0, ($now ?? time()) - $ts), 60);
-    if ($m <= TB_ACTIVITY_GREEN_AFTER_MINUTES) return 'green';
-    if ($m <= TB_ACTIVITY_YELLOW_AFTER_MINUTES) return 'yellow';
+    // Second granularity (#14): the level changes at exactly 15:00 and 60:00
+    // minutes, and minute-truncation makes 59:59 and 60:01 the same bucket as
+    // the boundaries themselves, which contradicts the documented thresholds.
+    $s = max(0, ($now ?? tb_default_now_ts()) - $ts);
+    if ($s <= TB_ACTIVITY_GREEN_AFTER_MINUTES * 60) return 'green';
+    if ($s <= TB_ACTIVITY_YELLOW_AFTER_MINUTES * 60) return 'yellow';
     return 'red';
 }
 

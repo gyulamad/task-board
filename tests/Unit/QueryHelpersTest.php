@@ -124,33 +124,35 @@ final class QueryHelpersTest extends TestCase
         );
     }
 
-    public function test_task_assignee_names_are_grouped_by_task(): void
+    public function test_task_assignees_are_grouped_by_task(): void
     {
         $this->seed();
-        $names = task_assignee_names_by_task($this->pdo, [10, 11, 12]);
-        $this->assertSame(['Administrator', 'Bob Helper'], $names[10]);
-        $this->assertSame(['Zita User'], $names[11]);
+        $assignees = task_assignees_by_task($this->pdo, [10, 11, 12]);
+        $this->assertSame(['Administrator', 'Bob Helper'], array_column($assignees[10], 'display_name'));
+        $this->assertSame(['Zita User'], array_column($assignees[11], 'display_name'));
+        // Every row carries the activity stamp (#30); the seeded users have none.
+        $this->assertSame([null, null], array_column($assignees[10], 'last_seen_at'));
         // Task 12 has no assignees, so it is absent from the result.
-        $this->assertArrayNotHasKey(12, $names);
+        $this->assertArrayNotHasKey(12, $assignees);
     }
 
-    public function test_task_assignee_names_ignore_empty_or_invalid_ids(): void
+    public function test_task_assignees_ignore_empty_or_invalid_ids(): void
     {
         $this->seed();
-        $this->assertSame([], task_assignee_names_by_task($this->pdo, []));
+        $this->assertSame([], task_assignees_by_task($this->pdo, []));
         // Zero, negative and duplicated ids are collapsed away safely.
-        $names = task_assignee_names_by_task($this->pdo, [0, -3, 10, 10, '11']);
-        $this->assertSame(['Administrator', 'Bob Helper'], $names[10]);
-        $this->assertSame(['Zita User'], $names[11]);
+        $assignees = task_assignees_by_task($this->pdo, [0, -3, 10, 10, '11']);
+        $this->assertSame(['Administrator', 'Bob Helper'], array_column($assignees[10], 'display_name'));
+        $this->assertSame(['Zita User'], array_column($assignees[11], 'display_name'));
     }
 
-    public function test_project_assignee_names_are_grouped_by_project(): void
+    public function test_project_assignees_are_grouped_by_project(): void
     {
         $this->seed();
-        $names = project_assignee_names_by_project($this->pdo, [20, 21]);
-        $this->assertSame(['Administrator', 'Zita User'], $names[20]);
-        $this->assertArrayNotHasKey(21, $names);
-        $this->assertSame([], project_assignee_names_by_project($this->pdo, [0]));
+        $assignees = project_assignees_by_project($this->pdo, [20, 21]);
+        $this->assertSame(['Administrator', 'Zita User'], array_column($assignees[20], 'display_name'));
+        $this->assertArrayNotHasKey(21, $assignees);
+        $this->assertSame([], project_assignees_by_project($this->pdo, [0]));
     }
 
     public function test_task_is_archived_depends_on_a_non_empty_timestamp(): void

@@ -115,4 +115,74 @@ final class UserActivityTest extends E2eTestCase
         $this->assertSame(200, $page->status);
         $this->assertNotNull($this->lastSeen($this->userId('admin')), 'The healed column must be written again like a fresh install.');
     }
+    /**
+     * Task #30 (v2): the dot renders next to every user name — the navbar,
+     * the task list assignee cell, the task detail creator/assignee/comment
+     * author and the admin page. jane is created and never signs in, so she
+     * is the red case; the admin just made requests, so they are the green
+     * one. The exact color boundaries live in tests/Unit/ActivityStatusTest.php.
+     */
+    public function test_the_activity_dot_shows_next_to_user_names_everywhere(): void
+    {
+        $admin = $this->adminSession();
+        $admin->get('/?page=tasks');   // stamp the admin as active
+        $response = $admin->post('/?page=admin', [
+            'action' => 'add_user',
+            'username' => 'jane',
+            'display_name' => 'Jane Doe',
+            'password' => 'JanePass12345',
+            'role' => 'user',
+        ]);
+        $this->assertSame(302, $response->status);
+        $janeId = $this->userId('jane');
+        $taskId = $admin->createTask('Dot test task', ['assignees' => [(string)$janeId]]);
+
+        // Navbar: the signed-in viewer just made requests — green next to their name.
+        $list = $admin->get('/?page=tasks');
+        $this->assertSame(200, $list->status);
+        $this->assertTrue(
+            $list->contains('navbar-text mx-2"><span class="tb-activity-dot tb-activity-green"'),
+            'The signed-in user must carry a green dot in the navbar.'
+        );
+        // Task list: the assignee cell renders dot + name (jane is red, never seen).
+        $this->assertTrue(
+            $list->contains('tb-activity-red" title="Inactive for over an hour"></span>Jane Doe'),
+            'Assignee names on the task list must carry the activity dot.'
+        );
+
+        // Task detail: creator, assignee and comment author all render with dots.
+        $comment = $admin->post('/?page=task&id=' . $taskId, [
+            'action' => 'comment',
+            'task_id' => (string)$taskId,
+            'body' => 'A comment from the active admin.',
+        ]);
+        $this->assertSame(302, $comment->status);
+        $detail = $admin->taskPage($taskId);
+        $this->assertSame(200, $detail->status);
+        $this->assertTrue(
+            $detail->contains('Created by <span class="tb-activity-dot tb-activity-green"'),
+            'The creator must carry the activity dot.'
+        );
+        $this->assertTrue(
+            $detail->contains('tb-activity-red" title="Inactive for over an hour"></span>Jane Doe'),
+            'The assignee on the detail page must carry the dot.'
+        );
+        $this->assertTrue(
+            $detail->contains('<strong><span class="tb-activity-dot tb-activity-green"'),
+            'The comment author must carry the dot.'
+        );
+
+        // Admin page: the users table pairs the dot with each name (the
+        // Last active column of v1 stays alongside).
+        $adminPage = $admin->get('/?page=admin');
+        $this->assertSame(200, $adminPage->status);
+        $this->assertTrue(
+            $adminPage->contains('tb-activity-red" title="Inactive for over an hour"></span>Jane Doe'),
+            'A never-seen user must show a red dot.'
+        );
+        $this->assertTrue(
+            $adminPage->contains('tb-activity-green" title="Active in the last 15 minutes"></span>Administrator'),
+            'The active admin must show a green dot.'
+        );
+    }
 }

@@ -77,46 +77,50 @@ function all_statuses(PDO $pdo): array {
 
 /** Assignable users in display-name order; drives the assignee pickers and filters. */
 function user_options(PDO $pdo): array {
-    return $pdo->query('SELECT id,display_name FROM users ORDER BY display_name')->fetchAll();
+    // last_seen_at rides along (#30) so name renderings that can carry markup
+    // (the assignee checkboxes on the edit pages) show the activity dot;
+    // <option>-based pickers keep using display_name only.
+    return $pdo->query('SELECT id,display_name,last_seen_at FROM users ORDER BY display_name')->fetchAll();
 }
 
 /**
- * Assignee display names for several tasks in one query, keyed by task id.
+ * Assignees for several tasks in one query, keyed by task id: each entry is a
+ * list of rows (display_name + last_seen_at) ready for tb_user_with_activity().
  * Tasks without any assignee are simply absent from the result. Replaces the
  * per-row query the task list used to run for every rendered row.
  *
- * @return array<int, string[]>
+ * @return array<int, array<int, array<string,mixed>>>
  */
-function task_assignee_names_by_task(PDO $pdo, array $taskIds): array {
+function task_assignees_by_task(PDO $pdo, array $taskIds): array {
     $ids = array_values(array_unique(array_filter(array_map('intval', $taskIds), fn($v) => $v > 0)));
     if (!$ids) return [];
     $placeholders = implode(',', array_fill(0, count($ids), '?'));
-    $s = $pdo->prepare('SELECT a.task_id, u.display_name FROM task_assignees a JOIN users u ON u.id=a.user_id WHERE a.task_id IN (' . $placeholders . ')');
+    $s = $pdo->prepare('SELECT a.task_id, u.display_name, u.last_seen_at FROM task_assignees a JOIN users u ON u.id=a.user_id WHERE a.task_id IN (' . $placeholders . ')');
     $s->execute($ids);
-    $names = [];
+    $assignees = [];
     foreach ($s->fetchAll() as $row) {
-        $names[(int)$row['task_id']][] = $row['display_name'];
+        $assignees[(int)$row['task_id']][] = $row;
     }
-    return $names;
+    return $assignees;
 }
 
 /**
- * Assignee display names for several projects in one query, keyed by project
- * id (the project list equivalent of task_assignee_names_by_task()).
+ * Assignees for several projects in one query, keyed by project id (the
+ * project list equivalent of task_assignees_by_task()).
  *
- * @return array<int, string[]>
+ * @return array<int, array<int, array<string,mixed>>>
  */
-function project_assignee_names_by_project(PDO $pdo, array $projectIds): array {
+function project_assignees_by_project(PDO $pdo, array $projectIds): array {
     $ids = array_values(array_unique(array_filter(array_map('intval', $projectIds), fn($v) => $v > 0)));
     if (!$ids) return [];
     $placeholders = implode(',', array_fill(0, count($ids), '?'));
-    $s = $pdo->prepare('SELECT pa.project_id, u.display_name FROM project_assignees pa JOIN users u ON u.id=pa.user_id WHERE pa.project_id IN (' . $placeholders . ')');
+    $s = $pdo->prepare('SELECT pa.project_id, u.display_name, u.last_seen_at FROM project_assignees pa JOIN users u ON u.id=pa.user_id WHERE pa.project_id IN (' . $placeholders . ')');
     $s->execute($ids);
-    $names = [];
+    $assignees = [];
     foreach ($s->fetchAll() as $row) {
-        $names[(int)$row['project_id']][] = $row['display_name'];
+        $assignees[(int)$row['project_id']][] = $row;
     }
-    return $names;
+    return $assignees;
 }
 
 /** A task is archived when its archived_at column carries a non-empty value. */
@@ -486,7 +490,14 @@ function tb_touch_last_seen(PDO $pdo): void {
     $sql = $isMysql
         ? 'UPDATE users SET last_seen_at = CURRENT_TIMESTAMP WHERE id = ? AND (last_seen_at IS NULL OR last_seen_at < NOW() - INTERVAL ' . TB_LAST_SEEN_MIN_INTERVAL_MINUTES . ' MINUTE)'
         : "UPDATE users SET last_seen_at = CURRENT_TIMESTAMP WHERE id = ? AND (last_seen_at IS NULL OR last_seen_at <= datetime('now', '-" . TB_LAST_SEEN_MIN_INTERVAL_MINUTES . " minutes'))";
-    $pdo->prepare($sql)->execute([$u['id']]);
+    $st = $pdo->prepare($sql);
+    $st->execute([$u['id']]);
+    // Keep the session copy in step with the column: the navbar renders the
+    // signed-in user's activity dot from the session, so whenever the stored
+    // stamp is actually refreshed, the session learns the new value too.
+    if ($st->rowCount() > 0 && isset($_SESSION['user']) && is_array($_SESSION['user'])) {
+        $_SESSION['user']['last_seen_at'] = $pdo->query('SELECT CURRENT_TIMESTAMP')->fetchColumn();
+    }
 }
 
 /**
@@ -518,6 +529,58 @@ function tb_last_seen_label(?string $lastSeenAt, ?int $now = null): string {
         return $d . 'd' . ($h > 0 ? ' ' . $h . 'h' : '') . ' ago';
     }
     return intdiv($s, 86400) . 'd ago';   // and plain days for the long tail
+}
+
+// The traffic-light thresholds of the activity dot (#30): green = seen within
+// the last 15 minutes, yellow = seen 15-60 minutes ago, red = seen longer ago.
+// Named constants so the admin wording and the tests stay in lockstep.
+const TB_ACTIVITY_GREEN_AFTER_MINUTES = 15;
+const TB_ACTIVITY_YELLOW_AFTER_MINUTES = 60;
+
+/**
+ * The activity level of a user stamp: 'green', 'yellow' or 'red' (#30). Pure:
+ * pass $now (a unix timestamp) to pin the clock — call sites that already read
+ * the database's clock feed it here; tests pass a fixed one. A user without a
+ * stamp (never seen since the feature landed) or an unparsable one sits at the
+ * red end of the scale, which is what "inactive for over an hour" includes.
+ */
+function tb_activity_level(?string $lastSeenAt, ?int $now = null): string {
+    if ($lastSeenAt === null || $lastSeenAt === '') return 'red';
+    $ts = strtotime($lastSeenAt);
+    if ($ts === false) return 'red';
+    $m = intdiv(max(0, ($now ?? time()) - $ts), 60);
+    if ($m <= TB_ACTIVITY_GREEN_AFTER_MINUTES) return 'green';
+    if ($m <= TB_ACTIVITY_YELLOW_AFTER_MINUTES) return 'yellow';
+    return 'red';
+}
+
+/**
+ * The activity dot next to a user name (#30): a small green/yellow/red disc
+ * with a title attribute naming the state, so the color is never the only
+ * carrier of the meaning.
+ */
+function tb_activity_dot(?string $lastSeenAt, ?int $now = null): string {
+    $titles = [
+        'green' => 'Active in the last 15 minutes',
+        'yellow' => 'Not active in the last hour',
+        'red' => 'Inactive for over an hour',
+    ];
+    $level = tb_activity_level($lastSeenAt, $now);
+    return '<span class="tb-activity-dot tb-activity-' . $level . '" title="' . $titles[$level] . '"></span>';
+}
+
+/**
+ * THE standard way to render a user name anywhere on the board (#30): the
+ * activity dot followed by the escaped display name. Deleted users (a LEFT
+ * JOIN miss or an empty name) render as "Deleted user" without a dot — there
+ * is no account left whose activity could be measured. $user is any row or
+ * array that carries display_name and (optionally) last_seen_at.
+ */
+function tb_user_with_activity(?array $user, ?int $now = null): string {
+    if ($user === null || !isset($user['display_name']) || $user['display_name'] === null || $user['display_name'] === '') {
+        return h('Deleted user');
+    }
+    return tb_activity_dot($user['last_seen_at'] ?? null, $now) . h($user['display_name']);
 }
 
 /**

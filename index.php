@@ -58,34 +58,14 @@ if (user()) {
     header('Pragma: no-cache');
 }
 
-// Task scheduler (#18): make sure the schedule_period column exists on tasks.
-// Fresh installs get it from schema.sql; this idempotent check upgrades existing
-// databases in place so no manual migration is required.
-
-// Task scheduler (#18) and task archive (#12): make sure the scheduler and archive
-// columns exist on tasks. Fresh installs get them from schema.sql; this idempotent
-// check upgrades existing databases in place so no manual migration is required.
+// Idempotent schema self-heal (#18 scheduler, #12 archive, #24 projects):
+// existing databases upgrade in place on the first request after a deployment,
+// so shipping an update never breaks the board with a missing column or table.
 try {
-    if ($pdo->getAttribute(PDO::ATTR_DRIVER_NAME) === 'mysql') {
-        $scheduleColumn = $pdo->query("SHOW COLUMNS FROM tasks LIKE 'schedule_period'")->fetchColumn();
-        if (!$scheduleColumn) {
-            $pdo->exec("ALTER TABLE tasks ADD COLUMN schedule_period VARCHAR(20) NULL DEFAULT NULL AFTER parent_id");
-        }
-        $archiveColumn = $pdo->query("SHOW COLUMNS FROM tasks LIKE 'archived_at'")->fetchColumn();
-        if (!$archiveColumn) {
-            $pdo->exec("ALTER TABLE tasks ADD COLUMN archived_at TIMESTAMP NULL DEFAULT NULL AFTER updated_at");
-        }
-    } else {
-        $scheduleColumns = array_column($pdo->query('PRAGMA table_info(tasks)')->fetchAll(PDO::FETCH_ASSOC), 'name');
-        if (!in_array('schedule_period', $scheduleColumns, true)) {
-            $pdo->exec('ALTER TABLE tasks ADD COLUMN schedule_period TEXT NULL DEFAULT NULL');
-        }
-        if (!in_array('archived_at', $scheduleColumns, true)) {
-            $pdo->exec('ALTER TABLE tasks ADD COLUMN archived_at TEXT NULL DEFAULT NULL');
-        }
-    }
+    tb_migrate_schema($pdo);
 } catch (Throwable $e) {
-    // Ignore: the cron endpoint and the archive page report clear errors if a column is still missing.
+    // Ignore: pages report clear errors if a schema part is still missing and
+    // the SQL for a manual migration is documented in README.md.
 }
 
 if (empty($_SESSION['csrf'])) $_SESSION['csrf'] = bin2hex(random_bytes(32));

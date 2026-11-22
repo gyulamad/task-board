@@ -305,3 +305,92 @@ function ensure_users_theme_column(PDO $pdo): void {
         $pdo->exec("ALTER TABLE users ADD COLUMN theme VARCHAR(20) NOT NULL DEFAULT 'light'");
     }
 }
+
+/**
+ * Idempotent schema self-heal (#18 scheduler, #12 archive, #24 projects).
+ * Fresh installs get everything from schema.sql; this check upgrades existing
+ * databases in place on the first request after a deployment, so shipping an
+ * update never requires manual SQL. It runs a handful of cheap catalog reads
+ * per request (SHOW COLUMNS / PRAGMA table_info / sqlite_master) and only
+ * writes to the database when a schema part is actually missing.
+ *
+ * The projects part (#24) exists because a deployment that lands without the
+ * documented upgrade SQL used to fatal on every list page with "table
+ * projects doesn't exist" (the task pages query the projects schema
+ * unconditionally). With this in place the first request recreates the
+ * missing tables and column instead.
+ */
+function tb_migrate_schema(PDO $pdo): void {
+    $isMysql = $pdo->getAttribute(PDO::ATTR_DRIVER_NAME) === 'mysql';
+    $taskColumns = $isMysql
+        ? array_column($pdo->query('SHOW COLUMNS FROM tasks')->fetchAll(PDO::FETCH_ASSOC), 'Field')
+        : array_column($pdo->query('PRAGMA table_info(tasks)')->fetchAll(PDO::FETCH_ASSOC), 'name');
+    if (!in_array('schedule_period', $taskColumns, true)) {
+        $pdo->exec($isMysql
+            ? 'ALTER TABLE tasks ADD COLUMN schedule_period VARCHAR(20) NULL DEFAULT NULL AFTER parent_id'
+            : 'ALTER TABLE tasks ADD COLUMN schedule_period TEXT NULL DEFAULT NULL');
+    }
+    if (!in_array('archived_at', $taskColumns, true)) {
+        $pdo->exec($isMysql
+            ? 'ALTER TABLE tasks ADD COLUMN archived_at TIMESTAMP NULL DEFAULT NULL AFTER updated_at'
+            : 'ALTER TABLE tasks ADD COLUMN archived_at TEXT NULL DEFAULT NULL');
+    }
+
+    $hasProjects = $isMysql
+        ? (bool)$pdo->query("SHOW TABLES LIKE 'projects'")->fetchColumn()
+        : (bool)$pdo->query("SELECT 1 FROM sqlite_master WHERE type='table' AND name='projects'")->fetchColumn();
+    if (!$hasProjects) {
+        if ($isMysql) {
+            $pdo->exec("CREATE TABLE projects (
+                id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+                name VARCHAR(200) NOT NULL,
+                description TEXT NULL,
+                status_id INT UNSIGNED NOT NULL,
+                created_by INT UNSIGNED NOT NULL,
+                created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                CONSTRAINT fk_project_status FOREIGN KEY (status_id) REFERENCES statuses(id),
+                CONSTRAINT fk_project_creator FOREIGN KEY (created_by) REFERENCES users(id)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4");
+            $pdo->exec("CREATE TABLE project_assignees (
+                project_id INT UNSIGNED NOT NULL,
+                user_id INT UNSIGNED NOT NULL,
+                PRIMARY KEY (project_id, user_id),
+                FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE,
+                FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4");
+        } else {
+            $pdo->exec("CREATE TABLE projects (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT NOT NULL,
+                description TEXT NULL,
+                status_id INTEGER NOT NULL,
+                created_by INTEGER NOT NULL,
+                created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                CONSTRAINT fk_project_status FOREIGN KEY (status_id) REFERENCES statuses(id),
+                CONSTRAINT fk_project_creator FOREIGN KEY (created_by) REFERENCES users(id)
+            )");
+            $pdo->exec("CREATE TABLE project_assignees (
+                project_id INTEGER NOT NULL,
+                user_id INTEGER NOT NULL,
+                PRIMARY KEY (project_id, user_id),
+                FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE,
+                FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+            )");
+        }
+    }
+
+    if (!in_array('project_id', $taskColumns, true)) {
+        if ($isMysql) {
+            $pdo->exec('ALTER TABLE tasks ADD COLUMN project_id INT UNSIGNED NULL AFTER schedule_period');
+            $pdo->exec('ALTER TABLE tasks ADD CONSTRAINT fk_task_project FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE SET NULL');
+        } else {
+            // SQLite cannot attach a foreign key to an existing column, so the
+            // self-healed column is a plain nullable one; fresh installs get the
+            // real constraint from schema.sql and deletes keep the tasks intact
+            // because the list queries tolerate a missing project reference.
+            $pdo->exec('ALTER TABLE tasks ADD COLUMN project_id INTEGER NULL DEFAULT NULL');
+        }
+    }
+}

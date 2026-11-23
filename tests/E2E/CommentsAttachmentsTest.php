@@ -30,51 +30,77 @@ final class CommentsAttachmentsTest extends E2eTestCase
         $this->assertSame('1', (string)$comments);
     }
 
-    public function test_comment_history_shows_the_fact_without_duplicating_the_body(): void
+    public function test_comment_history_shows_a_100_char_excerpt_and_the_audit_link(): void
     {
         $admin = $this->adminSession();
-        $id = $admin->createTask('History duplication task');
+        $id = $admin->createTask('History excerpt task');
 
+        $long = str_repeat('x', 150);
         $response = $admin->post('/?page=task&id=' . $id, [
             'action' => 'comment',
             'task_id' => (string)$id,
-            'body' => 'Unique pumpkin body',
+            'body' => $long,
         ]);
         $this->assertSame(302, $response->status);
 
         $page = $admin->taskPage($id);
-        // Every comment is rendered with its own anchor so the history can link to it.
-        $this->assertTrue($page->contains('id="comment-'));
-        // The comment body appears exactly once: in the comments section itself,
-        // never again as inline history details (#62).
-        $this->assertSame(1, substr_count($page->body, 'Unique pumpkin body'));
+        // The full body appears exactly once: in the comments section itself.
+        $this->assertSame(1, substr_count($page->body, $long));
 
         $history = substr($page->body, (int)strrpos($page->body, '<h2 class="h5">History</h2>'));
-        $this->assertStringNotContainsString('Unique pumpkin body', $history);
-        // The history row only carries the fact and a details link that scrolls
-        // to the comment itself via the anchor tag.
+        // The history row shows the fact plus the comment cut at 100 chars with
+        // the ellipsis; the tail never leaks into the history (#62).
         $this->assertStringContainsString('Comment added', $history);
-        $this->assertStringContainsString('href="#comment-', $history);
-        // Other events keep their audit page link and their inline details.
-        $this->assertStringContainsString('?page=task_history&id=', $history);
-        $this->assertStringContainsString('History duplication task', $history);
+        $this->assertStringContainsString(str_repeat('x', 100) . '…', $history);
+        $this->assertStringNotContainsString(str_repeat('x', 101), $history);
+        // The details link points at the full audit page, like it was before.
+        $historyId = (int)TestServer::pdo()->query(
+            "SELECT id FROM task_history WHERE task_id={$id} AND event='Comment added' LIMIT 1"
+        )->fetchColumn();
+        $this->assertStringContainsString('href="?page=task_history&id=' . $historyId . '"', $history);
+        // Other events keep their audit page link and their inline details too.
+        $this->assertStringContainsString('History excerpt task', $history);
     }
 
-    public function test_comment_history_anchor_targets_the_added_comment(): void
+    public function test_a_short_comment_history_row_stays_uncut(): void
     {
         $admin = $this->adminSession();
-        $id = $admin->createTask('Anchor task');
+        $id = $admin->createTask('Short history task');
+        $short = str_repeat('y', 99);
+        $admin->post('/?page=task&id=' . $id, [
+            'action' => 'comment',
+            'task_id' => (string)$id,
+            'body' => $short,
+        ]);
+
+        $page = $admin->taskPage($id);
+        // 100 characters or less stay inline unchanged, in both the comment and
+        // its history row; no ellipsis is added.
+        $this->assertSame(2, substr_count($page->body, $short));
+        $this->assertStringNotContainsString(str_repeat('y', 99) . '…', $page->body);
+    }
+
+    public function test_comment_history_details_link_targets_the_audit_page(): void
+    {
+        $admin = $this->adminSession();
+        $id = $admin->createTask('Audit link task');
         $admin->post('/?page=task&id=' . $id, [
             'action' => 'comment',
             'task_id' => (string)$id,
             'body' => 'Target comment body',
         ]);
 
-        $commentId = (int)TestServer::pdo()->query('SELECT id FROM comments WHERE task_id=' . $id . ' LIMIT 1')->fetchColumn();
+        $historyId = (int)TestServer::pdo()->query(
+            "SELECT id FROM task_history WHERE task_id={$id} AND event='Comment added' LIMIT 1"
+        )->fetchColumn();
         $page = $admin->taskPage($id);
-        // The anchor the history links to is the id of the comment that was added.
-        $this->assertTrue($page->contains('id="comment-' . $commentId . '"'));
-        $this->assertTrue($page->contains('href="#comment-' . $commentId . '"'));
+        $history = substr($page->body, (int)strrpos($page->body, '<h2 class="h5">History</h2>'));
+        // The comment row's details link goes to the change details page, which
+        // carries the full content of the comment (#62).
+        $this->assertStringContainsString('href="?page=task_history&id=' . $historyId . '"', $history);
+        $audit = $admin->get('/?page=task_history&id=' . $historyId);
+        $this->assertSame(200, $audit->status);
+        $this->assertTrue($audit->contains('Target comment body'), 'The audit page keeps showing the full comment.');
     }
 
     public function test_the_audit_page_keeps_carrying_the_comment_body(): void

@@ -19,6 +19,10 @@ const TASK_BOARD_UPDATE_FILES = [
     'config.example.php',
     '.gitignore',
     'uploads/.htaccess',
+    // The migrations convention doc (#59/#68) ships with the code; the .sql
+    // scripts themselves are instance-local state (uploads + repo checkouts)
+    // and are deliberately not replaced by an update.
+    'migrations/README.md',
 ];
 
 function tb_update_http_get(string $url, int $maxBytes): string {
@@ -391,6 +395,89 @@ function tb_backup_send(array $backup): never {
 
 // ---- End full backup download (#49) --------------------------------------------------------
 
+// ---- SQL migration upload (#59/#68) --------------------------------------------------------
+// Requirement 1 of the upgrade packs: a database change that has to run on this
+// instance can be uploaded as a plain .sql file right here. The file is stored
+// version-marked in migrations/ (the same tracked, once-only flow the repo
+// migrations use) and applied immediately, so "upload + run" is one step. The
+// code lives in updater.php on purpose (see the backup section above): the
+// running updater only ever replaces allowlisted files, and this page IS one.
+const TASK_BOARD_MIGRATION_MAX_BYTES = 1024 * 1024;
+
+/** Stores the uploaded .sql as a version-marked migration and applies it. Returns the confirmation message. */
+function tb_update_upload_migration(PDO $pdo): string {
+    $file = $_FILES['migration_file'] ?? null;
+    if (!is_array($file) || ($file['error'] ?? UPLOAD_ERR_NO_FILE) !== UPLOAD_ERR_OK) {
+        throw new RuntimeException('Choose a .sql file to upload.');
+    }
+    if ((int)($file['size'] ?? 0) > TASK_BOARD_MIGRATION_MAX_BYTES) {
+        throw new RuntimeException('The migration script exceeds the 1 MB limit.');
+    }
+    $original = (string)($file['name'] ?? '');
+    if (!str_ends_with(strtolower($original), '.sql')) {
+        throw new RuntimeException('Only .sql files are accepted.');
+    }
+    $sql = (string)file_get_contents((string)$file['tmp_name']);
+    if (trim($sql) === '') throw new RuntimeException('The uploaded file is empty.');
+    if (tb_migration_split_statements($sql) === []) {
+        throw new RuntimeException('The uploaded file contains no SQL statements.');
+    }
+    $dir = __DIR__ . '/migrations';
+    if (!is_dir($dir) && !@mkdir($dir, 0775, true) && !is_dir($dir)) {
+        throw new RuntimeException('Could not create the migrations directory.');
+    }
+    // A human-readable slug may ride along, but the version stamp is what the
+    // runner keys on: UTC time to the second keeps uploads ordered and unique.
+    $slug = trim((string)preg_replace('/[^A-Za-z0-9._-]+/', '-', pathinfo($original, PATHINFO_FILENAME)), '-._');
+    if ($slug === '') $slug = 'uploaded';
+    $slug = substr($slug, 0, 80);
+    $target = $dir . '/' . gmdate('YmdHis') . '-' . $slug . '.sql';
+    if (file_exists($target)) {
+        throw new RuntimeException('A migration with this timestamp already exists; try again in a second.');
+    }
+    if (!@move_uploaded_file((string)$file['tmp_name'], $target) && !@rename((string)$file['tmp_name'], $target) && file_put_contents($target, $sql, LOCK_EX) === false) {
+        throw new RuntimeException('Could not store the migration script in migrations/.');
+    }
+    $result = tb_apply_pending_migrations($pdo, $dir);
+    if (!empty($result['failed'])) {
+        // A script the driver rejected must not linger: the runner would retry
+        // it on every request. Drop the file and let the admin fix and re-upload.
+        @unlink($target);
+        throw new RuntimeException('The migration failed to apply and was not kept: ' . $result['failed'][array_key_first($result['failed'])]);
+    }
+    return 'Migration ' . basename($target) . ' uploaded and applied'
+        . (empty($result['applied']) ? '' : ' (' . implode(', ', $result['applied']) . ' applied in total).')
+        . ' It is now part of the migrations/ history and will never run again on this instance.';
+}
+
+/**
+ * The migration state of this instance for the Software updates page (#59/#68):
+ * every migration file with its applied timestamp, plus versions that were
+ * applied on this instance but whose file is no longer present (deployed from
+ * a tree that dropped the file).
+ *
+ * @return array<int,array{version:string,file:string,applied_at:?string}> or null when the migrations table does not exist yet
+ */
+function tb_update_migration_status(PDO $pdo, string $dir): ?array {
+    try {
+        $applied = $pdo->query('SELECT version, applied_at FROM migrations')->fetchAll(PDO::FETCH_ASSOC);
+    } catch (Throwable $e) {
+        return null;
+    }
+    $byVersion = [];
+    foreach ($applied as $row) $byVersion[(string)$row['version']] = (string)$row['applied_at'];
+    $rows = [];
+    foreach (tb_migration_scan($dir) as $entry) {
+        $rows[] = ['version' => $entry['version'], 'file' => $entry['file'], 'applied_at' => $byVersion[$entry['version']] ?? null];
+        unset($byVersion[$entry['version']]);
+    }
+    foreach ($byVersion as $version => $appliedAt) {
+        $rows[] = ['version' => $version, 'file' => '(file no longer present)', 'applied_at' => $appliedAt];
+    }
+    usort($rows, fn(array $a, array $b): int => [$a['version'], $a['file']] <=> [$b['version'], $b['file']]);
+    return $rows;
+}
+
 function task_board_update_page(PDO $pdo, array $config): void {
     $error = '';
     $message = '';
@@ -427,8 +514,30 @@ function task_board_update_page(PDO $pdo, array $config): void {
                 $files['version.json'] = json_encode(['source' => $selectedType, 'ref' => $sourceInfo['ref'], 'sha' => $sourceInfo['sha'], 'installed_at' => gmdate('c')], JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES) . "\n";
                 $installedLabel = $sourceInfo['label'];
                 $backup = tb_update_install($files);
+                // Version-marked migrations (#59/#68): after the files land,
+                // every pending migrations/*.sql applies automatically, so a
+                // release that carries schema changes no longer needs hand-run
+                // SQL. The install already happened, so a failing migration is
+                // reported in the message instead of failing the update.
+                $migrations = tb_apply_pending_migrations($pdo);
                 $sourceInfo = null;
-                $message = 'Update installed from ' . $installedLabel . '. A private backup was saved temporarily at ' . $backup . '. No database changes were run; apply any required schema migrations manually after reviewing the release notes.';
+                $message = 'Update installed from ' . $installedLabel . '. A private backup was saved temporarily at ' . $backup . '. '
+                    . (empty($migrations['applied'])
+                        ? 'No pending database migrations were found.'
+                        : 'Database migrations applied automatically: ' . implode(', ', $migrations['applied']) . '.')
+                    . (empty($migrations['failed'])
+                        ? ''
+                        : ' FAILED migrations (not recorded, they will retry): ' . implode(' | ', array_map(fn(string $v, string $m): string => $v . ': ' . $m, array_keys($migrations['failed']), $migrations['failed'])));
+            } catch (Throwable $e) {
+                $error = $e->getMessage();
+            }
+        }
+    } elseif ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['action'] ?? '') === 'upload_migration') {
+        if (!tb_update_verify_admin_password($pdo, (string)($_POST['current_password'] ?? ''))) {
+            $error = 'Your current administrator password was not accepted.';
+        } else {
+            try {
+                $message = tb_update_upload_migration($pdo);
             } catch (Throwable $e) {
                 $error = $e->getMessage();
             }
@@ -450,6 +559,7 @@ function task_board_update_page(PDO $pdo, array $config): void {
 
     $installed = [];
     if (is_file(__DIR__ . '/version.json')) $installed = json_decode((string)file_get_contents(__DIR__ . '/version.json'), true) ?: [];
+    $migrationRows = tb_update_migration_status($pdo, __DIR__ . '/migrations');
     render_header('Software updates', $config); ?>
     <div class="card p-4">
         <h2 class="h4">Software updates</h2>
@@ -475,6 +585,21 @@ function task_board_update_page(PDO $pdo, array $config): void {
             <div class="mb-3"><label class="form-label" for="backup_password">Current administrator password</label><input class="form-control" type="password" id="backup_password" name="current_password" autocomplete="current-password" required></div>
             <button class="btn btn-outline-secondary">Download full backup (code, uploads, SQL dump)</button>
         </form>
+        <hr><h3 class="h6">Upload a SQL migration</h3>
+        <p class="small muted">A database change for this instance (requirement 1 of the upgrade packs, #59): upload a <span class="font-monospace">.sql</span> file (max 1 MB) and it is stored version-marked in <span class="font-monospace">migrations/</span> and applied immediately — recorded once, never re-run. Statements end at a semicolon that closes the line; write scripts re-runnable (<span class="font-monospace">IF [NOT] EXISTS</span> guards) because MySQL auto-commits DDL. Every pending file in <span class="font-monospace">migrations/</span> — uploaded or shipped with the code — also applies automatically on the first request after a deployment.</p>
+        <form method="post" enctype="multipart/form-data" class="mb-3" onsubmit="return confirm('Upload and apply this migration now? Make sure you have a database backup.')"><?=csrf_field()?>
+            <input type="hidden" name="action" value="upload_migration">
+            <div class="mb-3"><input class="form-control" type="file" name="migration_file" accept=".sql" required></div>
+            <div class="mb-3"><label class="form-label" for="migration_password">Current administrator password</label><input class="form-control" type="password" id="migration_password" name="current_password" autocomplete="current-password" required></div>
+            <button class="btn btn-outline-primary">Upload and apply migration</button>
+        </form>
+        <?php if ($migrationRows !== null): ?>
+            <h3 class="h6">Migration state</h3>
+            <div class="table-responsive"><table class="table table-sm table-bordered align-middle mb-3"><thead><tr><th scope="col">Version</th><th scope="col">File</th><th scope="col">Applied</th></tr></thead><tbody>
+            <?php foreach ($migrationRows as $row): ?><tr><td class="font-monospace"><?=h($row['version'])?></td><td><?=h($row['file'])?></td><td><?php if ($row['applied_at'] !== null): ?><?=h($row['applied_at'])?><?php else: ?><span class="badge text-bg-warning text-dark">pending</span><?php endif; ?></td></tr><?php endforeach; ?>
+            <?php if (!$migrationRows): ?><tr><td colspan="3" class="text-center muted py-3">No migration files yet. Pending scripts appear here before they run; the table fills as migrations apply.</td></tr><?php endif; ?>
+            </tbody></table></div>
+        <?php endif; ?>
         <?php if ($sourceInfo): ?>
             <hr><h3 class="h6">Install <?=h($sourceInfo['label'])?></h3>
             <p class="small muted">The updater changes only the application's allowlisted files. It never overwrites config.php or uploaded files, deletes files, executes SQL, or runs downloaded scripts as part of extraction. A private backup is created first. Make your own database backup before updating — the full backup download above is exactly that.</p>

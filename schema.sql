@@ -225,6 +225,17 @@ CREATE TABLE messages (
     FOREIGN KEY (recipient_id) REFERENCES users(id) ON DELETE SET NULL
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
+-- Version-marked SQL migrations (#59/#68): every migrations/<version>-<slug>.sql
+-- file that has not run yet is applied automatically on the first request that
+-- sees it (and by the Software updates page after an install), oldest version
+-- first. This table records what already ran so each migration runs exactly
+-- once; see migrations/README.md for the naming convention.
+CREATE TABLE migrations (
+    id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+    version VARCHAR(64) NOT NULL UNIQUE,
+    applied_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
 -- Notifications (#58): the board drops one row per task-history event into
 -- every assignee's stream (minus the actor), so each user sees at the top of
 -- the board and on the Notifications page which of their tasks moved. Both

@@ -79,6 +79,18 @@ try {
     // the SQL for a manual migration is documented in README.md.
 }
 
+// Version-marked SQL migrations (#59/#68): every migrations/<version>-<slug>.sql
+// file that has not run yet is applied automatically on the first request that
+// sees it - whether it arrived through a git deployment, an upgrade pack or a
+// manual upload - so a schema change never needs hand-run SQL. A failing
+// migration is reported on the Software updates page; it never breaks the
+// request and simply retries on the next one.
+try {
+    tb_apply_pending_migrations($pdo);
+} catch (Throwable $e) {
+    // Ignore: the same philosophy as the schema self-heal above.
+}
+
 // Activity status periods (#34): load the administrator's configured period
 // list once per request so every dot on every page (navbar, admin table,
 // task/creator/assignee renderings) ages stamps against the same periods. A

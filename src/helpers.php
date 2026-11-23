@@ -1362,6 +1362,123 @@ function tb_migrate_schema(PDO $pdo): void {
             )");
         }
     }
+
+    // Version-marked migrations (#59/#68): the migration runner records every
+    // applied migrations/<version>-<slug>.sql file in this table, so the
+    // board reads the table unconditionally on every request. A deployment
+    // that lands without the upgrade SQL recreates it on the first request -
+    // the same self-heal discipline the messages/notifications tables follow
+    // (#56/#58). Fresh installs get it from schema.sql; the DDL mirrors it.
+    $hasMigrations = $isMysql
+        ? (bool)$pdo->query("SHOW TABLES LIKE 'migrations'")->fetchColumn()
+        : (bool)$pdo->query("SELECT 1 FROM sqlite_master WHERE type='table' AND name='migrations'")->fetchColumn();
+    if (!$hasMigrations) {
+        if ($isMysql) {
+            $pdo->exec("CREATE TABLE migrations (
+                id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+                version VARCHAR(64) NOT NULL UNIQUE,
+                applied_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4");
+        } else {
+            $pdo->exec("CREATE TABLE migrations (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                version TEXT NOT NULL UNIQUE,
+                applied_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+            )");
+        }
+    }
+}
+
+/**
+ * Lists the migration scripts in $dir (#59/#68). A migration file is named
+ * <version>-<slug>.sql where <version> is a 14-digit UTC stamp
+ * (YYYYMMDDHHMMSS) that sorts lexicographically in execution order; the slug
+ * is optional and only there for humans. Anything else in the folder is
+ * ignored, so notes, exports and half-renamed files never run.
+ *
+ * @return array<int,array{version:string,file:string}> sorted by version, then filename
+ */
+function tb_migration_scan(string $dir): array {
+    if (!is_dir($dir)) return [];
+    $found = [];
+    foreach (scandir($dir) ?: [] as $file) {
+        if (!str_ends_with(strtolower($file), '.sql')) continue;
+        if (preg_match('/^(\d{14})(?:-[A-Za-z0-9._-]+)?\.sql$/i', $file, $m) !== 1) continue;
+        $found[] = ['version' => $m[1], 'file' => $file];
+    }
+    usort($found, fn(array $a, array $b): int => [$a['version'], $a['file']] <=> [$b['version'], $b['file']]);
+    return $found;
+}
+
+/**
+ * Splits one migration script into individual statements (#59/#68) with the
+ * same mechanical rule the schema importer uses (tests/Support/Schema.php):
+ * statements end at a semicolon that closes the line. Migration scripts are
+ * plain DDL/DML - triggers and stored procedures with embedded semicolons
+ * are out of scope and their fragments would be rejected by the driver
+ * anyway. Chunks that hold nothing but comments are dropped, so a trailing
+ * comment after the last statement never becomes a bogus empty statement.
+ *
+ * @return string[] the non-empty statements, in file order
+ */
+function tb_migration_split_statements(string $sql): array {
+    $parts = preg_split('/;[ \t]*(?:--[^\r\n]*\r?\n|(?:\r?\n)|$)/', $sql) ?: [];
+    $statements = [];
+    foreach ($parts as $part) {
+        $part = trim($part);
+        if ($part === '') continue;
+        if (trim((string)preg_replace('/^[\s]*--.*$/m', '', $part)) === '') continue;
+        $statements[] = $part;
+    }
+    return $statements;
+}
+
+/**
+ * Applies every not-yet-recorded migration script in $dir, oldest first
+ * (#59/#68). Each file runs inside one transaction and is recorded in the
+ * migrations table only after it committed, so an interrupted run never
+ * marks a script as applied and the next request simply retries it. The
+ * first failure stops the run: later migrations may depend on earlier ones,
+ * and the recorded state stays exactly "what actually ran".
+ *
+ * On MySQL the driver auto-commits every DDL statement, so a failed
+ * multi-statement migration can leave earlier CREATE/ALTER statements in
+ * place while the version stays unrecorded - write migration scripts
+ * re-runnable (IF [NOT] EXISTS guards) and the retry converges. On SQLite
+ * the transaction rolls the failed script back completely.
+ *
+ * @return array{applied:string[],failed:array<string,string>} applied version stamps and, per failed version, the driver error
+ */
+function tb_apply_pending_migrations(PDO $pdo, ?string $dir = null): array {
+    $result = ['applied' => [], 'failed' => []];
+    $dir ??= __DIR__ . '/../migrations';
+    try {
+        $appliedVersions = $pdo->query('SELECT version FROM migrations')->fetchAll(PDO::FETCH_COLUMN);
+    } catch (Throwable $e) {
+        // Without the migrations table nothing can be tracked (pre-install
+        // board); the install flow and the schema self-heal create it.
+        $result['failed']['_'] = 'The migrations table is missing.';
+        return $result;
+    }
+    foreach (tb_migration_scan($dir) as $entry) {
+        if (in_array($entry['version'], $appliedVersions, true)) continue;
+        $sql = (string)file_get_contents($dir . '/' . $entry['file']);
+        if (trim($sql) === '') continue;
+        try {
+            $pdo->beginTransaction();
+            foreach (tb_migration_split_statements($sql) as $statement) {
+                $pdo->exec($statement);
+            }
+            $pdo->commit();
+        } catch (Throwable $e) {
+            if ($pdo->inTransaction()) $pdo->rollBack();
+            $result['failed'][$entry['version']] = $e->getMessage();
+            break;
+        }
+        $pdo->prepare('INSERT INTO migrations(version) VALUES(?)')->execute([$entry['version']]);
+        $result['applied'][] = $entry['version'];
+    }
+    return $result;
 }
 
 /**

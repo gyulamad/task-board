@@ -16,6 +16,7 @@ A lightweight multi-user task and message board for PHP 8.2+ and MySQL/MariaDB s
 - Sortable task list: clicking a column name (Task, Status, Assignees, Parent, Updated) orders the list; shared helpers make it easy to reuse on other CRUD lists
 - Saved searches on the task list: a Save search button stores the current list filters under a name and the Saved searches dropdown re-opens them; the searches are per user and travel as plain URLs
 - Kanban board page (#43): one column per task status with every non-archived task in its status column; the task list's filter card and saved searches sit on top, shared as one implementation (DRY) so filters and searches behave the same on both views
+- Complexity estimation and dependency waterflow chart (#44): every task carries a complexity (default 1, edited on the task form); the Waterflow page arranges all non-archived tasks into dependency levels from their "Depends on" links and sizes each task's block width by its complexity relative to the widest task in view, with the shared filter card and saved searches on top
 - Comments, attachments, history and task relationships
 - Task and project administration split into focused pages (#42): the Administration page is a compact hub linking to Users (create, edit, delete accounts) and Task statuses (rename, reorder, completion flag, colour, delete), with the uploads maintenance action and the activity periods link kept on the hub
 - Admin can add status labels and mark completion statuses; existing statuses can be renamed, reordered, given an optional #RRGGBB colour and deleted on the Task statuses page (a status still used by tasks and the last remaining status cannot be deleted). The colour renders on every status badge of the board — task list, task/project/archive pages — with an automatically readable text colour; statuses without one keep the built-in badge look
@@ -144,6 +145,27 @@ dropdowns and the saved searches behave exactly like on the task list:
 - opening a saved search from the board navigates to `?page=kanban&...`, from
   the task list to `?page=tasks&...`,
 - archived tasks never appear on the board (they live in the archive only).
+
+## Task complexity and the dependency waterflow chart (#44)
+Every task carries a **complexity** — how big the task is, a whole number from 1
+to 1000, default 1. It is edited on the task form right next to the status and
+shown on the task page; fresh installs get `tasks.complexity` from `schema.sql`,
+existing boards are upgraded automatically on the first request after deployment
+(the idempotent `ALTER TABLE tasks ADD COLUMN complexity` in `tb_migrate_schema()`).
+
+The **Waterflow** link in the menu opens the dependency chart: all non-archived
+tasks arranged in levels that follow their "Depends on" links — level 0 holds the
+tasks nothing in the view depends on, level N the tasks whose prerequisites all
+sit in earlier levels (`tb_waterflow_levels()`; dependencies on archived or
+filtered-out tasks cannot block, and tasks stuck in a dependency cycle are parked
+below the flow so the chart always terminates). Every task renders as a block
+whose width is its complexity relative to the widest complexity in the current
+view, labelled with the ×complexity and the status badge.
+
+The filter card on top is the task list's shared component (DRY, like the kanban
+board): search box, assignee/status/parent/project dropdowns and saved searches
+all behave exactly like on the task list, and a search saved from the chart
+returns to the chart while the same saved search still opens on the task list.
 
 ## Task archive
 Deleting a task never removes it right away. The **Archive** button on the task page,

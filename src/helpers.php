@@ -933,6 +933,15 @@ function tb_migrate_schema(PDO $pdo): void {
             ? 'ALTER TABLE tasks ADD COLUMN schedule_period VARCHAR(20) NULL DEFAULT NULL AFTER parent_id'
             : 'ALTER TABLE tasks ADD COLUMN schedule_period TEXT NULL DEFAULT NULL');
     }
+    // Complexity estimation (#44): the waterflow chart and the task form read
+    // tasks.complexity unconditionally, so a deployment that lands without the
+    // upgrade SQL adds the column on the first request. Fresh installs get it
+    // from schema.sql.
+    if (!in_array('complexity', $taskColumns, true)) {
+        $pdo->exec($isMysql
+            ? 'ALTER TABLE tasks ADD COLUMN complexity INT UNSIGNED NOT NULL DEFAULT 1 AFTER status_id'
+            : 'ALTER TABLE tasks ADD COLUMN complexity INTEGER NOT NULL DEFAULT 1');
+    }
     // Scheduler targets (#31): must run after the schedule_period ALTER so the
     // MySQL "AFTER schedule_period" placement finds its anchor column even on
     // a table that needed both upgrades in the same request.
@@ -1101,6 +1110,62 @@ function tb_migrate_schema(PDO $pdo): void {
             )");
         }
     }
+}
+
+/**
+ * Assigns every task its dependency "water level" (#44): level 0 holds the
+ * tasks with no unresolved "Depends on" edge inside the chart, level N the
+ * tasks whose prerequisites all sit in earlier levels. Edges that leave the
+ * chart (archived or filtered-out prerequisites) cannot block. Cycles can
+ * never resolve that way, so anything still unplaced after count($ids) sweeps
+ * is pinned one level below the deepest placed task - the cycle stays visible
+ * instead of looping forever.
+ *
+ * @param int[] $ids   every task id that participates in the chart
+ * @param array<int,int[]> $deps taskId => list of prerequisite task ids (both sides inside $ids)
+ * @return array<int,int> taskId => level
+ */
+function tb_waterflow_levels(array $ids, array $deps): array {
+    $levels = [];
+    foreach ($ids as $id) {
+        $id = (int)$id;
+        if ($id > 0) $levels[$id] = null;
+    }
+    // Keep only edges that stay inside the chart and never point at the task
+    // itself; anything else (archived, filtered out, malformed) cannot block.
+    $clean = [];
+    foreach ((array)$deps as $id => $prereqs) {
+        $id = (int)$id;
+        if (!array_key_exists($id, $levels)) continue;
+        foreach ((array)$prereqs as $prereq) {
+            $prereq = (int)$prereq;
+            if (array_key_exists($prereq, $levels) && $prereq !== $id) $clean[$id][] = $prereq;
+        }
+        $clean[$id] = array_values(array_unique($clean[$id] ?? []));
+    }
+    $deps = $clean;
+    $open = count($levels);
+    for ($sweep = 0; $sweep <= $open && in_array(null, $levels, true); $sweep++) {
+        foreach ($levels as $id => $level) {
+            if ($level !== null) continue;
+            $next = 0;
+            $ready = true;
+            foreach ($deps[$id] ?? [] as $prereq) {
+                $prereqLevel = $levels[$prereq] ?? null;
+                if ($prereqLevel === null) { $ready = false; break; }
+                $next = max($next, $prereqLevel + 1);
+            }
+            if ($ready) $levels[$id] = $next;
+        }
+    }
+    $deepest = 0;
+    foreach ($levels as $level) {
+        if ($level !== null) $deepest = max($deepest, $level);
+    }
+    foreach ($levels as $id => $level) {
+        if ($level === null) $levels[$id] = $deepest + 1; // dependency cycle: parked below the flow
+    }
+    return $levels;
 }
 
 /**

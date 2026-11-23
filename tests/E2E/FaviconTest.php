@@ -52,6 +52,34 @@ final class FaviconTest extends E2eTestCase
         $this->assertSame('image/x-icon', (string)$response->header('content-type'));
     }
 
+    public function test_the_favicon_routes_serve_the_embedded_bytes_when_the_docroot_files_are_missing(): void
+    {
+        // The live host lost the docroot copies in deployment (static uploads
+        // never landed while every PHP file did), so the routes must fall back
+        // to the bytes embedded in index.php and still answer byte-identical
+        // to the repository files instead of 404ing. The docroot copy is
+        // moved away for the request and restored afterwards, which works in
+        // both the SQLite temp docroot and the external-server docroot.
+        foreach (['favicon.ico' => '/?page=favicon', 'favicon.svg' => '/?page=favicon&type=svg'] as $file => $query) {
+            $doc = TestServer::docRoot() . '/' . $file;
+            $original = file_get_contents(TestServer::projectRoot() . '/' . $file);
+            $this->assertNotFalse($original);
+            $stash = $doc . '.stash';
+            $this->assertTrue(rename($doc, $stash), "The docroot copy of {$file} must be movable for this test.");
+            try {
+                $response = $this->session->get($query);
+                $this->assertSame(200, $response->status, "The {$file} route must not 404 when the docroot copy is missing.");
+                $this->assertSame(
+                    $file === 'favicon.ico' ? 'image/x-icon' : 'image/svg+xml',
+                    (string)$response->header('content-type')
+                );
+                $this->assertSame($original, $response->body, "The embedded fallback must serve the exact repository bytes for {$file}.");
+            } finally {
+                rename($stash, $doc);
+            }
+        }
+    }
+
     public function test_the_ico_carries_the_advertised_sizes(): void
     {
         $ico = TestServer::docRoot() . '/favicon.ico';

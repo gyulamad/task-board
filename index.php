@@ -424,6 +424,15 @@ if (user()) {
                 $pdo->prepare('INSERT INTO messages(sender_id,recipient_id,body) VALUES(?,?,?)')->execute([(int)user()['id'],$recipientId,$msgBody]);
                 flash('Message sent.'); redirect('?page=messages');
             }
+            if ($action === 'mark_all_seen') {
+                // Seen all notification (#79): one click clears the whole
+                // stream, so the red navbar flag disappears until new unseen
+                // notifications arrive. The per-item click-through (#73)
+                // stays for reading one by one; this is the bulk shortcut.
+                $pdo->prepare('UPDATE notifications SET is_seen=1 WHERE user_id=? AND is_seen=0')->execute([(int)user()['id']]);
+                flash('All notifications marked as seen.');
+                redirect('?page=notifications');
+            }
             if ($action === 'link_task') {
                 $id=(int)$_POST['task_id']; $other=(int)$_POST['related_task_id']; $type=$_POST['link_type'] ?? '';
                 if ($id===$other || !task_exists($pdo,$id) || !task_exists($pdo,$other) || !array_key_exists($type, TASK_BOARD_LINK_TYPES)) throw new RuntimeException('Invalid task relationship.');
@@ -1063,7 +1072,7 @@ if ($page==='notifications') {
     $s->execute([$me]);
     $items=$s->fetchAll();
     render_header('Notifications',$config,$error); ?>
-    <div class="d-flex justify-content-between align-items-center mb-3"><div><h1 class="h3 mb-0">Notifications</h1><div class="muted">Everything that happened on the tasks you are assigned to - new ones show here and as a red number in the navbar; clicking one marks it seen and opens its task.</div></div><span class="badge text-bg-danger fs-6"><?=$newCount?> new notification<?=$newCount===1?'':'s'?></span></div>
+    <div class="d-flex justify-content-between align-items-center mb-3"><div><h1 class="h3 mb-0">Notifications</h1><div class="muted">Everything that happened on the tasks you are assigned to - new ones show here and as a red number in the navbar; clicking one marks it seen and opens its task, and the button clears them all at once.</div></div><div class="d-flex gap-2 align-items-center"><span class="badge text-bg-danger fs-6"><?=$newCount?> new notification<?=$newCount===1?'':'s'?></span><?php if($newCount): ?><form method="post" class="d-inline"><?=csrf_field()?><input type="hidden" name="action" value="mark_all_seen"><button class="btn btn-outline-primary btn-sm" title="Mark every notification as seen">Mark all as seen</button></form><?php endif; ?></div></div>
     <div class="card p-4"><h2 class="h5">Stream</h2><?php foreach($items as $n): ?><div class="border-bottom py-2<?=$n['is_seen']?'':' fw-semibold'?>"><div><a class="fw-semibold text-decoration-none" href="?page=notification_seen&id=<?=$n['id']?>">#<?=$n['task_id']?> · <?=h($n['task_title'])?></a> <strong><?=h($n['event'])?></strong> <span class="small muted"><?=h($n['created_at'])?></span><?php if(!$n['is_seen']): ?> <span class="badge text-bg-danger">new</span><?php endif; ?></div></div><?php endforeach; if(!$items): ?><div class="small muted">No notifications yet. Assign yourself to a task and follow its history.</div><?php endif; ?></div>
     <?php render_footer(); exit;
 }

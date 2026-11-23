@@ -146,6 +146,39 @@ final class NotificationTest extends E2eTestCase
         $this->assertSame(1, $this->unseenCount($this->userId('wilma')));
     }
 
+    public function test_the_mark_all_button_clears_the_whole_stream(): void
+    {
+        $admin = $this->adminSession();
+        $nora = $this->createRegularUser($admin, 'nora');
+        $id = $admin->createTask('Bulk task', ['assignees' => [$this->userId('nora')]]);
+        $admin->post('/?page=task&id=' . $id, ['action' => 'comment', 'task_id' => (string)$id, 'body' => 'bulk ping']);
+        $this->assertSame(2, $this->unseenCount($this->userId('nora')));
+
+        // The button sits next to the counter and only while something is new.
+        $stream = $nora->get('/?page=notifications');
+        $this->assertTrue($stream->contains('name="action" value="mark_all_seen"'));
+
+        // One POST clears everything: the counter, the navbar flag and the
+        // per-row "new" markers all go away (#79)...
+        $response = $nora->post('/?page=notifications', ['action' => 'mark_all_seen']);
+        $this->assertSame(302, $response->status);
+        $this->assertSame(0, $this->unseenCount($this->userId('nora')));
+        // ...and stays cleared - the flag only comes back with new unseen ones.
+        $stream = $nora->get('/?page=notifications');
+        $this->assertSame(0, substr_count($stream->body, '<span class="badge text-bg-danger">new</span>'));
+        $this->assertFalse($nora->get('/?')->contains('title="New notifications"'));
+        $this->assertStringNotContainsString('mark_all_seen', $stream->body, 'Nothing new, so the button hides again.');
+    }
+
+    public function test_the_mark_all_button_is_hidden_when_nothing_is_new(): void
+    {
+        $admin = $this->adminSession();
+        $oleg = $this->createRegularUser($admin, 'oleg');
+        $page = $oleg->get('/?page=notifications');
+        $this->assertTrue($page->contains('No notifications yet.'));
+        $this->assertStringNotContainsString('mark_all_seen', $page->body, 'The bulk button has nothing to clear.');
+    }
+
     public function test_the_actor_does_not_notify_themselves(): void
     {
         $admin = $this->adminSession();

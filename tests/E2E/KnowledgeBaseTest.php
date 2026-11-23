@@ -242,4 +242,40 @@ final class KnowledgeBaseTest extends E2eTestCase
             $this->assertSame(302, $anonymous->get($url)->status, "{$url} must require a signed-in user.");
         }
     }
+
+    public function test_the_uploads_orphan_sweep_keeps_document_attachments(): void
+    {
+        // #53 v2: the sweep used to know only the task attachment rows, so the
+        // admin maintenance action deleted every knowledge-base file as an
+        // "orphan". A stored file the document_attachments table references
+        // must survive; genuinely stray files are still removed.
+        $admin = $this->adminSession();
+        $docId = $this->createDoc($admin, 'Swept know-how');
+
+        $file = tempnam(sys_get_temp_dir(), 'kb-');
+        file_put_contents($file, 'document attachment payload');
+        $upload = $admin->upload('/?page=document&id=' . $docId, [
+            'action' => 'doc_upload',
+            'document_id' => (string)$docId,
+        ], 'file', $file, 'kept-handbook.txt', 'text/plain');
+        $this->assertSame(302, $upload->status);
+        preg_match('/page=doc_download&id=(\d+)/', $admin->get('/?page=document&id=' . $docId)->body, $m);
+        $attachmentId = (int)$m[1];
+        $storedName = (string)TestServer::pdo()->query('SELECT stored_name FROM document_attachments WHERE id=' . $attachmentId)->fetchColumn();
+        $keptFile = TestServer::docRoot() . '/uploads/' . $storedName;
+        $this->assertFileExists($keptFile);
+        $orphanFile = TestServer::docRoot() . '/uploads/orphan-doc-leftover-' . bin2hex(random_bytes(4)) . '.txt';
+        file_put_contents($orphanFile, 'orphan payload');
+
+        $response = $admin->post('/?page=admin', ['action' => 'cleanup_uploads']);
+        $this->assertSame(302, $response->status);
+        $this->assertTrue($admin->http->get('/?page=admin')->contains('orphaned attachment file(s) removed.'), 'the planted stray file was swept');
+
+        $this->assertFileDoesNotExist($orphanFile);
+        $this->assertFileExists($keptFile, 'the document attachment file must survive the sweep');
+
+        $download = $admin->get('/?page=doc_download&id=' . $attachmentId);
+        $this->assertSame(200, $download->status);
+        $this->assertSame('document attachment payload', $download->body, 'the surviving file still downloads byte-identical');
+    }
 }

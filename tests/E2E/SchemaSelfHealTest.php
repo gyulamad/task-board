@@ -200,4 +200,52 @@ final class SchemaSelfHealTest extends E2eTestCase
         $row = TestServer::pdo()->query("SELECT color FROM statuses WHERE name='POSTHEAL'")->fetch();
         $this->assertSame('#112233', (string)$row['color']);
     }
+
+    /** Removes the whole know-hows schema to simulate a pre-#53 database. */
+    private function dropDocumentsSchema(): void
+    {
+        $pdo = TestServer::pdo();
+        // Children first, parents last (MySQL refuses to drop a referenced table).
+        $pdo->exec('DROP TABLE IF EXISTS document_attachments');
+        $pdo->exec('DROP TABLE IF EXISTS document_comments');
+        $pdo->exec('DROP TABLE IF EXISTS documents');
+    }
+
+    public function test_first_request_after_a_partial_deployment_recreates_the_know_hows_schema(): void
+    {
+        // #53 v2: the know-hows pages read the three knowledge-base tables
+        // unconditionally and the v1 delivery shipped without the self-heal
+        // section, so every board installed before #53 fataled with
+        // "table documents doesn't exist" (42S02) on ?page=documents - the
+        // exact PDOException admin reported from the deployed board.
+        $this->dropDocumentsSchema();
+        $pdo = TestServer::pdo();
+        if ($pdo->getAttribute(PDO::ATTR_DRIVER_NAME) === 'mysql') {
+            $this->assertFalse((bool)$pdo->query("SHOW TABLES LIKE 'documents'")->fetchColumn());
+        } else {
+            $this->assertFalse((bool)$pdo->query("SELECT 1 FROM sqlite_master WHERE type='table' AND name='documents'")->fetchColumn());
+        }
+
+        // The very next request (the installer page here) must self-heal the
+        // schema instead of fataling, and the knowledge base must work.
+        $admin = $this->adminSession();
+        $list = $admin->get('/?page=documents');
+        $this->assertSame(200, $list->status);
+        $this->assertTrue($list->contains('No know-hows yet. Write the first one.'));
+
+        $response = $admin->post('/?page=document_new', [
+            'action' => 'doc_save',
+            'id' => '0',
+            'title' => 'Self healed know-how',
+            'content' => 'Written right after the schema self-heal.',
+        ]);
+        $this->assertSame(302, $response->status, 'Know-how creation must work on the recreated tables.');
+        $this->assertTrue($admin->get('/?page=documents')->contains('Self healed know-how'));
+
+        // The child tables are back too and their cascades are live: deleting
+        // the document removes its rows (the task delete flow relies on this).
+        $docId = (int)TestServer::pdo()->query("SELECT id FROM documents WHERE title='Self healed know-how'")->fetchColumn();
+        $admin->post('/?page=document&id=' . $docId, ['action' => 'doc_delete', 'id' => (string)$docId]);
+        $this->assertSame('0', (string)$pdo->query('SELECT COUNT(*) FROM document_comments')->fetchColumn());
+    }
 }

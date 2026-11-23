@@ -1162,6 +1162,81 @@ function tb_migrate_schema(PDO $pdo): void {
             )");
         }
     }
+
+    // Know-hows (#53): the documents pages read the three knowledge-base
+    // tables unconditionally, so a deployment that lands without the upgrade
+    // SQL recreates them on the first request instead of fataling with
+    // "table documents doesn't exist" (42S02) on every existing board.
+    // Fresh installs get them from schema.sql. The DDL mirrors schema.sql;
+    // the SQLite blocks follow the established projects/saved_searches style.
+    $hasDocuments = $isMysql
+        ? (bool)$pdo->query("SHOW TABLES LIKE 'documents'")->fetchColumn()
+        : (bool)$pdo->query("SELECT 1 FROM sqlite_master WHERE type='table' AND name='documents'")->fetchColumn();
+    if (!$hasDocuments) {
+        if ($isMysql) {
+            $pdo->exec("CREATE TABLE documents (
+                id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+                title VARCHAR(200) NOT NULL,
+                content TEXT NULL,
+                created_by INT UNSIGNED NULL,
+                created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                CONSTRAINT fk_document_creator FOREIGN KEY (created_by) REFERENCES users(id) ON DELETE SET NULL
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4");
+            $pdo->exec("CREATE TABLE document_comments (
+                id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+                document_id INT UNSIGNED NOT NULL,
+                user_id INT UNSIGNED NULL,
+                body TEXT NOT NULL,
+                created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (document_id) REFERENCES documents(id) ON DELETE CASCADE,
+                FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE SET NULL
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4");
+            $pdo->exec("CREATE TABLE document_attachments (
+                id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+                document_id INT UNSIGNED NOT NULL,
+                user_id INT UNSIGNED NULL,
+                stored_name VARCHAR(255) NOT NULL,
+                original_name VARCHAR(255) NOT NULL,
+                mime_type VARCHAR(120) NOT NULL,
+                file_size INT UNSIGNED NOT NULL,
+                created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (document_id) REFERENCES documents(id) ON DELETE CASCADE,
+                FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE SET NULL
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4");
+        } else {
+            $pdo->exec("CREATE TABLE documents (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                title TEXT NOT NULL,
+                content TEXT NULL,
+                created_by INTEGER NULL,
+                created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                CONSTRAINT fk_document_creator FOREIGN KEY (created_by) REFERENCES users(id) ON DELETE SET NULL
+            )");
+            $pdo->exec("CREATE TABLE document_comments (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                document_id INTEGER NOT NULL,
+                user_id INTEGER NULL,
+                body TEXT NOT NULL,
+                created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (document_id) REFERENCES documents(id) ON DELETE CASCADE,
+                FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE SET NULL
+            )");
+            $pdo->exec("CREATE TABLE document_attachments (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                document_id INTEGER NOT NULL,
+                user_id INTEGER NULL,
+                stored_name TEXT NOT NULL,
+                original_name TEXT NOT NULL,
+                mime_type TEXT NOT NULL,
+                file_size INTEGER NOT NULL,
+                created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (document_id) REFERENCES documents(id) ON DELETE CASCADE,
+                FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE SET NULL
+            )");
+        }
+    }
 }
 
 /**
@@ -1282,7 +1357,12 @@ function tb_unlink_stored_files(array $storedNames): int {
  * manually placed files). The .htaccess file and files still referenced are
  * never touched. Returns how many files were removed. */
 function tb_cleanup_orphan_uploads(PDO $pdo): int {
-    $known = array_map('strval', $pdo->query('SELECT stored_name FROM attachments')->fetchAll(PDO::FETCH_COLUMN));
+    // Know-hows (#53): a file the document_attachments table still references
+    // is not an orphan either - the sweep used to know only the task
+    // attachments and deleted every knowledge-base file as a leftover.
+    $known = array_map('strval', $pdo->query(
+        'SELECT stored_name FROM attachments UNION SELECT stored_name FROM document_attachments'
+    )->fetchAll(PDO::FETCH_COLUMN));
     $dir = dirname(__DIR__) . '/uploads';
     if (!is_dir($dir)) return 0;
     $removed = 0;

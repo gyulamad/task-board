@@ -1359,6 +1359,34 @@ function tb_migrate_schema(PDO $pdo): void {
             )");
         }
     }
+
+    // User preferences (#66): the kanban toggle reads/writes this table on
+    // every toggle click, so a deployment that lands without the migration
+    // file (this host has form) recreates it on the first request - the same
+    // self-heal discipline the messages/notifications tables follow
+    // (#56/#58). Fresh installs get it from schema.sql; the DDL mirrors it.
+    $hasUserPreferences = $isMysql
+        ? (bool)$pdo->query("SHOW TABLES LIKE 'user_preferences'")->fetchColumn()
+        : (bool)$pdo->query("SELECT 1 FROM sqlite_master WHERE type='table' AND name='user_preferences'")->fetchColumn();
+    if (!$hasUserPreferences) {
+        if ($isMysql) {
+            $pdo->exec("CREATE TABLE user_preferences (
+                user_id INT UNSIGNED NOT NULL,
+                pref_key VARCHAR(100) NOT NULL,
+                pref_value VARCHAR(255) NOT NULL DEFAULT '',
+                PRIMARY KEY (user_id, pref_key),
+                FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4");
+        } else {
+            $pdo->exec("CREATE TABLE user_preferences (
+                user_id INTEGER NOT NULL,
+                pref_key TEXT NOT NULL,
+                pref_value TEXT NOT NULL DEFAULT '',
+                PRIMARY KEY (user_id, pref_key),
+                FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+            )");
+        }
+    }
 }
 
 /**
@@ -1618,6 +1646,33 @@ function tb_unseen_notification_count(PDO $pdo, int $userId): int {
     $s = $pdo->prepare('SELECT COUNT(*) FROM notifications WHERE user_id=? AND is_seen=0');
     $s->execute([$userId]);
     return (int)$s->fetchColumn();
+}
+
+/** User preferences (#66): read one per-user key. Returns $default when the
+ * user never stored the key. fetchAll() drains the cursor, so a SQLite test
+ * connection never keeps a lock across the following HTTP request (the #61
+ * v3 lesson). */
+function tb_user_pref_get(PDO $pdo, int $userId, string $key, string $default = ''): string {
+    $s = $pdo->prepare('SELECT pref_value FROM user_preferences WHERE user_id=? AND pref_key=?');
+    $s->execute([$userId, $key]);
+    $rows = $s->fetchAll(PDO::FETCH_COLUMN);
+    return $rows ? (string)$rows[0] : $default;
+}
+
+/** User preferences (#66): write one per-user key. A select-then-insert-or-
+ * update instead of a dialect-specific upsert, so MySQL and SQLite take the
+ * exact same two steps. */
+function tb_user_pref_set(PDO $pdo, int $userId, string $key, string $value): void {
+    $s = $pdo->prepare('SELECT pref_value FROM user_preferences WHERE user_id=? AND pref_key=?');
+    $s->execute([$userId, $key]);
+    $rows = $s->fetchAll(PDO::FETCH_COLUMN);
+    if (!$rows) {
+        $pdo->prepare('INSERT INTO user_preferences(user_id,pref_key,pref_value) VALUES(?,?,?)')
+            ->execute([$userId, $key, $value]);
+    } else {
+        $pdo->prepare('UPDATE user_preferences SET pref_value=? WHERE user_id=? AND pref_key=?')
+            ->execute([$value, $userId, $key]);
+    }
 }
 
 /** Notifications (#58): drops one notification per assignee of the task,

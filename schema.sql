@@ -254,5 +254,17 @@ CREATE TABLE notifications (
     FOREIGN KEY (history_id) REFERENCES task_history(id) ON DELETE SET NULL
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
+-- User preferences (#66): per-user key/value storage for board UI state.
+-- First consumer: the kanban board column open/close toggle - the collapsed
+-- status ids of a user live in the 'kanban_collapsed_statuses' key. Rows
+-- cascade away with their user.
+CREATE TABLE user_preferences (
+    user_id INT UNSIGNED NOT NULL,
+    pref_key VARCHAR(100) NOT NULL,
+    pref_value VARCHAR(255) NOT NULL DEFAULT '',
+    PRIMARY KEY (user_id, pref_key),
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
 INSERT INTO statuses (name, sort_order, is_done) VALUES
 ('TODO', 1, 0), ('IN PROGRESS', 2, 0), ('DONE', 3, 1);

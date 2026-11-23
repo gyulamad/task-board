@@ -12,6 +12,7 @@ A lightweight multi-user task and message board for PHP 8.2+ and MySQL/MariaDB s
 - Projects menu; per-project [Tasks…] button and a Project filter on the task list that shows which project is listed
 - Task and project templates (Templates CRUD); on the task create page a template selector prefills the description with the template text
 - Filter by assignee/status/parent task/project and search by title/description; the project filter also offers a "No project" option for the tasks that belong to no project (#28)
+- Advanced filter toggle (#48): the task list, kanban and waterflow filter cards show only the free text search bar by default; an Advanced filter button reveals the four dropdowns, the Filter button and the saved searches, and the area starts expanded whenever the view is already filtered by one of the advanced keys
 - Paginated task list with a sortable Project column (which project each task belongs to) and per-task Edit/Delete shortcuts and multi-select bulk actions (archive, and move the selected tasks into a project)
 - Task archive: Delete/Archive actions soft-delete a task (hidden from lists, restorable); permanent deletion happens only from the Archive page, by an administrator or the creator
 - Sortable task list: clicking a column name (Task, Status, Assignees, Parent, Updated) orders the list; shared helpers make it easy to reuse on other CRUD lists
@@ -205,6 +206,21 @@ already uses for its destructive actions (archive, delete, bulk moves), so
 no new script or dependency comes with it. Editing an existing task keeps
 saving without a dialog: the stored project is visible on the edit form and
 unsetting it is a deliberate change, not an oversight to warn about.
+
+## Advanced filter toggle (#48)
+The filter card on the task list (and its copies on the kanban board and the
+waterflow chart — one shared component) used to show everything at once. Since
+#48 it opens with the **free text search bar only**, and an **Advanced filter**
+button reveals the rest of the card: the assignee/status/parent/project
+dropdowns, the Filter button and the saved searches with their Save search
+form. The area starts **expanded** whenever the current view is already
+filtered by one of the advanced keys (the toggle shows an "on" badge then), so
+an applied filter is never hidden from whoever opens such a URL — a saved
+search, a project's Tasks… link or a shared filtered link all land on a card
+that shows what is active. The collapse only hides the inputs visually; they
+stay in the DOM and keep submitting, and the two forms carry each other's
+current values as hidden inputs, so a plain search keeps the active dropdown
+filters and the Filter button keeps the typed search text.
 
 ## Task archive
 Deleting a task never removes it right away. The **Archive** button on the task page,

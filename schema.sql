@@ -210,5 +210,20 @@ CREATE TABLE document_attachments (
     FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE SET NULL
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
+-- Message board (#56): a user leaves a message to another user. Both ends are
+-- nullable with ON DELETE SET NULL so deleting a user keeps the conversation
+-- (rendered as "Deleted user", the #17 convention); is_read drives the red
+-- "new messages" notification on the message board and in the navbar.
+CREATE TABLE messages (
+    id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+    sender_id INT UNSIGNED NULL,
+    recipient_id INT UNSIGNED NULL,
+    body TEXT NOT NULL,
+    is_read TINYINT UNSIGNED NOT NULL DEFAULT 0,
+    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (sender_id) REFERENCES users(id) ON DELETE SET NULL,
+    FOREIGN KEY (recipient_id) REFERENCES users(id) ON DELETE SET NULL
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
 INSERT INTO statuses (name, sort_order, is_done) VALUES
 ('TODO', 1, 0), ('IN PROGRESS', 2, 0), ('DONE', 3, 1);

@@ -34,6 +34,7 @@ A lightweight multi-user task and message board for PHP 8.2+ and MySQL/MariaDB s
 - Admin-only software updater for the latest GitHub release or a selected repository branch
 - Full backup download on the Software updates page (#49): one ZIP with the complete application code (including config.php), every file of the uploads folder and an SQL dump of the whole database, built on demand and streamed straight to the administrator
 - Realtime list views (#51): the task list, the Kanban board, the waterflow chart and the Users page re-render their list region every 10 seconds — status changes and activity dots show up without a manual reload, while checkbox selections and other in-region form data stay exactly as the user left them
+- Message board (#56): a Messages page where users leave messages to each other (recipient picker, inbox, sent list), with a red notification showing the number of NEW (unread) messages at the top of the page and as a badge next to the navbar's Messages link; viewing the board marks the messages read, so the count always means "new since your last visit"
 - PDO prepared statements, output escaping, CSRF tokens and upload MIME checks
 
 ## Install on shared hosting
@@ -136,6 +137,24 @@ untouched (no comment spam on tasks nobody has picked up yet). Tasks without a
 schedule are never touched.
 The controller answers in plain text, e.g. `Auto-scheduler reopened 2 task(s): #12, #14.`
 or `Auto-scheduler: nothing to reopen.`, which is convenient to watch in cron logs.
+
+## Message board (#56)
+The **Messages** page (in the navbar for every signed-in user) is a simple
+board where users leave messages to each other: pick a recipient, write the
+message, send. The page holds the **Inbox** (messages to you, newest first,
+unread rows bold with a "new" badge) and the **Sent** list, plus the compose
+form. A red notification at the top of the page shows the number of **NEW**
+(unread) messages — "2 new messages" — and the navbar's Messages link carries
+the same count as a red badge on every page, so a new message is visible
+without opening the board. Viewing the board marks its messages read, which
+keeps the count honest: it always means "new since your last visit". Users can
+only message other users (never themselves), and messages survive user
+deletion — both ends render as "Deleted user", the established #17 convention.
+The `messages` table comes from `schema.sql` on fresh installs and is recreated
+by the idempotent self-heal in `tb_migrate_schema()` on existing boards (the
+same discipline as every other feature — the navbar badge reads the table on
+every page, so a deployment without the upgrade SQL cannot take the board
+down).
 
 ## Change details, full audit (#54)
 The task page's History is a full audit trail: every save of the task form

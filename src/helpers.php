@@ -1237,6 +1237,39 @@ function tb_migrate_schema(PDO $pdo): void {
             )");
         }
     }
+
+    // Message board (#56): the messages page and the navbar's unread badge
+    // read the messages table unconditionally, so a deployment that lands
+    // without the upgrade SQL recreates it on the first request. Fresh
+    // installs get it from schema.sql; the DDL mirrors schema.sql.
+    $hasMessages = $isMysql
+        ? (bool)$pdo->query("SHOW TABLES LIKE 'messages'")->fetchColumn()
+        : (bool)$pdo->query("SELECT 1 FROM sqlite_master WHERE type='table' AND name='messages'")->fetchColumn();
+    if (!$hasMessages) {
+        if ($isMysql) {
+            $pdo->exec("CREATE TABLE messages (
+                id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+                sender_id INT UNSIGNED NULL,
+                recipient_id INT UNSIGNED NULL,
+                body TEXT NOT NULL,
+                is_read TINYINT UNSIGNED NOT NULL DEFAULT 0,
+                created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (sender_id) REFERENCES users(id) ON DELETE SET NULL,
+                FOREIGN KEY (recipient_id) REFERENCES users(id) ON DELETE SET NULL
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4");
+        } else {
+            $pdo->exec("CREATE TABLE messages (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                sender_id INTEGER NULL,
+                recipient_id INTEGER NULL,
+                body TEXT NOT NULL,
+                is_read INTEGER NOT NULL DEFAULT 0,
+                created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (sender_id) REFERENCES users(id) ON DELETE SET NULL,
+                FOREIGN KEY (recipient_id) REFERENCES users(id) ON DELETE SET NULL
+            )");
+        }
+    }
 }
 
 /**
@@ -1386,6 +1419,15 @@ function document_exists(PDO $pdo, int $id): bool {
  * The same creator-or-administrator rule the task archive uses. */
 function document_can_edit(array $doc): bool {
     return is_admin() || (int)($doc['created_by'] ?? 0) === (int)user()['id'];
+}
+
+/** Message board (#56): how many unread messages the signed-in user has.
+ * Drives the red "new messages" notification on the message board page and
+ * the badge next to the navbar's Messages link. */
+function tb_unread_message_count(PDO $pdo, int $userId): int {
+    $s = $pdo->prepare('SELECT COUNT(*) FROM messages WHERE recipient_id=? AND is_read=0');
+    $s->execute([$userId]);
+    return (int)$s->fetchColumn();
 }
 
 /** Know-hows (#53): the first $max characters of a text for the list excerpt,

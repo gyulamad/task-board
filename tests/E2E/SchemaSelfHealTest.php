@@ -248,4 +248,28 @@ final class SchemaSelfHealTest extends E2eTestCase
         $admin->post('/?page=document&id=' . $docId, ['action' => 'doc_delete', 'id' => (string)$docId]);
         $this->assertSame('0', (string)$pdo->query('SELECT COUNT(*) FROM document_comments')->fetchColumn());
     }
+
+    public function test_first_request_after_a_partial_deployment_recreates_the_messages_schema(): void
+    {
+        // #56: the messages table follows the same self-heal discipline as
+        // projects, saved_searches and documents - the navbar badge queries it
+        // on every page, so a missing table would take the whole board down.
+        $pdo = TestServer::pdo();
+        $pdo->exec('DROP TABLE IF EXISTS messages');
+        if ($pdo->getAttribute(PDO::ATTR_DRIVER_NAME) === 'mysql') {
+            $this->assertFalse((bool)$pdo->query("SHOW TABLES LIKE 'messages'")->fetchColumn());
+        } else {
+            $this->assertFalse((bool)$pdo->query("SELECT 1 FROM sqlite_master WHERE type='table' AND name='messages'")->fetchColumn());
+        }
+
+        // The very next request (the installer page here) must self-heal the
+        // schema instead of fataling, and the message board must work.
+        $admin = $this->adminSession();
+        $this->assertSame(200, $admin->get('/?page=messages')->status);
+
+        $admin->post('/?page=users', ['action' => 'add_user', 'username' => 'healed', 'display_name' => 'Healed', 'password' => 'HealedPass12345', 'role' => 'user']);
+        $recipientId = (int)$pdo->query("SELECT id FROM users WHERE username='healed'")->fetchColumn();
+        $this->assertSame(302, $admin->post('/?page=messages', ['action' => 'send_message', 'recipient_id' => (string)$recipientId, 'body' => 'Sent right after the schema self-heal.'])->status, 'Message sending must work on the recreated table.');
+        $this->assertSame('1', (string)$pdo->query('SELECT COUNT(*) FROM messages')->fetchColumn());
+    }
 }

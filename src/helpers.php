@@ -367,6 +367,74 @@ function tb_in_placeholders(int $count): string {
 }
 
 /**
+ * Builds the task filter WHERE fragment the task list and the kanban board
+ * (#43) share, straight from the request URL: archived tasks are always
+ * hidden, the assignee/status/parent/project multi-select filters combine
+ * OR inside one dropdown and AND across dropdowns, and ?q= searches the
+ * title and description. Every id reaches the query as a bound parameter
+ * and unknown values are ignored, so a URL can never inject SQL.
+ *
+ * Returns the SQL fragment (starting with a condition, no leading WHERE)
+ * plus the normalized filter values, so the shared filter card can mark the
+ * selected options and the page can build links that keep the filters.
+ *
+ * @return array{where: string[], params: array<int,string|int>, fAssignees: string[], fStatuses: string[], fParents: string[], fProjects: string[], projectIds: int[]}
+ */
+function tb_task_filters_where(): array {
+    $where = ['t.archived_at IS NULL']; // archived tasks (#12) are shown only in the archive
+    $params = [];
+    $fAssignees = filter_values('assignee');
+    $assigneeFilter = filter_split($fAssignees, ['unassigned']);
+    if ($assigneeFilter['keywords'] || $assigneeFilter['ids']) {
+        $assigneeConds = [];
+        if ($assigneeFilter['keywords']) $assigneeConds[] = 'NOT EXISTS(SELECT 1 FROM task_assignees ax WHERE ax.task_id=t.id)';
+        if ($assigneeFilter['ids']) {
+            $assigneeConds[] = 'EXISTS(SELECT 1 FROM task_assignees ax WHERE ax.task_id=t.id AND ax.user_id IN (' . tb_in_placeholders(count($assigneeFilter['ids'])) . '))';
+            array_push($params, ...$assigneeFilter['ids']);
+        }
+        $where[] = '(' . implode(' OR ', $assigneeConds) . ')';
+    }
+    $fStatuses = filter_values('status');
+    $statusIds = filter_split($fStatuses, [])['ids'];
+    if ($statusIds) {
+        $where[] = 't.status_id IN (' . tb_in_placeholders(count($statusIds)) . ')';
+        array_push($params, ...$statusIds);
+    }
+    $fParents = filter_values('parent');
+    $parentFilter = filter_split($fParents, ['none']);
+    if ($parentFilter['keywords'] || $parentFilter['ids']) {
+        $parentConds = [];
+        if ($parentFilter['keywords']) $parentConds[] = 't.parent_id IS NULL';
+        if ($parentFilter['ids']) {
+            $parentConds[] = 't.parent_id IN (' . tb_in_placeholders(count($parentFilter['ids'])) . ')';
+            array_push($params, ...$parentFilter['ids']);
+        }
+        $where[] = '(' . implode(' OR ', $parentConds) . ')';
+    }
+    $fProjects = filter_values('project');
+    // 'No project' option (#28): the keyword filters tasks without a project,
+    // ids filter by project; both may be combined (OR), like the parent filter.
+    $projectFilter = filter_split($fProjects, ['none']);
+    $projectIds = $projectFilter['ids'];
+    if ($projectFilter['keywords'] || $projectFilter['ids']) {
+        $projectConds = [];
+        if ($projectFilter['keywords']) $projectConds[] = 't.project_id IS NULL';
+        if ($projectFilter['ids']) {
+            $projectConds[] = 't.project_id IN (' . tb_in_placeholders(count($projectFilter['ids'])) . ')';
+            array_push($params, ...$projectFilter['ids']);
+        }
+        $where[] = '(' . implode(' OR ', $projectConds) . ')';
+    }
+    if (!empty($_GET['q'])) {
+        $tbTerm = str_replace(['|', '%', '_'], ['||', '|%', '|_'], (string)$_GET['q']);
+        $where[] = "(t.title LIKE ? ESCAPE '|' OR t.description LIKE ? ESCAPE '|')";
+        $params[] = '%' . $tbTerm . '%';
+        $params[] = '%' . $tbTerm . '%';
+    }
+    return ['where' => $where, 'params' => $params, 'fAssignees' => $fAssignees, 'fStatuses' => $fStatuses, 'fParents' => $fParents, 'fProjects' => $fProjects, 'projectIds' => $projectIds];
+}
+
+/**
  * Carries one filter parameter from a request into a query string builder:
  * scalars pass through as strings, arrays pass through as arrays so
  * http_build_query() re-emits them as filter[0]=...&filter[1]=... (which PHP
@@ -438,6 +506,41 @@ function tb_saved_search_query(array $source): ?string {
         return null;
     }
     return http_build_query($qs);
+}
+
+/**
+ * Renders the task filter card with the saved searches row, shared by the
+ * task list and the kanban board (#43) so both pages stay in lockstep (DRY).
+ * The GET form submits into ?page=<page>&...; the saved-search links open on
+ * the same page kind they were saved from, and the save form posts the
+ * current filters (the same whitelisted keys the save handler stores).
+ *
+ * $ctx keys:
+ *   page           - page the filters target and saved searches open ('tasks' or 'kanban')
+ *   users          - assignable users (id, display_name) for the assignee dropdown
+ *   statuses       - all statuses (id, name) for the status dropdown
+ *   parents        - parent task options (parent_id, parent_title)
+ *   projectOptions - project options (id, name)
+ *   savedSearches  - the signed-in user's saved searches (id, name, query)
+ *   returnUrl      - where the delete-search action returns to (allowlisted page prefix)
+ */
+function tb_render_task_filter_card(array $ctx): void {
+    $page = $ctx['page'];
+    $users = $ctx['users'];
+    $statuses = $ctx['statuses'];
+    $parents = $ctx['parents'];
+    $projectOptions = $ctx['projectOptions'];
+    $savedSearches = $ctx['savedSearches'];
+    $fAssignees = $ctx['fAssignees'];
+    $fStatuses = $ctx['fStatuses'];
+    $fParents = $ctx['fParents'];
+    $fProjects = $ctx['fProjects'];
+    $returnUrl = $ctx['returnUrl'];
+    ?>
+<div class="card p-3 mb-3"><form class="row g-2 align-items-end"><input type="hidden" name="page" value="<?=h($page)?>"><div class="col-md-2"><input class="form-control" name="q" value="<?=h($_GET['q']??'')?>" placeholder="Search tasks" aria-label="Search tasks"></div><div class="col-md-2"><label class="form-label small muted mb-1" for="filter-assignee">Assignees</label><select class="form-select" id="filter-assignee" name="assignee[]" multiple size="4"><option value="unassigned" <?=in_array('unassigned',$fAssignees,true)?'selected':''?>>Unassigned</option><?php foreach($users as $u): ?><option value="<?=$u['id']?>" <?=in_array((string)$u['id'],$fAssignees,true)?'selected':''?>><?=h($u['display_name'])?></option><?php endforeach; if(!$users): ?><option value="" disabled>No users yet</option><?php endif; ?></select></div><div class="col-md-2"><label class="form-label small muted mb-1" for="filter-status">Statuses</label><select class="form-select" id="filter-status" name="status[]" multiple size="4"><?php foreach($statuses as $st): ?><option value="<?=$st['id']?>" <?=in_array((string)$st['id'],$fStatuses,true)?'selected':''?>><?=h($st['name'])?></option><?php endforeach; ?></select></div><div class="col-md-2"><label class="form-label small muted mb-1" for="filter-parent">Parents</label><select class="form-select" id="filter-parent" name="parent[]" multiple size="4"><option value="none" <?=in_array('none',$fParents,true)?'selected':''?>>No parent</option><?php foreach($parents as $pt): ?><option value="<?=$pt['parent_id']?>" <?=in_array((string)$pt['parent_id'],$fParents,true)?'selected':''?>>#<?=$pt['parent_id']?> · <?=h($pt['parent_title'])?></option><?php endforeach; ?></select></div><div class="col-md-2"><label class="form-label small muted mb-1" for="filter-project">Projects</label><select class="form-select" id="filter-project" name="project[]" multiple size="4"><option value="none" <?=in_array('none',$fProjects,true)?'selected':''?>>No project</option><?php foreach($projectOptions as $po): ?><option value="<?=$po['id']?>" <?=in_array((string)$po['id'],$fProjects,true)?'selected':''?>>#<?=$po['id']?> · <?=h($po['name'])?></option><?php endforeach; ?></select></div><div class="col-md-2 d-grid"><button class="btn btn-outline-primary">Filter</button></div><div class="col-12"><div class="form-text mb-0">Hold Ctrl/Cmd to pick several values in a dropdown; an empty dropdown filters nothing. Values inside one dropdown match any of them, different dropdowns combine.</div></div></form>
+<div class="d-flex justify-content-between align-items-center gap-2 flex-wrap mt-3 pt-3 border-top"><?php if($savedSearches): ?><div class="dropdown"><button class="btn btn-outline-secondary dropdown-toggle" type="button" data-bs-toggle="dropdown" aria-expanded="false">Saved searches <span class="badge text-bg-secondary"><?=count($savedSearches)?></span></button><div class="dropdown-menu"><?php foreach($savedSearches as $sv): ?><div class="dropdown-item d-flex align-items-center justify-content-between gap-3 text-nowrap"><a class="text-decoration-none flex-grow-1" href="<?=h('?page='.$page.'&'.$sv['query'])?>" title="Open the saved search <?=h($sv['name'])?>"><?=h($sv['name'])?></a><form method="post" class="d-inline" onsubmit="return confirm('Delete this saved search?')"><?=csrf_field()?><input type="hidden" name="action" value="delete_search"><input type="hidden" name="id" value="<?=$sv['id']?>"><input type="hidden" name="return" value="<?=h($returnUrl)?>"><button class="btn btn-sm btn-link text-danger p-0 lh-1" title="Delete this saved search" aria-label="Delete the saved search <?=h($sv['name'])?>">&times;</button></form></div><?php endforeach; ?></div></div><?php else: ?><span class="small muted" id="saved-searches-empty">No saved searches yet.</span><?php endif; ?>
+    <form method="post" class="d-flex align-items-center gap-2"><?=csrf_field()?><input type="hidden" name="action" value="save_search"><input type="hidden" name="save_page" value="<?=h($page)?>"><label class="visually-hidden" for="save-search-name">Name this search</label><input class="form-control" id="save-search-name" name="name" maxlength="200" placeholder="Name this search" aria-label="Name for the saved search" required><button class="btn btn-outline-primary text-nowrap" title="Save the current list filters as a search">Save search</button><?php foreach (TASK_BOARD_SEARCH_KEYS as $fk): if (($fv=filter_query_value($fk))===null) continue; if (is_array($fv)): foreach ($fv as $fvOne): ?><input type="hidden" name="<?=$fk?>[]" value="<?=h($fvOne)?>"><?php endforeach; else: ?><input type="hidden" name="<?=$fk?>" value="<?=h($fv)?>"><?php endif; endforeach; ?></form></div></div>
+    <?php
 }
 
 // --- Theme settings (Task #11) -------------------------------------------

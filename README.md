@@ -15,6 +15,7 @@ A lightweight multi-user task and message board for PHP 8.2+ and MySQL/MariaDB s
 - Task archive: Delete/Archive actions soft-delete a task (hidden from lists, restorable); permanent deletion happens only from the Archive page, by an administrator or the creator
 - Sortable task list: clicking a column name (Task, Status, Assignees, Parent, Updated) orders the list; shared helpers make it easy to reuse on other CRUD lists
 - Saved searches on the task list: a Save search button stores the current list filters under a name and the Saved searches dropdown re-opens them; the searches are per user and travel as plain URLs
+- Kanban board page (#43): one column per task status with every non-archived task in its status column; the task list's filter card and saved searches sit on top, shared as one implementation (DRY) so filters and searches behave the same on both views
 - Comments, attachments, history and task relationships
 - Task and project administration split into focused pages (#42): the Administration page is a compact hub linking to Users (create, edit, delete accounts) and Task statuses (rename, reorder, completion flag, colour, delete), with the uploads maintenance action and the activity periods link kept on the hub
 - Admin can add status labels and mark completion statuses; existing statuses can be renamed, reordered, given an optional #RRGGBB colour and deleted on the Task statuses page (a status still used by tasks and the last remaining status cannot be deleted). The colour renders on every status badge of the board — task list, task/project/archive pages — with an automatically readable text colour; statuses without one keep the built-in badge look
@@ -124,6 +125,25 @@ untouched (no comment spam on tasks nobody has picked up yet). Tasks without a
 schedule are never touched.
 The controller answers in plain text, e.g. `Auto-scheduler reopened 2 task(s): #12, #14.`
 or `Auto-scheduler: nothing to reopen.`, which is convenient to watch in cron logs.
+
+## Kanban board (#43)
+The **Kanban** link in the menu opens a second view of the tasks: one column per
+task status (in display order, with the status colour badge from #42 and a live
+count), every non-archived task listed as a card in its status column with its
+assignees, project and parent task. Empty columns say so instead of disappearing.
+
+The filter card on top is the task list's own component
+(`tb_render_task_filter_card`) and the filtering is the task list's own
+(`tb_task_filters_where`) — both extracted so the two views share one
+implementation (DRY). The search box, the assignee/status/parent/project
+dropdowns and the saved searches behave exactly like on the task list:
+
+- a search saved from the board stores the same whitelisted filter URL and
+  returns to the board; the same saved search opens on the task list from there
+  and vice versa,
+- opening a saved search from the board navigates to `?page=kanban&...`, from
+  the task list to `?page=tasks&...`,
+- archived tasks never appear on the board (they live in the archive only).
 
 ## Task archive
 Deleting a task never removes it right away. The **Archive** button on the task page,

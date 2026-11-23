@@ -1001,25 +1001,46 @@ if ($page==='messages') {
     <?php render_footer(); exit;
 }
 
-// ---- Notifications (#58) ------------------------------------------------------------------
+// ---- Notifications (#58, per-item seen #73) -----------------------------------------------
 // One stream per user: the board drops a notification into it whenever a
 // task-history event hits a task the user is assigned to (minus their own
-// edits). Viewing the stream marks the notifications seen - the badge on the
-// page and in the navbar always means "new since the last visit".
+// edits). Opening the stream alone marks nothing seen (#73): every row links
+// through ?page=notification_seen&id=... and exactly the clicked notification
+// is marked seen on the way to its task, so the badge on the page and in the
+// navbar always counts what you have not opened yet.
 if ($page==='notifications') {
     $me=(int)user()['id'];
     $newCount=tb_unseen_notification_count($pdo,$me);
-    // The navbar badge renders after the mark-seen below, so it reuses this
-    // pre-mark-seen count instead of querying a self-consumed zero (#56 pattern).
+    // The navbar badge renders later in the same request, so it reuses the
+    // count already computed here instead of querying again (#56 pattern).
     $GLOBALS['TB_NOTIFICATION_BADGE']=$newCount;
     $s=$pdo->prepare('SELECT n.*,t.title task_title FROM notifications n JOIN tasks t ON t.id=n.task_id WHERE n.user_id=? ORDER BY n.id DESC LIMIT 200');
     $s->execute([$me]);
     $items=$s->fetchAll();
-    $pdo->prepare('UPDATE notifications SET is_seen=1 WHERE user_id=? AND is_seen=0')->execute([$me]);
     render_header('Notifications',$config,$error); ?>
-    <div class="d-flex justify-content-between align-items-center mb-3"><div><h1 class="h3 mb-0">Notifications</h1><div class="muted">Everything that happened on the tasks you are assigned to - new ones show here and as a red number in the navbar.</div></div><span class="badge text-bg-danger fs-6"><?=$newCount?> new notification<?=$newCount===1?'':'s'?></span></div>
-    <div class="card p-4"><h2 class="h5">Stream</h2><?php foreach($items as $n): ?><div class="border-bottom py-2<?=$n['is_seen']?'':' fw-semibold'?>"><div><a class="fw-semibold text-decoration-none" href="?page=task&id=<?=$n['task_id']?>">#<?=$n['task_id']?> · <?=h($n['task_title'])?></a> <strong><?=h($n['event'])?></strong> <span class="small muted"><?=h($n['created_at'])?></span><?php if(!$n['is_seen']): ?> <span class="badge text-bg-danger">new</span><?php endif; ?></div></div><?php endforeach; if(!$items): ?><div class="small muted">No notifications yet. Assign yourself to a task and follow its history.</div><?php endif; ?></div>
+    <div class="d-flex justify-content-between align-items-center mb-3"><div><h1 class="h3 mb-0">Notifications</h1><div class="muted">Everything that happened on the tasks you are assigned to - new ones show here and as a red number in the navbar; clicking one marks it seen and opens its task.</div></div><span class="badge text-bg-danger fs-6"><?=$newCount?> new notification<?=$newCount===1?'':'s'?></span></div>
+    <div class="card p-4"><h2 class="h5">Stream</h2><?php foreach($items as $n): ?><div class="border-bottom py-2<?=$n['is_seen']?'':' fw-semibold'?>"><div><a class="fw-semibold text-decoration-none" href="?page=notification_seen&id=<?=$n['id']?>">#<?=$n['task_id']?> · <?=h($n['task_title'])?></a> <strong><?=h($n['event'])?></strong> <span class="small muted"><?=h($n['created_at'])?></span><?php if(!$n['is_seen']): ?> <span class="badge text-bg-danger">new</span><?php endif; ?></div></div><?php endforeach; if(!$items): ?><div class="small muted">No notifications yet. Assign yourself to a task and follow its history.</div><?php endif; ?></div>
     <?php render_footer(); exit;
+}
+
+// ---- Notification seen (#73) ---------------------------------------------------------------
+// The click-through of a notification: ?page=notification_seen&id=N marks
+// exactly that one notification seen for the signed-in user and redirects to
+// the task it came from, so the badge decreases per opened item instead of
+// clearing in bulk when the stream page opens. The id is scoped to its owner -
+// a forged, foreign or already-cascaded-away id simply lands back on the
+// stream without touching any row.
+if ($page==='notification_seen') {
+    $me=(int)user()['id'];
+    $id=(int)($_GET['id'] ?? 0);
+    $q=$pdo->prepare('SELECT task_id FROM notifications WHERE id=? AND user_id=?');
+    $q->execute([$id,$me]);
+    $row=$q->fetch();
+    if ($row) {
+        $pdo->prepare('UPDATE notifications SET is_seen=1 WHERE id=? AND user_id=?')->execute([$id,$me]);
+        redirect('?page=task&id='.(int)$row['task_id']);
+    }
+    redirect('?page=notifications');
 }
 
 // ---- Change details, full audit (#54) ---------------------------------------

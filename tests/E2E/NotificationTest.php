@@ -9,10 +9,13 @@ use TaskBoard\Tests\Support\TestServer;
 /**
  * Task #58: notifications - the board drops one notification into every
  * assignee's stream when a task-history event hits their task (minus the
- * actor's own edits), a red navbar badge counts the unseen ones and viewing
- * the stream marks them seen. Notifications cascade away with their task or
- * their recipient, and the schema self-heals on existing boards like every
- * other feature (#24/#53 discipline).
+ * actor's own edits) and a red navbar badge counts the unseen ones.
+ * Task #73: marking seen is per item - opening the stream alone clears
+ * nothing; clicking a notification marks exactly that one seen and lands on
+ * its task, foreign or bogus ids bounce back without marking anything.
+ * Notifications cascade away with their task or their recipient, and the
+ * schema self-heals on existing boards like every other feature (#24/#53
+ * discipline).
  */
 final class NotificationTest extends E2eTestCase
 {
@@ -42,6 +45,18 @@ final class NotificationTest extends E2eTestCase
         return (int)TestServer::pdo()->query('SELECT COUNT(*) FROM notifications WHERE user_id=' . $userId . ' AND is_seen=0')->fetchColumn();
     }
 
+    /** The user's notification stream rows, newest first (id included). */
+    private function notifications(string $username): array
+    {
+        $s = TestServer::pdo()->prepare(
+            'SELECT n.*, t.title task_title FROM notifications n '
+            . 'JOIN tasks t ON t.id=n.task_id JOIN users u ON u.id=n.user_id '
+            . 'WHERE u.username=? ORDER BY n.id DESC'
+        );
+        $s->execute([$username]);
+        return $s->fetchAll();
+    }
+
     public function test_a_comment_by_another_user_notifies_the_assignee(): void
     {
         $admin = $this->adminSession();
@@ -59,14 +74,76 @@ final class NotificationTest extends E2eTestCase
         // Creation with an assignee is already an event (#58), the comment adds
         // the second one - the badge counts both unseen notifications.
         $this->assertTrue($badge->contains('<a class="nav-link" href="?page=notifications">Notifications <span class="badge text-bg-danger" title="New notifications">2</span></a>'));
-        // ...and the stream shows the event with a "new" marker, linking the task.
+        // ...and the stream shows the event with a "new" marker. Every row
+        // links through the per-item seen route (#73), carrying its own id.
         $stream = $wanda->get('/?page=notifications');
-        $this->assertTrue($stream->contains('<a class="fw-semibold text-decoration-none" href="?page=task&id=' . $id . '">#' . $id . ' · Watched task</a>'));
+        $rows = $this->notifications('wanda');
+        $this->assertCount(2, $rows);
+        foreach ($rows as $row) {
+            $this->assertTrue($stream->contains('<a class="fw-semibold text-decoration-none" href="?page=notification_seen&id=' . $row['id'] . '">#' . $id . ' · Watched task</a>'));
+        }
         $this->assertTrue($stream->contains('Comment added'));
-        $this->assertTrue($stream->contains('<span class="badge text-bg-danger">new</span>'));
-        // Viewing the stream marks everything seen: the badge is gone afterwards.
-        $this->assertSame(0, $this->unseenCount($this->userId('wanda')));
-        $this->assertFalse($wanda->get('/?')->contains('title="New notifications"'));
+        $this->assertSame(2, substr_count($stream->body, '<span class="badge text-bg-danger">new</span>'));
+        // Opening the stream alone marks nothing seen (#73): both stay unseen
+        // and the navbar badge keeps counting them.
+        $this->assertSame(2, $this->unseenCount($this->userId('wanda')));
+        $this->assertTrue($wanda->get('/?')->contains('title="New notifications"'));
+    }
+
+    public function test_clicking_a_notification_marks_only_it_seen_and_opens_the_task(): void
+    {
+        $admin = $this->adminSession();
+        $wendy = $this->createRegularUser($admin, 'wendy');
+        $id = $admin->createTask('Clicked task', ['assignees' => [$this->userId('wendy')]]);
+        $admin->post('/?page=task&id=' . $id, ['action' => 'comment', 'task_id' => (string)$id, 'body' => 'second event']);
+        $this->assertSame(2, $this->unseenCount($this->userId('wendy')));
+
+        // Clicking the newest notification marks exactly that one seen and
+        // lands on the task it came from.
+        $rows = $this->notifications('wendy');
+        $response = $wendy->get('/?page=notification_seen&id=' . $rows[0]['id']);
+        $this->assertSame(302, $response->status, 'The click-through redirects to the notification target.');
+        $this->assertSame('?page=task&id=' . $id, (string)$response->header('location'));
+        $this->assertSame(1, $this->unseenCount($this->userId('wendy')), 'Only the clicked notification becomes seen.');
+
+        // The stream now carries one remaining "new" marker and the navbar
+        // badge counts exactly the remainder.
+        $stream = $wendy->get('/?page=notifications');
+        $this->assertSame(1, substr_count($stream->body, '<span class="badge text-bg-danger">new</span>'));
+        $this->assertTrue($stream->contains('title="New notifications">1</span>'));
+
+        // Clicking the last unseen one clears the badge completely...
+        $response = $wendy->get('/?page=notification_seen&id=' . $rows[1]['id']);
+        $this->assertSame(302, $response->status);
+        $this->assertSame(0, $this->unseenCount($this->userId('wendy')));
+        $this->assertFalse($wendy->get('/?')->contains('title="New notifications"'));
+        // ...and re-clicking a seen notification is a safe no-op that still
+        // lands on the task.
+        $response = $wendy->get('/?page=notification_seen&id=' . $rows[1]['id']);
+        $this->assertSame(302, $response->status);
+        $this->assertSame('?page=task&id=' . $id, (string)$response->header('location'));
+        $this->assertSame(0, $this->unseenCount($this->userId('wendy')));
+    }
+
+    public function test_a_notification_cannot_be_seen_by_another_user_or_with_a_bogus_id(): void
+    {
+        $admin = $this->adminSession();
+        $wilma = $this->createRegularUser($admin, 'wilma');
+        $admin->createTask('Owned task', ['assignees' => [$this->userId('wilma')]]);
+        $rows = $this->notifications('wilma');
+        $this->assertCount(1, $rows);
+
+        // Another account gets bounced back to the stream, the row stays unseen.
+        $response = $admin->get('/?page=notification_seen&id=' . $rows[0]['id']);
+        $this->assertSame(302, $response->status);
+        $this->assertSame('?page=notifications', (string)$response->header('location'));
+        $this->assertSame(1, $this->unseenCount($this->userId('wilma')), 'A foreign id must not mark anything seen.');
+
+        // A nonexistent (or already cascaded-away) id behaves the same.
+        $response = $wilma->get('/?page=notification_seen&id=99999999');
+        $this->assertSame(302, $response->status);
+        $this->assertSame('?page=notifications', (string)$response->header('location'));
+        $this->assertSame(1, $this->unseenCount($this->userId('wilma')));
     }
 
     public function test_the_actor_does_not_notify_themselves(): void
@@ -129,6 +206,11 @@ final class NotificationTest extends E2eTestCase
     public function test_anonymous_users_are_pushed_to_sign_in(): void
     {
         $response = $this->session->get('/?page=notifications');
+        $this->assertSame(302, $response->status, 'Guarded pages redirect anonymous visitors.');
+        $this->assertStringContainsString('page=login', (string)$response->header('location'));
+
+        // The per-item seen route (#73) is guarded the same way.
+        $response = $this->session->get('/?page=notification_seen&id=1');
         $this->assertSame(302, $response->status, 'Guarded pages redirect anonymous visitors.');
         $this->assertStringContainsString('page=login', (string)$response->header('location'));
     }

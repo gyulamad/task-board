@@ -1025,33 +1025,94 @@ if ($page==='archive') {
     <?php render_footer(); exit;
 }
 
-// ---- Message board (#56) ------------------------------------------------------
-// A simple board where users leave messages to each other. The red
-// notification at the top shows how many NEW (unread) messages are waiting;
-// viewing the board marks them read, so the count always means "new since
-// your last visit". The navbar carries the same count as a badge.
+// ---- Message board (#56, messenger redesign #65) ---------------------------
+// A messenger-style board: every other user on the left with their unread
+// count, the thread with the selected person as chat bubbles on the right
+// (mine carry the sending time and the Seen/Sent status), and the sender
+// form under the thread. Viewing the board marks the messages read - the
+// badge on the page and in the navbar always means "new since the last
+// visit". The navbar carries the same count as a badge.
 if ($page==='messages') {
     $me=(int)user()['id'];
     $newCount=tb_unread_message_count($pdo,$me);
     // The navbar badge renders after the mark-read below, so it reuses this
     // pre-mark-read count instead of querying a self-consumed zero.
     $GLOBALS['TB_UNREAD_BADGE']=$newCount;
-    $in=$pdo->prepare('SELECT m.*,u.display_name sender,u.last_seen_at sender_last_seen FROM messages m LEFT JOIN users u ON u.id=m.sender_id WHERE m.recipient_id=? ORDER BY m.id DESC LIMIT 200');
-    $in->execute([$me]);
-    $inbox=$in->fetchAll();
-    $out=$pdo->prepare('SELECT m.*,u.display_name recipient,u.last_seen_at recipient_last_seen FROM messages m LEFT JOIN users u ON u.id=m.recipient_id WHERE m.sender_id=? ORDER BY m.id DESC LIMIT 200');
-    $out->execute([$me]);
-    $sent=$out->fetchAll();
+    // Per-person unread counts and the orphaned count are read before the
+    // mark-read below, so the left list shows what is new on this very load.
+    $unreadBySender=[];
+    $ub=$pdo->prepare('SELECT sender_id, COUNT(*) c FROM messages WHERE recipient_id=? AND is_read=0 AND sender_id IS NOT NULL GROUP BY sender_id');
+    $ub->execute([$me]);
+    foreach ($ub->fetchAll() as $ubRow) $unreadBySender[(int)$ubRow['sender_id']]=(int)$ubRow['c'];
+    $orphansUnread=$pdo->prepare('SELECT COUNT(*) FROM messages WHERE recipient_id=? AND is_read=0 AND sender_id IS NULL');
+    $orphansUnread->execute([$me]);
+    $orphanUnread=(int)$orphansUnread->fetchAll(PDO::FETCH_COLUMN)[0];
+    $orphansTotal=$pdo->prepare('SELECT COUNT(*) FROM messages WHERE (recipient_id=? AND sender_id IS NULL) OR (sender_id=? AND recipient_id IS NULL)');
+    $orphansTotal->execute([$me,$me]);
+    $orphanTotal=(int)$orphansTotal->fetchAll(PDO::FETCH_COLUMN)[0];
+    $people=$pdo->prepare('SELECT id,display_name,last_seen_at FROM users WHERE id<>? ORDER BY display_name');
+    $people->execute([$me]);
+    $peopleRows=$people->fetchAll();
     // Viewing the board is what marks the messages read - the badge on the
     // page and in the navbar always means "new since the last visit".
     $pdo->prepare('UPDATE messages SET is_read=1 WHERE recipient_id=? AND is_read=0')->execute([$me]);
-    $recipients=$pdo->prepare('SELECT id,display_name FROM users WHERE id<>? ORDER BY display_name');
-    $recipients->execute([$me]);
+    // The selected conversation: ?u=<user id>, with u=0 as the "Deleted user"
+    // thread (#17: messages survive account deletion, both FKs SET NULL).
+    // Without a valid selection the newest unread sender wins, else the
+    // conversation with the most recent activity, else the first person
+    // alphabetically.
+    $peerId=isset($_GET['u'])?(int)$_GET['u']:-1;
+    $peer=null;
+    if ($peerId>0) {
+        foreach ($peopleRows as $p) { if ((int)$p['id']===$peerId) { $peer=$p; break; } }
+    }
+    if ($peer===null && $peerId!==0) {
+        if ($unreadBySender) {
+            $newest=$pdo->prepare('SELECT sender_id FROM messages WHERE recipient_id=? AND is_read=0 AND sender_id IS NOT NULL ORDER BY id DESC LIMIT 1');
+            $newest->execute([$me]);
+            $newestId=(int)($newest->fetchAll(PDO::FETCH_COLUMN)[0] ?? 0);
+            foreach ($peopleRows as $p) { if ((int)$p['id']===$newestId) { $peer=$p; break; } }
+        }
+        if ($peer===null) {
+            $recent=$pdo->prepare('SELECT CASE WHEN sender_id=? THEN recipient_id ELSE sender_id END other_id FROM messages WHERE sender_id=? OR recipient_id=? ORDER BY id DESC LIMIT 1');
+            $recent->execute([$me,$me,$me]);
+            $otherId=(int)($recent->fetchAll(PDO::FETCH_COLUMN)[0] ?? 0);
+            if ($otherId>0) foreach ($peopleRows as $p) { if ((int)$p['id']===$otherId) { $peer=$p; break; } }
+        }
+        if ($peer===null && $peopleRows) $peer=$peopleRows[0];
+        $peerId=$peer===null?0:(int)$peer['id'];
+    }
+    // The thread with the selected person, oldest first like a chat log. For
+    // u=0 the thread holds the messages whose other end was deleted.
+    $thread=[];
+    if ($peerId===0) {
+        $t=$pdo->prepare('SELECT * FROM messages WHERE (recipient_id=? AND sender_id IS NULL) OR (sender_id=? AND recipient_id IS NULL) ORDER BY id ASC');
+        $t->execute([$me,$me]);
+        $thread=$t->fetchAll();
+    } elseif ($peer!==null) {
+        $t=$pdo->prepare('SELECT * FROM messages WHERE (sender_id=? AND recipient_id=?) OR (sender_id=? AND recipient_id=?) ORDER BY id ASC');
+        $t->execute([$me,$peerId,$peerId,$me]);
+        $thread=$t->fetchAll();
+    }
     render_header('Messages',$config,$error); ?>
-    <div class="d-flex justify-content-between align-items-center mb-3"><div><h1 class="h3 mb-0">Messages</h1><div class="muted">Leave a message to another user - they see it here and in the navbar badge.</div></div><span class="badge text-bg-danger fs-6"><?=$newCount?> new message<?=$newCount===1?'':'s'?></span></div>
-    <div class="row g-4"><div class="col-lg-7"><div class="card p-4"><h2 class="h5">Inbox</h2><?php foreach($inbox as $m): ?><div class="border-bottom py-2<?=$m['is_read']?'':' fw-semibold'?>"><div><strong><?=h($m['sender'] ?? 'Deleted user')?></strong> <span class="small muted"><?=h($m['created_at'])?></span><?php if(!$m['is_read']): ?> <span class="badge text-bg-danger">new</span><?php endif; ?></div><div class="prewrap"><?=h($m['body'])?></div></div><?php endforeach; if(!$inbox): ?><div class="small muted">No messages yet.</div><?php endif; ?></div></div>
-    <div class="col-lg-5"><div class="card p-4 mb-4"><h2 class="h5">New message</h2><form method="post"><?=csrf_field()?><input type="hidden" name="action" value="send_message"><div class="mb-3"><label class="form-label" for="message-recipient">To</label><select class="form-select" id="message-recipient" name="recipient_id" required><option value="">Choose a user</option><?php foreach($recipients->fetchAll() as $r): ?><option value="<?=$r['id']?>"><?=h($r['display_name'])?></option><?php endforeach; ?></select></div><div class="mb-3"><label class="form-label" for="message-body">Message</label><textarea class="form-control" id="message-body" name="body" rows="4" required></textarea></div><button class="btn btn-primary">Send message</button></form></div>
-    <div class="card p-4"><h2 class="h5">Sent</h2><?php foreach($sent as $m): ?><div class="border-bottom py-2"><div><strong>to <?=h($m['recipient'] ?? 'Deleted user')?></strong> <span class="small muted"><?=h($m['created_at'])?></span></div><div class="prewrap"><?=h($m['body'])?></div></div><?php endforeach; if(!$sent): ?><div class="small muted">Nothing sent yet.</div><?php endif; ?></div></div></div>
+    <div class="d-flex justify-content-between align-items-center mb-3"><div><h1 class="h3 mb-0">Messages</h1><div class="muted">A messenger-style board: pick a person on the left, chat in bubbles on the right - every message shows when it was sent and whether it was seen.</div></div><span class="badge text-bg-danger fs-6"><?=$newCount?> new message<?=$newCount===1?'':'s'?></span></div>
+    <div class="row g-4">
+        <div class="col-lg-4"><div class="card p-3"><h2 class="h5">People</h2>
+            <?php foreach ($peopleRows as $p): $pid=(int)$p['id']; ?><a class="d-flex justify-content-between align-items-center border-bottom py-2 text-decoration-none<?=$peer!==null&&$pid===(int)$peer['id']?' bg-primary-subtle fw-semibold':''?>" href="?page=messages&u=<?=$pid?>"><span><?=tb_user_with_activity($p)?></span><?php if ($unreadBySender[$pid] ?? 0): ?><span class="badge text-bg-danger"><?=$unreadBySender[$pid]?></span><?php endif; ?></a><?php endforeach; if(!$peopleRows): ?><div class="small muted">No other users yet.</div><?php endif; ?>
+            <?php if ($orphanTotal): ?><a class="d-flex justify-content-between align-items-center border-bottom py-2 text-decoration-none<?=$peerId===0?' bg-primary-subtle fw-semibold':''?>" href="?page=messages&u=0"><span>Deleted user</span><?php if ($orphanUnread): ?><span class="badge text-bg-danger"><?=$orphanUnread?></span><?php endif; ?></a><?php endif; ?>
+            <?php if (!$peopleRows && !$orphanTotal): ?><div class="small muted">Nobody to talk to yet.</div><?php endif; ?>
+        </div></div>
+        <div class="col-lg-8"><div class="card p-3">
+            <h2 class="h5"><?=h($peer!==null?'Conversation with '.$peer['display_name']:'Deleted user')?></h2>
+            <div class="py-2">
+            <?php foreach ($thread as $m): $mine=$m['sender_id']!==null&&(int)$m['sender_id']===$me; ?>
+            <?php if ($mine): ?><div class="d-flex justify-content-end mb-2"><div class="bg-primary text-white rounded-3 px-3 py-2" style="max-width:75%"><div class="prewrap"><?=h($m['body'])?></div><div class="small mt-1" style="opacity:.75"><?=h($m['created_at'])?> · <?=$m['is_read']?'Seen':'Sent'?></div></div></div>
+            <?php else: ?><div class="d-flex justify-content-start mb-2"><div class="border rounded-3 px-3 py-2" style="max-width:75%"><div class="prewrap"><?=h($m['body'])?></div><div class="small muted mt-1"><?=h($m['created_at'])?></div></div></div><?php endif; ?>
+            <?php endforeach; if(!$thread): ?><div class="text-center muted small py-4">No messages here yet - say hi below.</div><?php endif; ?>
+            </div>
+            <?php if ($peerId!==0): ?><form method="post" class="mt-2"><?=csrf_field()?><input type="hidden" name="action" value="send_message"><input type="hidden" name="recipient_id" value="<?=$peerId?>"><div class="input-group"><textarea class="form-control" id="message-body" name="body" rows="2" placeholder="Write a message..." required></textarea><button class="btn btn-primary">Send</button></div></form>
+            <?php else: ?><div class="small muted mt-2">This account was deleted - the conversation stays readable, but new messages cannot be delivered.</div><?php endif; ?>
+        </div></div></div>
     <?php render_footer(); exit;
 }
 

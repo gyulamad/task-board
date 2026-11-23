@@ -30,6 +30,7 @@ A lightweight multi-user task and message board for PHP 8.2+ and MySQL/MariaDB s
 - Mobile friendly navigation: below the `lg` breakpoint the menu (links, theme switcher, sign-out) collapses behind a hamburger toggler and drops down only when toggled; from `lg` up the bar stays expanded as before (#32)
 - Admin-only software updater for the latest GitHub release or a selected repository branch
 - Full backup download on the Software updates page (#49): one ZIP with the complete application code (including config.php), every file of the uploads folder and an SQL dump of the whole database, built on demand and streamed straight to the administrator
+- Realtime list views (#51): the task list, the Kanban board, the waterflow chart and the Users page re-render their list region every 10 seconds — status changes and activity dots show up without a manual reload, while checkbox selections and other in-region form data stay exactly as the user left them
 - PDO prepared statements, output escaping, CSRF tokens and upload MIME checks
 
 ## Install on shared hosting
@@ -301,6 +302,28 @@ update (the install form's reminder to make a database backup points at it).
 - The archive is built in a private temporary file and streamed to the browser —
   no copy is kept on the server. The action is a CSRF-protected POST and
   re-checks the current administrator password, exactly like the install action.
+
+## Realtime list views (#51)
+The four list views — the task list, the Kanban board, the dependency waterflow
+chart and the Users administration page — refresh themselves: a small script
+re-fetches the page URL every 10 seconds and swaps only the list region
+(`<div id="tb-list-region" data-tb-refresh="10">`) with the freshly rendered
+one, so a Kanban status change or a user's activity dot turning red shows up
+without a manual reload.
+
+- The user's in-region form state survives every tick: checkbox values (the
+  bulk selection and "select all") and dropdown values (the bulk "Move to
+  project" target) are re-applied after each swap. A region whose fresh
+  content is identical is not touched at all, so a quiet page never flickers.
+- The refresh pauses while the tab is hidden and catches up the moment the tab
+  becomes visible; a failed poll just waits for the next tick, and an expired
+  session finds no region on the sign-in page and stops instead of failing.
+- No new endpoint and no dependency: the refresh fetches the same URL the
+  browser is on and parses it client-side; the task list's bulk-selection
+  wiring is event-delegated so it keeps working across swaps (it also re-syncs
+  the button disabled states via the `tb-list-region:swapped` event).
+- The interval is a per-page knob: the `data-tb-refresh` attribute carries the
+  seconds (10 everywhere by default).
 
 ## Requirements
 - PHP 8.2+ recommended

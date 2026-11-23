@@ -1315,3 +1315,70 @@ function tb_status_badge(string $name, ?string $color): string {
     $color = strtolower($color);
     return '<span class="badge border" style="background-color:' . $color . ';color:' . tb_status_text_color($color) . '">' . h($name) . '</span>';
 }
+
+/** The auto-refresh script for the list views (#51): every list page renders
+ * its live region as <div id="tb-list-region" data-tb-refresh="10">…</div> and
+ * calls this helper once right after it. The script re-fetches the page URL
+ * every 10 seconds (the data attribute is the per-page knob), replaces only
+ * the region's children with the freshly rendered ones and re-applies the
+ * user's in-region form state (checkbox and select values) afterwards, so a
+ * bulk selection or a chosen target project survives every refresh tick. It
+ * stays silent while the tab is hidden and polls again the moment the tab
+ * becomes visible. No server-side endpoint, no dependency: the region lookup
+ * also makes the refresh a no-op on every page that does not opt in. */
+function tb_render_list_refresh_script(): void {
+    ?><script>
+(function () {
+    var region = document.getElementById('tb-list-region');
+    if (!region) return;
+    var interval = parseInt(region.getAttribute('data-tb-refresh') || '10', 10) * 1000;
+    if (!(interval > 0)) return;
+    var busy = false;
+
+    function savedState() {
+        // name/value pairs are the stable keys across refreshes; the checked
+        // flag and the selected option are the user's state to keep.
+        var state = {checks: {}, selects: {}};
+        region.querySelectorAll('input[type="checkbox"][name]').forEach(function (cb) {
+            state.checks[cb.name + '::' + cb.value] = cb.checked;
+        });
+        region.querySelectorAll('select[name]').forEach(function (sel) {
+            state.selects[sel.name] = sel.value;
+        });
+        return state;
+    }
+
+    function applyState(state) {
+        region.querySelectorAll('input[type="checkbox"][name]').forEach(function (cb) {
+            var key = cb.name + '::' + cb.value;
+            if (key in state.checks) cb.checked = state.checks[key];
+        });
+        region.querySelectorAll('select[name]').forEach(function (sel) {
+            if (sel.name in state.selects) sel.value = state.selects[sel.name];
+        });
+    }
+
+    function tick() {
+        if (busy || document.hidden) return;
+        busy = true;
+        fetch(window.location.href, {credentials: 'same-origin'})
+            .then(function (response) { return response.ok ? response.text() : null; })
+            .then(function (html) {
+                if (html === null) return;
+                var fresh = new DOMParser().parseFromString(html, 'text/html').getElementById('tb-list-region');
+                // A page without the region (e.g. the sign-in page after an
+                // expired session) or an unchanged region: nothing to swap.
+                if (!fresh || fresh.innerHTML === region.innerHTML) return;
+                var state = savedState();
+                region.replaceChildren.apply(region, Array.prototype.slice.call(fresh.childNodes));
+                applyState(state);
+            })
+            .catch(function () { /* a failed poll just waits for the next tick */ })
+            .then(function () { busy = false; });
+    }
+
+    setInterval(tick, interval);
+    document.addEventListener('visibilitychange', function () { if (!document.hidden) tick(); });
+})();
+</script><?php
+}

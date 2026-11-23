@@ -121,6 +121,36 @@ final class KanbanBoardTest extends E2eTestCase
         $this->assertStringContainsString('Unrelated item', $this->board($admin), 'Without filters every task is back.');
     }
 
+    public function test_kanban_cards_show_the_task_priority(): void
+    {
+        $admin = $this->adminSession();
+        $taskId = $admin->createTask('Priority item');
+        $admin->get('/?page=edit&id=' . $taskId);
+        $admin->post('/?page=edit&id=' . $taskId, [
+            'action' => 'save_task', 'id' => (string)$taskId, 'title' => 'Priority item',
+            'description' => 'Created by the test suite', 'status_id' => '1',
+            'parent_id' => '', 'priority' => '7', 'assignees' => [],
+        ]);
+
+        // Every card carries the x-priority badge right after the title link -
+        // the same mark the task list's Priority column uses (#45), now on the
+        // kanban board too (#72).
+        $body = $this->board($admin);
+        $this->assertStringContainsString(
+            '#' . $taskId . ' · Priority item</a><span class="badge text-bg-light border" title="Priority">&times;7</span>',
+            $body,
+            'The card shows the task priority next to the title.'
+        );
+
+        // A task left at the default priority shows x1, not nothing.
+        $default = $admin->createTask('Default priority item');
+        $body = $this->board($admin);
+        $this->assertStringContainsString(
+            '#' . $default . ' · Default priority item</a><span class="badge text-bg-light border" title="Priority">&times;1</span>',
+            $body
+        );
+    }
+
     public function test_kanban_shares_the_filter_and_saved_search_ui(): void
     {
         $admin = $this->adminSession();

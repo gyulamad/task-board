@@ -28,7 +28,35 @@ function history(PDO $pdo, int $taskId, string $event, string $details = ''): vo
     tb_notify_task_assignees($pdo, $taskId, (int)(user()['id'] ?? 0), $event, (int)$pdo->lastInsertId());
 }
 
-/** Full audit (#54): one task_history row per changed field, carrying the
+/**
+ * Resolves the comment a "Comment added" history row refers to, or null when
+ * it cannot be determined. Rows written since #62 embed the exact reference
+ * as "(comment:<id>)" at the end of the details; rows written before that
+ * carry the comment body itself (#54 v2) and are matched positionally: every
+ * "Comment added" row is recorded immediately after its comment insert, so
+ * among this task's comments written by the same author up to the row's
+ * timestamp the newest one is the match. The task page uses this to link its
+ * history rows to the comment itself instead of repeating the comment text
+ * on the page (#62).
+ *
+ * @param array<string,mixed> $row One row from task_history.
+ * @param list<array<string,mixed>> $comments The comments of the same task.
+ */
+function history_comment_id(array $row, array $comments): ?int {
+    if (($row['event'] ?? '') !== 'Comment added') return null;
+    if (preg_match('/\(comment:(\d+)\)\s*$/', (string)($row['details'] ?? ''), $m)) return (int)$m[1];
+    $best = null;
+    foreach ($comments as $c) {
+        if ((int)($c['user_id'] ?? 0) !== (int)($row['user_id'] ?? 0)) continue;
+        if ((string)($c['created_at'] ?? '') > (string)($row['created_at'] ?? '')) continue;
+        // Lexicographic order on "Y-m-d H:i:s" equals chronological order, and
+        // the tie-break on the id keeps the newest inserted comment winning.
+        if ($best === null || [$c['created_at'], (int)$c['id']] > [$best['created_at'], (int)$best['id']]) $best = $c;
+    }
+    return $best === null ? null : (int)$best['id'];
+}
+
+/** Full audit
  * field name and its from/to values verbatim (human-readable: status and
  * project names, task titles, assignee display names). The change details
  * page (?page=task_history&id=N) renders exactly that. */

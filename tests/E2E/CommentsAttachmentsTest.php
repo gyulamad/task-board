@@ -30,6 +30,73 @@ final class CommentsAttachmentsTest extends E2eTestCase
         $this->assertSame('1', (string)$comments);
     }
 
+    public function test_comment_history_shows_the_fact_without_duplicating_the_body(): void
+    {
+        $admin = $this->adminSession();
+        $id = $admin->createTask('History duplication task');
+
+        $response = $admin->post('/?page=task&id=' . $id, [
+            'action' => 'comment',
+            'task_id' => (string)$id,
+            'body' => 'Unique pumpkin body',
+        ]);
+        $this->assertSame(302, $response->status);
+
+        $page = $admin->taskPage($id);
+        // Every comment is rendered with its own anchor so the history can link to it.
+        $this->assertTrue($page->contains('id="comment-'));
+        // The comment body appears exactly once: in the comments section itself,
+        // never again as inline history details (#62).
+        $this->assertSame(1, substr_count($page->body, 'Unique pumpkin body'));
+
+        $history = substr($page->body, (int)strrpos($page->body, '<h2 class="h5">History</h2>'));
+        $this->assertStringNotContainsString('Unique pumpkin body', $history);
+        // The history row only carries the fact and a details link that scrolls
+        // to the comment itself via the anchor tag.
+        $this->assertStringContainsString('Comment added', $history);
+        $this->assertStringContainsString('href="#comment-', $history);
+        // Other events keep their audit page link and their inline details.
+        $this->assertStringContainsString('?page=task_history&id=', $history);
+        $this->assertStringContainsString('History duplication task', $history);
+    }
+
+    public function test_comment_history_anchor_targets_the_added_comment(): void
+    {
+        $admin = $this->adminSession();
+        $id = $admin->createTask('Anchor task');
+        $admin->post('/?page=task&id=' . $id, [
+            'action' => 'comment',
+            'task_id' => (string)$id,
+            'body' => 'Target comment body',
+        ]);
+
+        $commentId = (int)TestServer::pdo()->query('SELECT id FROM comments WHERE task_id=' . $id . ' LIMIT 1')->fetchColumn();
+        $page = $admin->taskPage($id);
+        // The anchor the history links to is the id of the comment that was added.
+        $this->assertTrue($page->contains('id="comment-' . $commentId . '"'));
+        $this->assertTrue($page->contains('href="#comment-' . $commentId . '"'));
+    }
+
+    public function test_the_audit_page_keeps_carrying_the_comment_body(): void
+    {
+        // The task page no longer repeats the comment text (#62), but the change
+        // details page keeps its full-audit purpose from #54 v2.
+        $admin = $this->adminSession();
+        $id = $admin->createTask('Audit task');
+        $admin->post('/?page=task&id=' . $id, [
+            'action' => 'comment',
+            'task_id' => (string)$id,
+            'body' => 'Audit trail body',
+        ]);
+
+        $historyId = (int)TestServer::pdo()->query(
+            "SELECT id FROM task_history WHERE task_id={$id} AND event='Comment added' LIMIT 1"
+        )->fetchColumn();
+        $audit = $admin->get('/?page=task_history&id=' . $historyId);
+        $this->assertSame(200, $audit->status);
+        $this->assertTrue($audit->contains('Audit trail body'), 'The audit page must keep showing what was written.');
+    }
+
     public function test_empty_comments_are_rejected(): void
     {
         $admin = $this->adminSession();

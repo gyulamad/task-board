@@ -256,7 +256,12 @@ if (user()) {
                 if (!$t) throw new RuntimeException('Task not found.');
                 if (!task_is_archived($t)) throw new RuntimeException('Archive the task before deleting it permanently.');
                 if (!is_admin() && (int)$t['created_by'] !== (int)user()['id']) throw new RuntimeException('Only an administrator or task creator can delete this task.');
+                // Orphan cleanup (#38 v2): capture the stored names before the
+                // delete cascades the attachment rows, then hard-delete the
+                // files too, so no upload is left behind in uploads/.
+                $storedNames = tb_task_attachment_files($pdo, $id);
                 $pdo->prepare('DELETE FROM tasks WHERE id=?')->execute([$id]);
+                tb_unlink_stored_files($storedNames);
                 $returnUrl = $_POST['return'] ?? '';
                 flash('Task deleted permanently.');
                 redirect(is_string($returnUrl) && (str_starts_with($returnUrl, '?page=tasks') || str_starts_with($returnUrl, '?page=archive')) ? $returnUrl : '?page=archive');
@@ -370,10 +375,9 @@ if (user()) {
                 if (!$attachment) throw new RuntimeException('Attachment not found.');
                 if (!is_admin() && (int)$attachment['user_id'] !== (int)user()['id']) throw new RuntimeException('Only an administrator or the uploader can delete an attachment.');
                 $pdo->prepare('DELETE FROM attachments WHERE id=?')->execute([$id]);
-                // The stored name is always a server-generated token, but
-                // basename() keeps the unlink inside uploads/ even if a row
-                // was tampered with.
-                $storedFile=__DIR__.'/uploads/'.basename((string)$attachment['stored_name']);
+                // tb_attachment_path() keeps the unlink inside uploads/ even
+                // for a tampered stored_name row.
+                $storedFile = tb_attachment_path((string)$attachment['stored_name']);
                 if (is_file($storedFile)) unlink($storedFile);
                 history($pdo,(int)$attachment['task_id'],'Attachment deleted',(string)$attachment['original_name']);
                 flash('Attachment deleted.'); redirect('?page=task&id='.$attachment['task_id']);
@@ -490,6 +494,14 @@ if (user()) {
                 if ($target['role']==='admin' && (int)$pdo->query("SELECT COUNT(*) FROM users WHERE role='admin'")->fetchColumn()<=1) throw new RuntimeException('At least one administrator must remain.');
                 $pdo->prepare('DELETE FROM users WHERE id=?')->execute([$id]);
                 flash('User deleted. Their tasks, comments and attachments were kept.'); redirect('?page=admin');
+            }
+            if ($action === 'cleanup_uploads' && is_admin()) {
+                // Orphan sweep (#38 v2): hard-delete every uploads/ file that
+                // no attachment row references anymore, so the folder never
+                // accumulates leftovers from deletes or failed uploads.
+                $removed = tb_cleanup_orphan_uploads($pdo);
+                flash($removed === 0 ? 'No orphaned attachment files found.' : $removed.' orphaned attachment file(s) removed.');
+                redirect('?page=admin');
             }
             if ($action === 'save_project') {
                 $id = (int)($_POST['id'] ?? 0);
@@ -745,6 +757,7 @@ if ($page==='admin' && is_admin()) {
     render_header('Administration',$config,$error); ?>
     <div class="row g-4"><div class="col-lg-6"><div class="card p-4"><h2 class="h5">Create user</h2><form method="post"><?=csrf_field()?><input type="hidden" name="action" value="add_user"><div class="mb-2"><input class="form-control" name="username" placeholder="Username" required></div><div class="mb-2"><input class="form-control" name="display_name" placeholder="Display name" required></div><div class="mb-2"><input class="form-control" type="password" name="password" placeholder="Password (10+ characters)" minlength="10" required></div><div class="mb-3"><select class="form-select" name="role"><option value="user">User</option><option value="admin">Administrator</option></select></div><button class="btn btn-primary">Create user</button></form></div>
     <div class="card p-4 mt-4"><h2 class="h5">Users</h2><div class="table-responsive"><table class="table table-hover align-middle mb-0"><thead><tr><th>Display name</th><th>Username</th><th>Role</th><th>Created</th><th>Last active</th><th>Actions</th></tr></thead><tbody><?php foreach($users as $u): ?><tr><td class="fw-semibold"><?=tb_user_with_activity($u)?></td><td><?=h($u['username'])?></td><td><span class="badge text-bg-secondary"><?=h($u['role'])?></span></td><td class="small muted"><?=h($u['created_at'])?></td><td class="small muted"><?=h($u['last_seen_at']===null?'never':'active: '.tb_last_seen_label($u['last_seen_at'],$dbNowTs))?></td><td class="text-nowrap"><a class="btn btn-sm btn-outline-secondary" href="?page=user&id=<?=$u['id']?>">Edit</a> <form method="post" class="d-inline" onsubmit="return confirm('Delete this user permanently? Their tasks, comments and attachments will be kept.')"><?=csrf_field()?><input type="hidden" name="action" value="delete_user"><input type="hidden" name="id" value="<?=$u['id']?>"><button class="btn btn-sm btn-outline-danger">Delete</button></form></td></tr><?php endforeach; ?></tbody></table></div></div></div>
+    <div class="card p-4 mt-4"><h2 class="h5">Maintenance</h2><p class="small muted mb-2">Scan the uploads folder and hard-delete the files that no attachment row references anymore — leftovers from tasks deleted before #38 v2, failed uploads or stray files. Files that existing attachments still use are never touched.</p><form method="post" onsubmit="return confirm('Delete every orphaned file in the uploads folder now?')"><?=csrf_field()?><input type="hidden" name="action" value="cleanup_uploads"><button class="btn btn-outline-danger">Clean up orphaned attachment files</button></form></div>
         <div class="col-lg-6"><div class="card p-4"><h2 class="h5">Task statuses</h2><p class="small muted">Rename statuses, change their display order, mark them as completion statuses or delete the ones no task uses.</p><ul class="list-group mb-3"><?php foreach($statuses as $st): ?><li class="list-group-item"><form method="post" class="row g-2 align-items-center"><?=csrf_field()?><input type="hidden" name="action" value="edit_status"><input type="hidden" name="id" value="<?=$st['id']?>"><div class="col-12 col-md-5"><label class="visually-hidden" for="status-name-<?=$st['id']?>">Status name</label><input class="form-control form-control-sm" name="name" id="status-name-<?=$st['id']?>" value="<?=h($st['name'])?>" maxlength="40" required></div><div class="col-4 col-md-2"><label class="visually-hidden" for="status-sort-<?=$st['id']?>">Sort order</label><input class="form-control form-control-sm" type="number" name="sort_order" id="status-sort-<?=$st['id']?>" value="<?=$st['sort_order']?>" title="Display order, lower numbers first"></div><div class="col-8 col-md-3 form-check ms-md-1 mb-0"><input class="form-check-input" type="checkbox" name="is_done" id="status-done-<?=$st['id']?>" <?=$st['is_done']?'checked':''?>><label class="form-check-label small" for="status-done-<?=$st['id']?>">Completed</label><?php if($st['is_done']): ?><span class="badge text-bg-success ms-1">Completion status</span><?php endif; ?></div><div class="col-12 col-md-2 d-flex gap-1 justify-content-md-end"><button class="btn btn-sm btn-outline-primary">Save</button><button type="submit" class="btn btn-sm btn-outline-danger" form="delete-status-<?=$st['id']?>">Delete</button></div></form><form method="post" id="delete-status-<?=$st['id']?>" class="d-none" onsubmit="return confirm('Delete this status?');"><?=csrf_field()?><input type="hidden" name="action" value="delete_status"><input type="hidden" name="id" value="<?=$st['id']?>"></form></li><?php endforeach; ?></ul><form method="post"><?=csrf_field()?><input type="hidden" name="action" value="add_status"><div class="mb-2"><input class="form-control" name="name" placeholder="New status label" required></div><div class="form-check mb-3"><input class="form-check-input" type="checkbox" name="is_done" id="done"><label class="form-check-label" for="done">Treat as completed</label></div><button class="btn btn-primary">Add status</button></form><p class="small muted mt-3">Statuses are shown in display order. A status that tasks still use and the last remaining status cannot be deleted.</p></div></div></div>
     <div class="card p-4 mt-4"><h2 class="h5">Activity status periods</h2><p class="small muted mb-2">The coloured dot next to every user name is driven by time periods. Configure which period shows which colour or character - when green turns yellow, when red turns to the empty grey and so on.</p><a class="btn btn-sm btn-outline-primary" href="?page=activity_settings">Configure periods</a></div>
     <?php render_footer(); exit;

@@ -258,6 +258,70 @@ final class CommentsAttachmentsTest extends E2eTestCase
         $this->assertTrue($response->contains('Attachment not found.'));
     }
 
+    public function test_deleting_a_task_removes_its_attachment_files(): void
+    {
+        $admin = $this->adminSession();
+        $id = $admin->createTask('Task with attachments to hard delete');
+        $this->uploadTextFile($admin, $id, 'first.txt', 'first payload');
+        $this->uploadTextFile($admin, $id, 'second.txt', 'second payload');
+        $storedNames = array_map(
+            'strval',
+            TestServer::pdo()->query('SELECT stored_name FROM attachments ORDER BY id')->fetchAll(\PDO::FETCH_COLUMN)
+        );
+        $this->assertCount(2, $storedNames);
+        foreach ($storedNames as $storedName) {
+            $this->assertFileExists(TestServer::docRoot() . '/uploads/' . $storedName);
+        }
+
+        $archive = $admin->post('/?page=task&id=' . $id, ['action' => 'archive_task', 'id' => (string)$id]);
+        $this->assertSame(302, $archive->status);
+        $delete = $admin->post('/?page=archive', ['action' => 'delete_task', 'id' => (string)$id]);
+        $this->assertSame(302, $delete->status);
+        $this->assertStringContainsString('?page=archive', (string)$delete->header('location'));
+        $this->assertTrue($admin->http->get('/?page=archive')->contains('Task deleted permanently.'));
+
+        // The rows cascaded away and the files are hard-deleted from uploads/.
+        $this->assertSame(0, (int)TestServer::pdo()->query('SELECT COUNT(*) FROM attachments')->fetchColumn());
+        foreach ($storedNames as $storedName) {
+            $this->assertFileDoesNotExist(TestServer::docRoot() . '/uploads/' . $storedName);
+        }
+    }
+
+    public function test_cleanup_uploads_removes_only_orphaned_files(): void
+    {
+        $admin = $this->adminSession();
+        $this->createUser($admin, 'cleaner', 'Cleaner User', 'CleanerPass1234');
+        $id = $admin->createTask('Task keeping a live attachment');
+        $attachmentId = $this->uploadTextFile($admin, $id, 'kept.txt', 'kept payload');
+        $storedName = (string)TestServer::pdo()->query('SELECT stored_name FROM attachments WHERE id=' . $attachmentId)->fetchColumn();
+        $keptFile = TestServer::docRoot() . '/uploads/' . $storedName;
+        $orphanFile = TestServer::docRoot() . '/uploads/orphan-leftover-' . bin2hex(random_bytes(4)) . '.txt';
+        file_put_contents($orphanFile, 'orphan payload');
+
+        // A non-admin gets the sweep silently skipped: nothing is removed.
+        $cleaner = new AppSession('cleaner', 'CleanerPass1234');
+        $denied = $cleaner->post('/?page=admin', ['action' => 'cleanup_uploads']);
+        $this->assertSame(200, $denied->status);
+        $this->assertFalse($denied->contains('orphaned attachment file(s) removed.'));
+        $this->assertFileExists($orphanFile);
+        $this->assertFileExists($keptFile);
+
+        $response = $admin->post('/?page=admin', ['action' => 'cleanup_uploads']);
+        $this->assertSame(302, $response->status);
+        // Older tests leave their stored files behind in the shared uploads
+        // folder, so the sweep may remove more than the one planted orphan.
+        $page = $admin->http->get('/?page=admin');
+        $this->assertTrue($page->contains('orphaned attachment file(s) removed.'));
+        $this->assertFileDoesNotExist($orphanFile);
+        // The referenced file and the .htaccess survive the sweep.
+        $this->assertFileExists($keptFile);
+        $this->assertFileExists(TestServer::docRoot() . '/uploads/.htaccess');
+
+        $again = $admin->post('/?page=admin', ['action' => 'cleanup_uploads']);
+        $this->assertSame(302, $again->status);
+        $this->assertTrue($admin->http->get('/?page=admin')->contains('No orphaned attachment files found.'));
+    }
+
     /** Uploads a small text file through the real form and returns the new attachment id. */
     private function uploadTextFile(AppSession $session, int $taskId, string $filename, string $content): int
     {

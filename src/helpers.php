@@ -1001,3 +1001,55 @@ function schedule_target_assignees(?string $csv): array {
     sort($ids);
     return $ids;
 }
+
+/*
+ * Attachment file handling (#38 v2): every attachment row in the database has
+ * a matching file in the uploads/ folder named attachments.stored_name (a
+ * server-generated token written at upload time). Deleting rows alone leaves
+ * those files behind as orphans, so the delete paths hard-delete the files
+ * too, and the admin page can sweep files that lost their row anyway.
+ */
+
+/** The safe on-disk path of an attachment's stored file. The stored name is
+ * always a server-generated token, but basename() keeps any lookup inside
+ * uploads/ even if a row was tampered with. */
+function tb_attachment_path(string $storedName): string {
+    return dirname(__DIR__) . '/uploads/' . basename($storedName);
+}
+
+/** The stored names of a task's attachments, captured before a delete
+ * cascades the rows away. */
+function tb_task_attachment_files(PDO $pdo, int $taskId): array {
+    $s = $pdo->prepare('SELECT stored_name FROM attachments WHERE task_id=?');
+    $s->execute([$taskId]);
+    return array_map('strval', $s->fetchAll(PDO::FETCH_COLUMN));
+}
+
+/** Hard-deletes the given stored files from uploads/ (missing files are
+ * skipped silently — that is what they are: gone). Returns how many files
+ * were actually removed. */
+function tb_unlink_stored_files(array $storedNames): int {
+    $removed = 0;
+    foreach ($storedNames as $storedName) {
+        $path = tb_attachment_path((string)$storedName);
+        if (is_file($path) && unlink($path)) $removed++;
+    }
+    return $removed;
+}
+
+/** Removes every file in uploads/ that no attachments row references anymore
+ * (leftovers from deletes that happened before #38 v2, failed uploads, or
+ * manually placed files). The .htaccess file and files still referenced are
+ * never touched. Returns how many files were removed. */
+function tb_cleanup_orphan_uploads(PDO $pdo): int {
+    $known = array_map('strval', $pdo->query('SELECT stored_name FROM attachments')->fetchAll(PDO::FETCH_COLUMN));
+    $dir = dirname(__DIR__) . '/uploads';
+    if (!is_dir($dir)) return 0;
+    $removed = 0;
+    foreach (scandir($dir) ?: [] as $entry) {
+        if ($entry === '.' || $entry === '..' || $entry === '.htaccess') continue;
+        if (in_array($entry, $known, true)) continue;
+        if (is_file($dir . '/' . $entry) && unlink($dir . '/' . $entry)) $removed++;
+    }
+    return $removed;
+}

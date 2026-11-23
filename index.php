@@ -989,17 +989,62 @@ if ($page==='admin' && is_admin()) {
 // and the users table with edit/delete actions. Lives on its own page so the
 // hub stays readable and the user table keeps its room.
 if ($page==='users' && is_admin()) {
-    $users=$pdo->query('SELECT id,username,display_name,role,created_at,last_seen_at,CURRENT_TIMESTAMP AS db_now FROM users ORDER BY display_name')->fetchAll();
+    // User list CRUD (#57): the admin users list gets the same building
+    // blocks as the other CRUD lists - free text search over username and
+    // display name, a role filter, sortable columns through the shared
+    // sort_state()/sort_header() helpers and pagination - reusing the exact
+    // mechanics of the task/projects/documents lists (DRY). The realtime
+    // region (#51) keeps wrapping the list so the 10 second refresh survives.
+    $conds=[]; $params=[];
+    $q = trim((string)($_GET['q'] ?? ''));
+    if ($q !== '') {
+        // The same |, %, _ escaping the task search uses, so a search for a
+        // literal % or _ cannot turn into a wildcard scan.
+        $term = str_replace(['|','%','_'],['||','|%','|_'],$q);
+        $conds[] = "(u.username LIKE ? ESCAPE '|' OR u.display_name LIKE ? ESCAPE '|')";
+        $params[] = '%'.$term.'%'; $params[] = '%'.$term.'%';
+    }
+    $roleFilter=array_values(array_intersect(filter_values('role'),['admin','user']));
+    if ($roleFilter) {
+        $conds[] = 'u.role IN ('.tb_in_placeholders(count($roleFilter)).')';
+        array_push($params, ...$roleFilter);
+    }
+    $whereSql = $conds ? 'WHERE '.implode(' AND ',$conds) : '';
+    $userSort=sort_state([
+        'name'=>'u.display_name {dir}, u.id {dir}',
+        'username'=>'u.username {dir}, u.id {dir}',
+        'role'=>'u.role {dir}, u.display_name {dir}',
+        'created'=>'u.created_at {dir}, u.id {dir}',
+        'activity'=>'u.last_seen_at {dir}, u.id {dir}',
+    ],'name');
+    $perPage=20; $userPage=max(1,(int)($_GET['p'] ?? 1));
+    $cs=$pdo->prepare('SELECT COUNT(*) FROM users u '.$whereSql); $cs->execute($params);
+    $totalUsers=(int)$cs->fetchColumn();
+    $totalPages=max(1,(int)ceil($totalUsers/$perPage));
+    $userPage=min($userPage,$totalPages);
+    $users=$pdo->prepare('SELECT u.id,u.username,u.display_name,u.role,u.created_at,u.last_seen_at,CURRENT_TIMESTAMP AS db_now FROM users u '.$whereSql.' ORDER BY '.$userSort['sql'].' LIMIT '.$perPage.' OFFSET '.(($userPage-1)*$perPage));
+    $users->execute($params);
+    $users=$users->fetchAll();
     // The Last active label (#30) is computed on the database's own clock: the
     // stamps were written with the DB's CURRENT_TIMESTAMP, so the "now" they
     // are compared against comes from the same clock (one scalar, from the
     // first row; an empty users table renders no cells and needs no clock).
     $dbNowTs=null;
     if ($users!==[] && ($t=strtotime((string)$users[0]['db_now']))!==false) $dbNowTs=$t;
+    $usersUrl=function(array $merge=[]) use ($q): string {
+        $qs=['page'=>'users'];
+        if ($q!=='') $qs['q']=$q;
+        $qs=array_merge($qs,$merge);
+        return '?'.http_build_query($qs);
+    };
     render_header('Users',$config,$error); ?>
-    <div class="d-flex justify-content-between align-items-center mb-3"><div><h1 class="h3 mb-0">Users</h1><div class="muted">Accounts, roles and last activity</div></div><a class="btn btn-outline-secondary" href="?page=admin">Back to administration</a></div>
+    <div class="d-flex justify-content-between align-items-center mb-3"><div><h1 class="h3 mb-0">Users</h1><div class="muted"><?=$totalUsers?> user<?=$totalUsers===1?'':'s'?> · accounts, roles and last activity</div></div><a class="btn btn-outline-secondary" href="?page=admin">Back to administration</a></div>
     <div class="row g-4"><div class="col-lg-5"><div class="card p-4"><h2 class="h5">Create user</h2><form method="post"><?=csrf_field()?><input type="hidden" name="action" value="add_user"><div class="mb-2"><input class="form-control" name="username" placeholder="Username" required></div><div class="mb-2"><input class="form-control" name="display_name" placeholder="Display name" required></div><div class="mb-2"><input class="form-control" type="password" name="password" placeholder="Password (10+ characters)" minlength="10" required></div><div class="mb-3"><select class="form-select" name="role"><option value="user">User</option><option value="admin">Administrator</option></select></div><button class="btn btn-primary">Create user</button></form></div></div>
-    <div class="col-lg-7"><div id="tb-list-region" data-tb-refresh="10"><div class="card p-4"><h2 class="h5">All users</h2><div class="table-responsive"><table class="table table-hover align-middle mb-0"><thead><tr><th>Display name</th><th>Username</th><th>Role</th><th>Created</th><th>Last active</th><th>Actions</th></tr></thead><tbody><?php foreach($users as $u): ?><tr><td class="fw-semibold"><?=tb_user_with_activity($u)?></td><td><?=h($u['username'])?></td><td><span class="badge text-bg-secondary"><?=h($u['role'])?></span></td><td class="small muted"><?=h($u['created_at'])?></td><td class="small muted"><?=h($u['last_seen_at']===null?'never':'active: '.tb_last_seen_label($u['last_seen_at'],$dbNowTs))?></td><td class="text-nowrap"><a class="btn btn-sm btn-outline-secondary" href="?page=user&id=<?=$u['id']?>">Edit</a> <form method="post" class="d-inline" onsubmit="return confirm('Delete this user permanently? Their tasks, comments and attachments will be kept.')"><?=csrf_field()?><input type="hidden" name="action" value="delete_user"><input type="hidden" name="id" value="<?=$u['id']?>"><button class="btn btn-sm btn-outline-danger">Delete</button></form></td></tr><?php endforeach; ?></tbody></table></div></div></div></div></div>
+    <div class="col-lg-7"><div id="tb-list-region" data-tb-refresh="10">
+    <form method="get" class="row g-2 align-items-end mb-3"><input type="hidden" name="page" value="users"><div class="col-md-5"><input class="form-control" type="search" name="q" value="<?=h($q)?>" placeholder="Search username or display name" aria-label="Search users"></div><div class="col-md-3"><label class="form-label small muted mb-1" for="filter-user-role">Roles</label><select class="form-select" id="filter-user-role" name="role[]" multiple size="2"><option value="admin" <?=in_array('admin',$roleFilter,true)?'selected':''?>>Administrator</option><option value="user" <?=in_array('user',$roleFilter,true)?'selected':''?>>User</option></select></div><div class="col-md-4 d-grid"><button class="btn btn-outline-primary">Filter</button></div><div class="col-12"><div class="form-text mb-0">Hold Ctrl/Cmd to pick several roles; an empty dropdown filters nothing. The search matches username and display name.</div></div></form>
+    <div class="card p-4"><h2 class="h5">All users</h2><div class="table-responsive"><table class="table table-hover align-middle mb-0"><thead><tr><?=sort_header('Display name','name',$userSort,$usersUrl(sort_toggle('name',$userSort)))?><?=sort_header('Username','username',$userSort,$usersUrl(sort_toggle('username',$userSort)))?><?=sort_header('Role','role',$userSort,$usersUrl(sort_toggle('role',$userSort)))?><?=sort_header('Created','created',$userSort,$usersUrl(sort_toggle('created',$userSort)))?><?=sort_header('Last active','activity',$userSort,$usersUrl(sort_toggle('activity',$userSort)))?><th>Actions</th></tr></thead><tbody><?php foreach($users as $u): ?><tr><td class="fw-semibold"><?=tb_user_with_activity($u)?></td><td><?=h($u['username'])?></td><td><span class="badge text-bg-secondary"><?=h($u['role'])?></span></td><td class="small muted"><?=h($u['created_at'])?></td><td class="small muted"><?=h($u['last_seen_at']===null?'never':'active: '.tb_last_seen_label($u['last_seen_at'],$dbNowTs))?></td><td class="text-nowrap"><a class="btn btn-sm btn-outline-secondary" href="?page=user&id=<?=$u['id']?>">Edit</a> <form method="post" class="d-inline" onsubmit="return confirm('Delete this user permanently? Their tasks, comments and attachments will be kept.')"><?=csrf_field()?><input type="hidden" name="action" value="delete_user"><input type="hidden" name="id" value="<?=$u['id']?>"><button class="btn btn-sm btn-outline-danger">Delete</button></form></td></tr><?php endforeach; if(!$users): ?><tr><td colspan="6" class="text-center muted py-4"><?=$q!==''||$roleFilter?'No users match the filters.':'No users yet.'?></td></tr><?php endif; ?></tbody></table></div></div>
+    <div class="d-flex justify-content-between align-items-center mt-3 gap-2 flex-wrap"><?php if($totalPages>1): ?><nav aria-label="User list pages"><ul class="pagination mb-0"><li class="page-item <?=$userPage<=1?'disabled':''?>"><a class="page-link" href="<?=h($usersUrl(['p'=>max(1,$userPage-1)]))?>">&laquo;</a></li><?php $pWinStart=max(1,$userPage-2);$pWinEnd=min($totalPages,$pWinStart+4);if($pWinEnd-$pWinStart<4)$pWinStart=max(1,$pWinEnd-4);if($pWinStart>1): ?><li class="page-item"><a class="page-link" href="<?=h($usersUrl(['p'=>1]))?>">1</a></li><?php if($pWinStart>2): ?><li class="page-item disabled"><span class="page-link">&hellip;</span></li><?php endif; endif; for($i=$pWinStart;$i<=$pWinEnd;$i++): ?><li class="page-item <?=$i===$userPage?'active':''?>"><a class="page-link" href="<?=h($usersUrl(['p'=>$i]))?>"><?=$i?></a></li><?php endfor; if($pWinEnd<$totalPages): ?><?php if($pWinEnd<$totalPages-1): ?><li class="page-item disabled"><span class="page-link">&hellip;</span></li><?php endif; ?><li class="page-item"><a class="page-link" href="<?=h($usersUrl(['p'=>$totalPages]))?>"><?=$totalPages?></a></li><?php endif; ?><li class="page-item <?=$userPage>=$totalPages?'disabled':''?>"><a class="page-link" href="<?=h($usersUrl(['p'=>min($totalPages,$userPage+1)]))?>">&raquo;</a></li></ul></nav><span class="small muted">Page <?=$userPage?> of <?=$totalPages?></span><?php endif; ?></div>
+    </div></div></div>
     <?php tb_render_list_refresh_script(); ?>
     <?php render_footer(); exit;
 }

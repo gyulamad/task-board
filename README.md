@@ -35,6 +35,7 @@ A lightweight multi-user task and message board for PHP 8.2+ and MySQL/MariaDB s
 - Full backup download on the Software updates page (#49): one ZIP with the complete application code (including config.php), every file of the uploads folder and an SQL dump of the whole database, built on demand and streamed straight to the administrator
 - Realtime list views (#51): the task list, the Kanban board, the waterflow chart and the Users page re-render their list region every 10 seconds — status changes and activity dots show up without a manual reload, while checkbox selections and other in-region form data stay exactly as the user left them
 - Message board (#56): a Messages page where users leave messages to each other (recipient picker, inbox, sent list), with a red notification showing the number of NEW (unread) messages at the top of the page and as a badge next to the navbar's Messages link; viewing the board marks the messages read, so the count always means "new since your last visit"
+- User list CRUD (#57): the admin Users page gets the same list features as the other CRUD lists — free text search over username and display name, a role filter (multi-select, unknown values ignored), sortable columns (display name, username, role, created, last active) through the shared sort helpers and pagination — while the realtime region (#51) keeps wrapping the list
 - PDO prepared statements, output escaping, CSRF tokens and upload MIME checks
 
 ## Install on shared hosting
@@ -409,6 +410,28 @@ without a manual reload.
   the button disabled states via the `tb-list-region:swapped` event).
 - The interval is a per-page knob: the `data-tb-refresh` attribute carries the
   seconds (10 everywhere by default).
+
+## User list CRUD (#57)
+The **Users** administration page (`?page=users`) holds the same list
+building blocks as the other CRUD lists, reusing their shared helpers (DRY):
+
+- **Search** (`q`): free text over username and display name, with the same
+  `|`/`%`/`_` escaping discipline as the task search, so a literal `%` is not
+  a wildcard.
+- **Role filter**: a multi-select (`role[]`) that matches any of the picked
+  roles, accepts legacy scalar links and ignores unknown values (#25
+  conventions).
+- **Sortable columns**: Display name, Username, Role, Created and Last active
+  order through the shared `sort_state()`/`sort_header()` helpers with the
+  same allowlist discipline as the task list — unknown sort keys fall back to
+  the default and the database stays untouched.
+- **Pagination**: 20 users per page with the same pagination window and
+  page labels as the other lists; search, role filter and sort travel through
+  the header and page links.
+
+The create-user form stays outside the swapped region, and the realtime
+refresh (#51) keeps re-rendering the list every 10 seconds with the active
+search and filter state preserved.
 
 ## Requirements
 - PHP 8.2+ recommended

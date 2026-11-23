@@ -95,7 +95,9 @@ final class UserActivityTest extends E2eTestCase
         // exact wording lives in tests/Unit/LastSeenLabelTest.php.
         $page = $admin->get('/?page=users');
         $this->assertSame(200, $page->status);
-        $this->assertTrue($page->contains('<th>Last active</th>'), 'The users table must have the Last active column.');
+        // #57 made the column sortable: the header is now a link carrying the
+        // aria-label instead of a plain <th>.
+        $this->assertTrue($page->contains('Order by Last active'), 'The users table must have the Last active column.');
         $this->assertTrue($page->contains('>never</td>'), 'A user that has not been seen must read never.');
         $this->assertTrue($page->contains('active: '), 'A signed-in user must show a fresh active label.');
     }

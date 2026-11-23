@@ -88,6 +88,12 @@ final class UserManagementTest extends E2eTestCase
         $s = TestServer::pdo()->prepare('SELECT theme FROM users WHERE id=?');
         $s->execute([$this->userId('root')]);
         $this->assertSame('dark', $s->fetchColumn());
+        // Close the cursor before any further HTTP request: a kept statement
+        // whose result was not drained holds a SQLite SHARED lock, and the
+        // next write from the app (the last_seen heartbeat) busy-waits on it
+        // until the HTTP client times out. fetchColumn() does not drain the
+        // result; closeCursor() releases the lock immediately (CI fix).
+        $s->closeCursor();
         // ...and a fresh sign-in with the new username picks the theme up again.
         $fresh = new AppSession('root', 'AdminPass1234');
         $this->assertTrue($fresh->get('/?')->contains('<html lang="en" data-bs-theme="dark">'));

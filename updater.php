@@ -13,6 +13,10 @@ const TASK_BOARD_UPDATE_FILES = [
     // index.php; leaving it off the allowlist installs an application that
     // cannot start (HTTP 500). Keep it in sync with the repository layout.
     'src/helpers.php',
+    // The CRUD list engine (#57): index.php requires it right after the
+    // helpers, so an update that leaves it off installs an application that
+    // cannot start. Keep it in sync with the repository layout.
+    'src/crud.php',
     'version.json',
     'schema.sql',
     'README.md',

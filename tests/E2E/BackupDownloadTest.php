@@ -117,10 +117,10 @@ final class BackupDownloadTest extends E2eTestCase
             for ($i = 0; $i < $zip->numFiles; $i++) {
                 $names[] = (string)$zip->getNameIndex($i);
             }
-            // The SQLite test deployment ships only the four core files into
-            // its temp doc root, so exactly those must appear under code/ —
-            // on a real installation the code/ folder mirrors the full upload.
-            foreach (['MANIFEST.txt', 'code/index.php', 'code/updater.php', 'code/src/helpers.php', 'code/config.php', 'uploads/.htaccess'] as $expected) {
+            // The SQLite test deployment ships only the core files into its
+            // temp doc root, so those must appear under code/ — on a real
+            // installation the code/ folder mirrors the full upload.
+            foreach (['MANIFEST.txt', 'code/index.php', 'code/updater.php', 'code/src/helpers.php', 'code/src/crud.php', 'code/config.php', 'uploads/.htaccess'] as $expected) {
                 $this->assertContains($expected, $names, "The archive must contain {$expected}.");
             }
             $uploaded = array_values(array_filter($names, fn(string $n): bool => str_starts_with($n, 'uploads/') && $n !== 'uploads/.htaccess'));

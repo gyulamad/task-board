@@ -97,6 +97,9 @@ final class TestServer
             if (is_file($root . '/' . $file)) copy($root . '/' . $file, $dir . '/' . $file);
         }
         copy($root . '/src/helpers.php', $dir . '/src/helpers.php');
+        // The CRUD list engine (#57) ships next to the helpers and index.php
+        // requires both, so the temp deployment must carry it too.
+        copy($root . '/src/crud.php', $dir . '/src/crud.php');
         if (is_file($root . '/uploads/.htaccess')) {
             copy($root . '/uploads/.htaccess', $dir . '/uploads/.htaccess');
         }

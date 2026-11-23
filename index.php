@@ -40,11 +40,12 @@ try {
 // Deployment guard: a partial upload, or an update installed before the src/
 // directory existed, used to die here as an opaque HTTP 500 with an empty
 // body. Fail with an actionable message instead.
-if (!is_file(__DIR__ . '/src/helpers.php')) {
+if (!is_file(__DIR__ . '/src/helpers.php') || !is_file(__DIR__ . '/src/crud.php')) {
     http_response_code(500);
-    exit('Application files are incomplete: src/helpers.php was not found on the server. Upload the full repository, including the src/ directory, and try again.');
+    exit('Application files are incomplete: the src/ directory (helpers.php, crud.php) was not found on the server. Upload the full repository, including the src/ directory, and try again.');
 }
 require __DIR__ . '/src/helpers.php';
+require __DIR__ . '/src/crud.php';
 ensure_users_theme_column($pdo);
 
 // Capture the database's wall clock once per request (#14): every last_seen_at
@@ -387,9 +388,11 @@ if (user()) {
                 $pdo->prepare('INSERT INTO saved_searches(user_id,name,query) VALUES(?,?,?)')->execute([user()['id'],$name,$query]);
                 flash('Search saved. Find it in the Saved searches dropdown.');
                 // #43: a search saved from the kanban board returns there; the
-                // task list stays the default for every other caller.
+                // task list stays the default for every other caller. The v2
+                // list (#57) returns to its own URL the same way.
                 $saveTarget = (($_POST['save_page'] ?? '') === 'waterflow') ? '?page=waterflow&'
-                    : (($_POST['save_page'] ?? '') === 'kanban' ? '?page=kanban&' : '?page=tasks&');
+                    : (($_POST['save_page'] ?? '') === 'kanban' ? '?page=kanban&'
+                    : (($_POST['save_page'] ?? '') === 'tasks-v2' ? '?page=tasks-v2&' : '?page=tasks&'));
                 redirect($saveTarget . $query);
             }
             if ($action === 'delete_search') {
@@ -403,7 +406,7 @@ if (user()) {
                 $pdo->prepare('DELETE FROM saved_searches WHERE id=?')->execute([$id]);
                 flash('Saved search deleted.');
                 $returnUrl = $_POST['return'] ?? '';
-                redirect(is_string($returnUrl) && (str_starts_with($returnUrl, '?page=tasks') || str_starts_with($returnUrl, '?page=kanban') || str_starts_with($returnUrl, '?page=waterflow')) ? $returnUrl : '?');
+                redirect(is_string($returnUrl) && (str_starts_with($returnUrl, '?page=tasks') || str_starts_with($returnUrl, '?page=tasks-v2') || str_starts_with($returnUrl, '?page=kanban') || str_starts_with($returnUrl, '?page=waterflow')) ? $returnUrl : '?');
             }
             if ($action === 'comment') {
                 $id = (int)$_POST['task_id']; $body = trim($_POST['body'] ?? '');
@@ -1232,7 +1235,7 @@ if ($page==='task_history') {
 // other dedicated admin pages (?page=activity_settings, ?page=updates). A plain
 // GET of ?page=admin by a non-admin keeps the pre-#42 behavior: the request
 // falls through to the task list, which the access-control suite pins.
-if (in_array($page, ['users', 'statuses'], true) && !is_admin()) {
+if (in_array($page, ['users', 'users-v2', 'statuses'], true) && !is_admin()) {
     http_response_code(403);
     exit('Forbidden.');
 }
@@ -1309,6 +1312,74 @@ if ($page==='users' && is_admin()) {
     <form method="get" class="row g-2 align-items-end mb-3"><input type="hidden" name="page" value="users"><div class="col-md-5"><input class="form-control" type="search" name="q" value="<?=h($q)?>" placeholder="Search username or display name" aria-label="Search users"></div><div class="col-md-3"><label class="form-label small muted mb-1" for="filter-user-role">Roles</label><select class="form-select" id="filter-user-role" name="role[]" multiple size="2"><option value="admin" <?=in_array('admin',$roleFilter,true)?'selected':''?>>Administrator</option><option value="user" <?=in_array('user',$roleFilter,true)?'selected':''?>>User</option></select></div><div class="col-md-4 d-grid"><button class="btn btn-outline-primary">Filter</button></div><div class="col-12"><div class="form-text mb-0">Hold Ctrl/Cmd to pick several roles; an empty dropdown filters nothing. The search matches username and display name.</div></div></form>
     <div class="card p-4"><h2 class="h5">All users</h2><div class="table-responsive"><table class="table table-hover align-middle mb-0"><thead><tr><?=sort_header('Display name','name',$userSort,$usersUrl(sort_toggle('name',$userSort)))?><?=sort_header('Username','username',$userSort,$usersUrl(sort_toggle('username',$userSort)))?><?=sort_header('Role','role',$userSort,$usersUrl(sort_toggle('role',$userSort)))?><?=sort_header('Created','created',$userSort,$usersUrl(sort_toggle('created',$userSort)))?><?=sort_header('Last active','activity',$userSort,$usersUrl(sort_toggle('activity',$userSort)))?><th>Actions</th></tr></thead><tbody><?php foreach($users as $u): ?><tr><td class="fw-semibold"><?=tb_user_with_activity($u)?></td><td><?=h($u['username'])?></td><td><span class="badge text-bg-secondary"><?=h($u['role'])?></span></td><td class="small muted"><?=h($u['created_at'])?></td><td class="small muted"><?=h($u['last_seen_at']===null?'never':'active: '.tb_last_seen_label($u['last_seen_at'],$dbNowTs))?></td><td class="text-nowrap"><a class="btn btn-sm btn-outline-secondary" href="?page=user&id=<?=$u['id']?>">Edit</a> <form method="post" class="d-inline" onsubmit="return confirm('Delete this user permanently? Their tasks, comments and attachments will be kept.')"><?=csrf_field()?><input type="hidden" name="action" value="delete_user"><input type="hidden" name="id" value="<?=$u['id']?>"><button class="btn btn-sm btn-outline-danger">Delete</button></form></td></tr><?php endforeach; if(!$users): ?><tr><td colspan="6" class="text-center muted py-4"><?=$q!==''||$roleFilter?'No users match the filters.':'No users yet.'?></td></tr><?php endif; ?></tbody></table></div></div>
     <div class="d-flex justify-content-between align-items-center mt-3 gap-2 flex-wrap"><?php if($totalPages>1): ?><nav aria-label="User list pages"><ul class="pagination mb-0"><li class="page-item <?=$userPage<=1?'disabled':''?>"><a class="page-link" href="<?=h($usersUrl(['p'=>max(1,$userPage-1)]))?>">&laquo;</a></li><?php $pWinStart=max(1,$userPage-2);$pWinEnd=min($totalPages,$pWinStart+4);if($pWinEnd-$pWinStart<4)$pWinStart=max(1,$pWinEnd-4);if($pWinStart>1): ?><li class="page-item"><a class="page-link" href="<?=h($usersUrl(['p'=>1]))?>">1</a></li><?php if($pWinStart>2): ?><li class="page-item disabled"><span class="page-link">&hellip;</span></li><?php endif; endif; for($i=$pWinStart;$i<=$pWinEnd;$i++): ?><li class="page-item <?=$i===$userPage?'active':''?>"><a class="page-link" href="<?=h($usersUrl(['p'=>$i]))?>"><?=$i?></a></li><?php endfor; if($pWinEnd<$totalPages): ?><?php if($pWinEnd<$totalPages-1): ?><li class="page-item disabled"><span class="page-link">&hellip;</span></li><?php endif; ?><li class="page-item"><a class="page-link" href="<?=h($usersUrl(['p'=>$totalPages]))?>"><?=$totalPages?></a></li><?php endif; ?><li class="page-item <?=$userPage>=$totalPages?'disabled':''?>"><a class="page-link" href="<?=h($usersUrl(['p'=>min($totalPages,$userPage+1)]))?>">&raquo;</a></li></ul></nav><span class="small muted">Page <?=$userPage?> of <?=$totalPages?></span><?php endif; ?></div>
+    </div></div></div>
+    <?php tb_render_list_refresh_script(); ?>
+    <?php render_footer(); exit;
+}
+
+// ---- Users administration v2 (#57, admin refactor step 3) ---------------------------------
+// The admin user list rebuilt on the shared CRUD list engine (src/crud.php):
+// the count/page/fetch query, the URL builder, the sortable table skeleton,
+// the pagination window and the realtime region come from the abstraction;
+// only the user-specific parts stay here (the search/role conditions, the
+// activity clock, the create form and the row cells). The admin's step 4
+// parity proof is tests/E2E/CrudAbstractionTest.php: it exercises this page
+// feature by feature against the ?page=users contract and pins the two
+// rendered lists equal.
+if ($page==='users-v2' && is_admin()) {
+    // The exact search and role filter of the v1 page: the search escapes
+    // |, % and _ so a literal % cannot become a wildcard, and the role
+    // filter is an allowlisted bound-parameter IN list.
+    $conds=[]; $params=[];
+    $q = trim((string)($_GET['q'] ?? ''));
+    if ($q !== '') {
+        $term = str_replace(['|','%','_'],['||','|%','|_'],$q);
+        $conds[] = "(u.username LIKE ? ESCAPE '|' OR u.display_name LIKE ? ESCAPE '|')";
+        $params[] = '%'.$term.'%'; $params[] = '%'.$term.'%';
+    }
+    $roleFilter=array_values(array_intersect(filter_values('role'),['admin','user']));
+    if ($roleFilter) {
+        $conds[] = 'u.role IN ('.tb_in_placeholders(count($roleFilter)).')';
+        array_push($params, ...$roleFilter);
+    }
+    $list=tb_crud_list([
+        'pdo'=>$pdo,
+        'table'=>'users u',
+        'select'=>'u.id,u.username,u.display_name,u.role,u.created_at,u.last_seen_at,CURRENT_TIMESTAMP AS db_now',
+        'where'=>$conds,
+        'params'=>$params,
+        'sortColumns'=>[
+            'name'=>'u.display_name {dir}, u.id {dir}',
+            'username'=>'u.username {dir}, u.id {dir}',
+            'role'=>'u.role {dir}, u.display_name {dir}',
+            'created'=>'u.created_at {dir}, u.id {dir}',
+            'activity'=>'u.last_seen_at {dir}, u.id {dir}',
+        ],
+        'defaultSort'=>'name',
+    ]);
+    $users=$list['rows'];
+    // The Last active label (#30) still ages the stamps against the
+    // database's own clock, read from the first row of the page.
+    $dbNowTs=null;
+    if ($users!==[] && ($t=strtotime((string)$users[0]['db_now']))!==false) $dbNowTs=$t;
+    $usersUrl=tb_crud_url_builder('users-v2',['q','role']);
+    $userColumns=[
+        ['label'=>'Display name','sortKey'=>'name','sort'=>$list['sort'],'url'=>$usersUrl,'cell'=>fn(array $u): string => '<td class="fw-semibold">'.tb_user_with_activity($u).'</td>'],
+        ['label'=>'Username','sortKey'=>'username','sort'=>$list['sort'],'url'=>$usersUrl,'cell'=>fn(array $u): string => '<td>'.h($u['username']).'</td>'],
+        ['label'=>'Role','sortKey'=>'role','sort'=>$list['sort'],'url'=>$usersUrl,'cell'=>fn(array $u): string => '<td><span class="badge text-bg-secondary">'.h($u['role']).'</span></td>'],
+        ['label'=>'Created','sortKey'=>'created','sort'=>$list['sort'],'url'=>$usersUrl,'cell'=>fn(array $u): string => '<td class="small muted">'.h($u['created_at']).'</td>'],
+        ['label'=>'Last active','sortKey'=>'activity','sort'=>$list['sort'],'url'=>$usersUrl,'cell'=>fn(array $u): string => '<td class="small muted">'.h($u['last_seen_at']===null?'never':'active: '.tb_last_seen_label($u['last_seen_at'],$dbNowTs)).'</td>'],
+        ['label'=>'Actions','cell'=>function(array $u): string {
+            return '<td class="text-nowrap"><a class="btn btn-sm btn-outline-secondary" href="?page=user&id='.$u['id'].'">Edit</a> <form method="post" class="d-inline" onsubmit="return confirm(\'Delete this user permanently? Their tasks, comments and attachments will be kept.\')">'.csrf_field().'<input type="hidden" name="action" value="delete_user"><input type="hidden" name="id" value="'.$u['id'].'"><button class="btn btn-sm btn-outline-danger">Delete</button></form></td>';
+        }],
+    ];
+    render_header('Users',$config,$error); ?>
+    <div class="d-flex justify-content-between align-items-center mb-3"><div><h1 class="h3 mb-0">Users</h1><div class="muted"><?=$list['total']?> user<?=$list['total']===1?'':'s'?> · accounts, roles and last activity</div></div><a class="btn btn-outline-secondary" href="?page=admin">Back to administration</a></div>
+    <div class="row g-4"><div class="col-lg-5"><div class="card p-4"><h2 class="h5">Create user</h2><form method="post"><?=csrf_field()?><input type="hidden" name="action" value="add_user"><div class="mb-2"><input class="form-control" name="username" placeholder="Username" required></div><div class="mb-2"><input class="form-control" name="display_name" placeholder="Display name" required></div><div class="mb-2"><input class="form-control" type="password" name="password" placeholder="Password (10+ characters)" minlength="10" required></div><div class="mb-3"><select class="form-select" name="role"><option value="user">User</option><option value="admin">Administrator</option></select></div><button class="btn btn-primary">Create user</button></form></div></div>
+    <div class="col-lg-7"><div id="tb-list-region" data-tb-refresh="10">
+    <form method="get" class="row g-2 align-items-end mb-3"><input type="hidden" name="page" value="users-v2"><div class="col-md-5"><input class="form-control" type="search" name="q" value="<?=h($q)?>" placeholder="Search username or display name" aria-label="Search users"></div><div class="col-md-3"><label class="form-label small muted mb-1" for="filter-user-role">Roles</label><select class="form-select" id="filter-user-role" name="role[]" multiple size="2"><option value="admin" <?=in_array('admin',$roleFilter,true)?'selected':''?>>Administrator</option><option value="user" <?=in_array('user',$roleFilter,true)?'selected':''?>>User</option></select></div><div class="col-md-4 d-grid"><button class="btn btn-outline-primary">Filter</button></div><div class="col-12"><div class="form-text mb-0">Hold Ctrl/Cmd to pick several roles; an empty dropdown filters nothing. The search matches username and display name.</div></div></form>
+    <div class="card p-4"><h2 class="h5">All users</h2><?=tb_crud_table(['columns'=>$userColumns,'rows'=>$users,'emptyText'=>$q!==''||$roleFilter?'No users match the filters.':'No users yet.','emptyColspan'=>6])?></div>
+    <?php echo tb_crud_pagination(['ariaLabel'=>'User list pages','page'=>$list['page'],'pages'=>$list['pages'],'url'=>$usersUrl]), "\n"; ?>
     </div></div></div>
     <?php tb_render_list_refresh_script(); ?>
     <?php render_footer(); exit;
@@ -1741,6 +1812,93 @@ if ($page==='waterflow') {
     <p class="small muted">Every block's width follows the task's complexity estimation (set on the task form, default 1) relative to the widest task in view. Tasks flow from level 0 downwards: a task sits on the first level where all its &quot;Depends on&quot; prerequisites are already placed; dependencies on archived or filtered-out tasks do not block. Tasks in a dependency cycle are parked below the flow.</p>
     <?php tb_render_list_refresh_script(); ?>
     <?php render_footer(); exit;
+}
+
+// ---- Task list v2 (#57, admin refactor step 2) --------------------------------------------
+// The task list rebuilt on the shared CRUD list engine (src/crud.php): the
+// count/page/fetch query, the URL builder, the sortable table skeleton, the
+// pagination window and the bulk-select wiring come from the abstraction;
+// the task-specific parts (the filter WHERE, the assignee map, the row
+// cells, the per-row archive forms) stay here as small closures. The admin's
+// step 4 parity proof is tests/E2E/CrudAbstractionTest.php: it exercises
+// this page feature by feature against the task list contract and pins the
+// rendered v1 and v2 lists equal.
+if ($page==='tasks-v2') {
+    $filters=tb_task_filters_where();
+    $where=$filters['where'];$params=$filters['params'];
+    $fAssignees=$filters['fAssignees'];$fStatuses=$filters['fStatuses'];$fParents=$filters['fParents'];$fProjects=$filters['fProjects'];
+    $projectIds=$filters['projectIds'];
+    $sortColumns=[
+        'id'=>'t.id {dir}',
+        'title'=>'t.title {dir}',
+        'status'=>'s.sort_order {dir}, s.name {dir}',
+        'assignees'=>'(SELECT MIN(a2u.display_name) FROM task_assignees a2 JOIN users a2u ON a2u.id=a2.user_id WHERE a2.task_id=t.id) {dir}',
+        'parent'=>'t.parent_id {dir}',
+        'project'=>'pr.name {dir}',
+        'priority'=>'t.priority {dir}',
+        'updated'=>'t.updated_at {dir}',
+    ];
+    $list=tb_crud_list([
+        'pdo'=>$pdo,
+        'table'=>'tasks t JOIN statuses s ON s.id=t.status_id LEFT JOIN tasks p ON p.id=t.parent_id LEFT JOIN projects pr ON pr.id=t.project_id',
+        'select'=>'t.id,t.title,t.updated_at,t.created_by,t.parent_id,p.title parent_title,s.name status_name,s.color status_color,t.priority,t.project_id,pr.name project_name',
+        'where'=>$where,
+        'params'=>$params,
+        'sortColumns'=>$sortColumns,
+        'defaultSort'=>'updated',
+        'defaultDir'=>'desc',
+        'orderBySuffix'=>'t.id {dir}',
+    ]);
+    $tasks=$list['rows'];$sort=$list['sort'];$totalTasks=$list['total'];$totalPages=$list['pages'];$taskPage=$list['page'];
+    $taskAssignees=task_assignees_by_task($pdo, array_column($tasks,'id'));
+    $listUrl=tb_crud_url_builder('tasks-v2',['q','assignee','status','parent','project','sort','dir']);
+    // Header badge for the project filter: resolve every selected project id to
+    // its name so the badge line can show more than one (#25).
+    $projectFilterNames=[];
+    if ($projectIds) {
+        $pfq=$pdo->prepare('SELECT id,name FROM projects WHERE id IN ('.tb_in_placeholders(count($projectIds)).')');
+        $pfq->execute($projectIds);
+        $projectNamesById=array_column($pfq->fetchAll(),'name','id');
+        foreach ($projectIds as $pid) {if (isset($projectNamesById[$pid])) $projectFilterNames[]=$projectNamesById[$pid];}
+    }
+    // Saved searches (#29): the signed-in user's own stored list-view search
+    // links, shown in the dropdown under the filter form.
+    $ssq=$pdo->prepare('SELECT id,name,query FROM saved_searches WHERE user_id=? ORDER BY name,id');
+    $ssq->execute([user()['id']]);
+    $savedSearches=$ssq->fetchAll();
+    $taskColumns=[
+        ['header'=>'<th class="ps-3" style="width:36px"><input type="checkbox" class="form-check-input" id="check-all" aria-label="Select all tasks on this page"></th>','cell'=>fn(array $t): string => '<td class="ps-3"><input type="checkbox" class="form-check-input row-check" name="task_ids[]" value="'.$t['id'].'" aria-label="Select task #'.$t['id'].'"></td>'],
+        ['label'=>'Task','sortKey'=>'id','sort'=>$sort,'url'=>$listUrl,'cell'=>fn(array $t): string => '<td><a class="fw-semibold text-decoration-none" href="?page=task&id='.$t['id'].'">#'.$t['id'].' · '.h($t['title']).'</a></td>'],
+        ['label'=>'Status','sortKey'=>'status','sort'=>$sort,'url'=>$listUrl,'cell'=>fn(array $t): string => '<td>'.tb_status_badge((string)$t['status_name'], $t['status_color'] ?? null).'</td>'],
+        ['label'=>'Assignees','sortKey'=>'assignees','sort'=>$sort,'url'=>$listUrl,'cell'=>function(array $t) use ($taskAssignees): string {
+            $tuHtml=[];foreach($taskAssignees[(int)$t['id']]??[] as $tu){$tuHtml[]=tb_user_with_activity($tu);}
+            return '<td>'.(implode(', ',$tuHtml)?:'—').'</td>';
+        }],
+        ['label'=>'Parent','sortKey'=>'parent','sort'=>$sort,'url'=>$listUrl,'cell'=>fn(array $t): string => '<td>'.($t['parent_id'] ? '<a class="text-decoration-none" href="?page=task&id='.$t['parent_id'].'">#'.$t['parent_id'].(($t['parent_title']??'')!==''&&$t['parent_title']!==null?' · '.h($t['parent_title']):'').'</a>' : '<span class="muted">—</span>').'</td>'],
+        ['label'=>'Project','sortKey'=>'project','sort'=>$sort,'url'=>$listUrl,'cell'=>fn(array $t): string => '<td>'.($t['project_id'] ? '<a class="text-decoration-none" href="?page=project&id='.$t['project_id'].'">#'.$t['project_id'].' · '.h($t['project_name']).'</a>' : '<span class="muted">—</span>').'</td>'],
+        ['label'=>'Priority','sortKey'=>'priority','sort'=>$sort,'url'=>$listUrl,'cell'=>fn(array $t): string => '<td><span class="badge text-bg-light border">&times;'.h((string)max(1,min(1000,(int)($t['priority'] ?? 1)))).'</span></td>'],
+        ['label'=>'Updated','sortKey'=>'updated','sort'=>$sort,'url'=>$listUrl,'cell'=>fn(array $t): string => '<td class="small muted">'.h($t['updated_at']).'</td>'],
+        ['label'=>'Actions','cell'=>function(array $t): string {
+            $canArchive=is_admin()||(int)$t['created_by']===(int)user()['id'];
+            return '<td class="text-nowrap"><a class="btn btn-sm btn-outline-secondary" href="?page=edit&id='.$t['id'].'">Edit</a>'.($canArchive ? ' <button type="submit" class="btn btn-sm btn-outline-danger" form="archive-'.$t['id'].'">Archive</button>' : '').'</td>';
+        }],
+    ];
+    // The bulk controls live right of the pagination window in the shared
+    // footer (tb_crud_pagination takes them as its trailing content).
+    ob_start(); ?>
+<div class="d-flex align-items-center gap-2 flex-wrap ms-auto"><select class="form-select" name="project_id" id="bulk-move-project" aria-label="Target project for the selected tasks"><option value="">Choose project&hellip;</option><?php foreach($projectOptions as $po): ?><option value="<?=$po['id']?>">#<?=$po['id']?> &middot; <?=h($po['name'])?></option><?php endforeach; ?></select><button type="submit" class="btn btn-outline-primary" name="action" value="bulk_move_tasks" id="bulk-move-btn" disabled data-confirm="Move all selected tasks to the chosen project?">Move to project</button><button type="submit" class="btn btn-outline-danger" name="action" value="bulk_archive_tasks" id="bulk-delete-btn" disabled data-confirm="Archive all selected tasks? They can be restored from the archive.">Archive selected (<span id="bulk-count">0</span>)</button></div>
+    <?php $bulkControls=trim(ob_get_clean());
+    render_header('Tasks',$config,$error); ?>
+<div class="d-flex justify-content-between align-items-center mb-3"><div><h1 class="h3 mb-0">Tasks</h1><div class="muted"><?=$totalTasks?> task<?=$totalTasks===1?'':'s'?></div><?php if($projectFilterNames): ?><div class="mt-1"><span class="badge text-bg-info">Project<?=count($projectFilterNames)===1?'':'s'?>: <?=h(implode(', ',$projectFilterNames))?></span> <a class="small" href="<?=h($listUrl(['project'=>null]))?>">Show all tasks</a></div><?php endif; ?></div><div class="d-flex gap-2"><a class="btn btn-outline-secondary" href="?page=archive">Archive</a><a class="btn btn-primary" href="?page=new">+ New task</a></div></div>
+    <?php tb_render_task_filter_card(['page'=>'tasks-v2','users'=>$users,'statuses'=>$statuses,'parents'=>$parents,'projectOptions'=>$projectOptions,'savedSearches'=>$savedSearches,'fAssignees'=>$fAssignees,'fStatuses'=>$fStatuses,'fParents'=>$fParents,'fProjects'=>$fProjects,'returnUrl'=>$listUrl()]); ?>
+<form method="post" id="bulk-form" onsubmit="return confirm((event.submitter&&event.submitter.dataset.confirm)||'Apply this bulk action to all selected tasks?')"><?=csrf_field()?><input type="hidden" name="return" value="<?=h($listUrl(['p'=>$taskPage]))?>"><?php foreach (['q','assignee','status','parent','project','sort','dir'] as $fk): foreach (filter_values($fk) as $fv): ?><input type="hidden" name="<?=$fk?>[]" value="<?=h($fv)?>"><?php endforeach; endforeach; ?>
+<div id="tb-list-region" data-tb-refresh="10"><div class="card"><?=tb_crud_table(['columns'=>$taskColumns,'rows'=>$tasks,'emptyText'=>'No tasks found.','emptyColspan'=>9])?></div>
+<?=tb_crud_pagination(['ariaLabel'=>'Task list pages','page'=>$taskPage,'pages'=>$totalPages,'url'=>$listUrl,'trailing'=>$bulkControls])?></div>
+</form>
+<?php foreach($tasks as $t): if(is_admin()||(int)$t['created_by']===(int)user()['id']): ?><form method="post" id="archive-<?=$t['id']?>" class="d-none" onsubmit="return confirm('Archive task #<?=$t['id']?>? It can be restored from the archive.')"><?=csrf_field()?><input type="hidden" name="action" value="archive_task"><input type="hidden" name="id" value="<?=$t['id']?>"><input type="hidden" name="return" value="<?=h($listUrl(['p'=>$taskPage]))?>"></form><?php endif; endforeach; ?>
+<?=tb_crud_bulk_select_script(['selectAllId'=>'check-all','rowClass'=>'row-check','bulkButtonId'=>'bulk-delete-btn','countId'=>'bulk-count','moveButtonId'=>'bulk-move-btn','moveSelectId'=>'bulk-move-project'])?>
+<?php tb_render_list_refresh_script(); ?>
+<?php render_footer(); exit;
 }
 
 // Multi-select list filters (#25): every dropdown submits its values as an

@@ -263,17 +263,24 @@ if (user()) {
                     // #54 v2 feedback: the generic save entry says exactly what
                     // changed - the changed field labels plus the per-field
                     // from/to sentence - instead of a vague "may have changed".
-                    history($pdo,$id,'Task updated',$audit
+                    // The row itself is written after the assignee insert below.
+                    $saveEvent = ['Task updated', $audit
                         ? 'The followings are changed: '.implode(', ',array_column($audit,1)).'. '
                           .implode('; ',array_map(fn(array $a): string => $a[1].' changed from "'.$a[2].'" to "'.$a[3].'"',$audit)).'.'
-                        : 'No fields were changed.');
+                        : 'No fields were changed.'];
                 } else {
                     $pdo->prepare('INSERT INTO tasks(title,description,status_id,complexity,priority,parent_id,schedule_period,schedule_status_id,schedule_assignees,project_id,created_by) VALUES(?,?,?,?,?,?,?,?,?,?,?)')->execute([$title,$description,$statusId,$complexity,$priority,$parentId,$schedulePeriod,$scheduleStatusId,$scheduleAssigneesCsv,$projectId,user()['id']]);
                     $id = (int)$pdo->lastInsertId();
-                    history($pdo, $id, 'Task created', $title);
+                    $saveEvent = ['Task created', $title];
                 }
+                // The event row is written only after the assignee rows are
+                // persisted: history() notifies the task's assignees (#58) and
+                // the list is only now final - a save that (re)assigned users
+                // used to ping nobody because the notify ran between the delete
+                // and the re-insert of task_assignees (CI fix).
                 $a = $pdo->prepare('INSERT IGNORE INTO task_assignees(task_id,user_id) VALUES(?,?)');
                 foreach ($assignees as $uid) $a->execute([$id,$uid]);
+                history($pdo,$id,$saveEvent[0],$saveEvent[1]);
                 if (!empty($audit)) foreach ($audit as [$hField,$hLabel,$hOld,$hNew]) history_change($pdo,$id,$hField,$hLabel,$hOld,$hNew);
                 redirect('?page=task&id=' . $id);
             }

@@ -175,6 +175,27 @@ function tb_bulk_flash(int $done, int $skipped, string $noun, string $doneLabel,
 }
 
 /**
+ * Builds the payload stored in $_SESSION['user'] from a users row. The single
+ * place that shapes the signed-in user's session: whenever the session is
+ * rebuilt (sign-in, self-edit on the admin Users page) every field survives,
+ * including the theme preference - dropping it used to flip dark mode back to
+ * light after renaming your own account (#61).
+ *
+ * @param array<string,mixed> $u A row from the users table.
+ * @return array{id:int,username:string,display_name:string,role:string,theme:string,last_seen_at:mixed}
+ */
+function tb_session_user(array $u): array {
+    return [
+        'id' => (int)$u['id'],
+        'username' => (string)$u['username'],
+        'display_name' => (string)$u['display_name'],
+        'role' => (string)$u['role'],
+        'theme' => normalize_theme($u['theme'] ?? null),
+        'last_seen_at' => $u['last_seen_at'] ?? null,
+    ];
+}
+
+/**
  * Destroys the current session completely: clears the session data, removes
  * the server-side storage and expires the session cookie on the client.
  */

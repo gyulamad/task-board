@@ -59,6 +59,40 @@ final class UserManagementTest extends E2eTestCase
         $this->assertSame(200, $david->get('/?')->status);
     }
 
+    public function test_a_self_edit_keeps_the_theme_preference(): void
+    {
+        // Task #61: preferences are stored id-based (users.theme on users.id),
+        // so renaming the own account must not lose the theme. The regression
+        // was in the session rebuild after the save, which dropped the theme
+        // key and flipped the still-signed-in admin back to the light theme.
+        $admin = $this->adminSession();
+        $this->assertSame(302, $admin->post('/?', ['action' => 'save_theme', 'theme' => 'dark'])->status);
+        $this->assertTrue($admin->get('/?')->contains('<html lang="en" data-bs-theme="dark">'));
+
+        $response = $admin->post('/?page=users', [
+            'action' => 'edit_user',
+            'id' => (string)$this->userId('admin'),
+            'username' => 'root',
+            'display_name' => 'Root Administrator',
+            'role' => 'admin',
+            'password' => '',
+        ]);
+        $this->assertSame(302, $response->status);
+
+        // The same session must still render dark right after the self-edit.
+        $this->assertTrue(
+            $admin->get('/?')->contains('<html lang="en" data-bs-theme="dark">'),
+            'Renaming the own account must not reset the theme of the signed-in session.'
+        );
+        // The stored preference is untouched in the database.
+        $s = TestServer::pdo()->prepare('SELECT theme FROM users WHERE id=?');
+        $s->execute([$this->userId('root')]);
+        $this->assertSame('dark', $s->fetchColumn());
+        // ...and a fresh sign-in with the new username picks the theme up again.
+        $fresh = new AppSession('root', 'AdminPass1234');
+        $this->assertTrue($fresh->get('/?')->contains('<html lang="en" data-bs-theme="dark">'));
+    }
+
     public function test_admin_can_reset_a_password_and_the_old_one_stops_working(): void
     {
         $admin = $this->adminSession();

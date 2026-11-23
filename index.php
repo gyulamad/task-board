@@ -141,7 +141,7 @@ if ($page === 'login' && $_SERVER['REQUEST_METHOD'] === 'POST') {
         if ($tbOk && is_array($u)) {
             tb_login_throttle_clear($tbIp);
             session_regenerate_id(true);
-            $_SESSION['user'] = ['id' => (int)$u['id'], 'username' => $u['username'], 'display_name' => $u['display_name'], 'role' => $u['role'], 'theme' => normalize_theme($u['theme'] ?? null), 'last_seen_at' => $u['last_seen_at'] ?? null];
+            $_SESSION['user'] = tb_session_user($u);
             redirect('?');
         }
         tb_login_throttle_fail($tbIp);
@@ -628,7 +628,14 @@ if (user()) {
                     $pdo->prepare('UPDATE users SET username=?,display_name=?,role=? WHERE id=?')->execute([$name,$display,$role,$id]);
                 }
                 if ((int)user()['id']===$id) {
-                    $_SESSION['user'] = ['id'=>$id,'username'=>$name,'display_name'=>$display,'role'=>$role,'last_seen_at'=>user()['last_seen_at'] ?? null];
+                    // Rebuild the session from the updated row instead of a hand-picked
+                    // field list: the old copy dropped the theme key, so renaming your
+                    // own account flipped dark mode back to light (#61). The preference
+                    // itself is already stored id-based (users.theme on users.id) and
+                    // was never lost in the database - only in the session.
+                    $s=$pdo->prepare('SELECT id,username,display_name,role,theme,last_seen_at FROM users WHERE id=?'); $s->execute([$id]);
+                    $fresh=$s->fetch();
+                    if (is_array($fresh)) $_SESSION['user'] = tb_session_user($fresh);
                 }
                 flash('User updated.'); redirect('?page=users');
             }

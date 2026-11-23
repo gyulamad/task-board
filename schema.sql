@@ -164,5 +164,44 @@ CREATE TABLE app_settings (
     value TEXT NOT NULL
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
+-- Know-hows (#53): the knowledge base. Documents hold the standard
+-- processes, rule books and any other know-how; comments and attachments
+-- mirror the task page's shapes, in their own tables so the task tables'
+-- task_id foreign keys stay untouched.
+CREATE TABLE documents (
+    id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+    title VARCHAR(200) NOT NULL,
+    content TEXT NULL,
+    -- Nullable since user management (task #17): deleting a user keeps their
+    -- documents and clears the creator (rendered as "Deleted user").
+    created_by INT UNSIGNED NULL,
+    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    CONSTRAINT fk_document_creator FOREIGN KEY (created_by) REFERENCES users(id) ON DELETE SET NULL
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE document_comments (
+    id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+    document_id INT UNSIGNED NOT NULL,
+    user_id INT UNSIGNED NULL,
+    body TEXT NOT NULL,
+    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (document_id) REFERENCES documents(id) ON DELETE CASCADE,
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE SET NULL
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE document_attachments (
+    id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+    document_id INT UNSIGNED NOT NULL,
+    user_id INT UNSIGNED NULL,
+    stored_name VARCHAR(255) NOT NULL,
+    original_name VARCHAR(255) NOT NULL,
+    mime_type VARCHAR(120) NOT NULL,
+    file_size INT UNSIGNED NOT NULL,
+    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (document_id) REFERENCES documents(id) ON DELETE CASCADE,
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE SET NULL
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
 INSERT INTO statuses (name, sort_order, is_done) VALUES
 ('TODO', 1, 0), ('IN PROGRESS', 2, 0), ('DONE', 3, 1);

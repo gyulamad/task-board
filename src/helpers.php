@@ -471,6 +471,12 @@ function filter_query_value(string $key, ?array $source = null) {
 /** Request keys a saved search stores, in canonical order. */
 const TASK_BOARD_SEARCH_KEYS = ['q', 'assignee', 'status', 'parent', 'project', 'sort', 'dir'];
 
+// Upload allowlist (#53): one list for the task attachments and the
+// know-how attachments, so both upload surfaces accept exactly the same
+// file types and the finfo-checked MIME must match it before a file is
+// stored.
+const TASK_BOARD_UPLOAD_MIMES = ['image/jpeg', 'image/png', 'image/gif', 'application/pdf', 'text/plain', 'application/zip', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'];
+
 /** The subset of TASK_BOARD_SEARCH_KEYS that actually filters the list; at least one must be present for a search to be worth saving. */
 const TASK_BOARD_SEARCH_FILTER_KEYS = ['q', 'assignee', 'status', 'parent', 'project'];
 
@@ -1262,6 +1268,29 @@ function tb_cleanup_orphan_uploads(PDO $pdo): int {
         if (is_file($dir . '/' . $entry) && unlink($dir . '/' . $entry)) $removed++;
     }
     return $removed;
+}
+
+/** Know-hows (#53): does a document row exist? The knowledge base actions use
+ * it exactly like the task actions use task_exists(). */
+function document_exists(PDO $pdo, int $id): bool {
+    $s = $pdo->prepare('SELECT 1 FROM documents WHERE id=?');
+    $s->execute([$id]);
+    return (bool)$s->fetchColumn();
+}
+
+/** Know-hows (#53): may the signed-in user edit or delete this document?
+ * The same creator-or-administrator rule the task archive uses. */
+function document_can_edit(array $doc): bool {
+    return is_admin() || (int)($doc['created_by'] ?? 0) === (int)user()['id'];
+}
+
+/** Know-hows (#53): the first $max characters of a text for the list excerpt,
+ * UTF-8 safe without requiring ext-mbstring (preg /u first, byte fallback). */
+function tb_excerpt(string $text, int $max = 140): string {
+    $text = trim(preg_replace('/\s+/u', ' ', $text) ?? $text);
+    if ($text === '' || tb_char_length($text) <= $max) return $text;
+    if (preg_match('/^.{0,' . $max . '}/us', $text, $m) === 1) return trim((string)$m[0]) . '…';
+    return substr($text, 0, $max) . '…';
 }
 
 /*

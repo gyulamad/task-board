@@ -22,6 +22,7 @@ A lightweight multi-user task and message board for PHP 8.2+ and MySQL/MariaDB s
 - Complexity estimation and dependency waterflow chart (#44): every task carries a complexity (default 1, edited on the task form); the Waterflow page arranges all non-archived tasks into dependency levels from their "Depends on" links and sizes each task's block width by its complexity relative to the widest task in view, with the shared filter card and saved searches on top
 - Task priority (#45): every task carries a priority number (default 1, edited on the task form, shown on the task page) and the task list gained a sortable Priority column so the biggest numbers sort to the top
 - Comments, attachments, history and task relationships
+- Know-hows knowledge base (#53): a Documents page with CRUD for every process, rule book and other know-how worth writing down — each document can carry comments and attachments of its own (the same upload allowlist, downloads and deletion rules as the tasks), with a title/content search, and editing or deleting reserved to the document's creator or an administrator
 - Task and project administration split into focused pages (#42): the Administration page is a compact hub linking to Users (create, edit, delete accounts) and Task statuses (rename, reorder, completion flag, colour, delete), with the uploads maintenance action and the activity periods link kept on the hub
 - Admin can add status labels and mark completion statuses; existing statuses can be renamed, reordered, given an optional #RRGGBB colour and deleted on the Task statuses page (a status still used by tasks and the last remaining status cannot be deleted). The colour renders on every status badge of the board — task list, task/project/archive pages — with an automatically readable text colour; statuses without one keep the built-in badge look
 - Last activity on the Users administration page: a Last active column shows when each user was last seen ("active: 23 minutes ago", "1h 12m ago", "never"); refreshed by authenticated requests, throttled to one write per couple of minutes (#30)
@@ -283,6 +284,32 @@ WCAG relative luminance) and falls back to the default badge for any value that
 is not a well-formed `#rrggbb`. Fresh installs get the column from `schema.sql`;
 existing boards are upgraded automatically on the first request after deployment
 (the idempotent `ALTER TABLE statuses ADD COLUMN color` in `tb_migrate_schema()`).
+
+## Know-hows knowledge base (#53)
+The **Know-hows** page (in the navbar for every signed-in user) is the board's
+own knowledge base — a place for standard processes, common documents, rule
+books and anything else that needs to be written down, "like a confluence
+database". Documents have CRUD, comments and attachments:
+
+- **List** (`?page=documents`): title, excerpt, last update, creator and the
+  comment/attachment counts, with a title-and-content search (the same
+  `|`/`%`/`_` escaping as the task search) and pagination.
+- **View** (`?page=document&id=N`): the content in the task description's
+  wrap-preserving block, the attachments (upload, download, delete) and the
+  comments — all mirroring the shapes and rules of the task page: the same
+  upload MIME allowlist and size cap, the same uploads folder, the same
+  download header sanitization and the same uploader-or-administrator
+  attachment deletion.
+- **Create/edit** (`?page=document_new`, `?page=document_edit&id=N`): title
+  (200 characters) and plain-text content; editing and deleting stay with the
+  document's creator or an administrator, the same creator-or-admin rule the
+  task archive enforces. Every signed-in user can read, comment and upload.
+- Deleting a document removes its comments, attachments and the stored files
+  with it; deleting a user keeps their documents (creator renders as
+  "Deleted user"). The three new tables (`documents`, `document_comments`,
+  `document_attachments`) come from `schema.sql` on fresh installs and are
+  recreated by the idempotent self-heal in `tb_migrate_schema()` on existing
+  boards; the uploads orphan sweep knows the document attachments too.
 
 ## Full backup download (#49)
 The Software updates page has a **Download full backup** button: an administrator

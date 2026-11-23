@@ -233,7 +233,6 @@ if (user()) {
                     $oldAssigneeIds=array_map('intval', $hStmt->fetchAll(PDO::FETCH_COLUMN));
                     $pdo->prepare('UPDATE tasks SET title=?,description=?,status_id=?,complexity=?,priority=?,parent_id=?,schedule_period=?,schedule_status_id=?,schedule_assignees=?,project_id=? WHERE id=?')->execute([$title,$description,$statusId,$complexity,$priority,$parentId,$schedulePeriod,$scheduleStatusId,$scheduleAssigneesCsv,$projectId,$id]);
                     $pdo->prepare('DELETE FROM task_assignees WHERE task_id=?')->execute([$id]);
-                    history($pdo, $id, 'Task updated', 'Title/status/description/parent/schedule or assignees may have changed.');
                     // Field-level audit (#54): one history row per changed
                     // field with the from/to values recorded human-readable
                     // (names and titles, not ids), so the change details page
@@ -261,6 +260,13 @@ if (user()) {
                     $oldScheduleNames=$namesFor(array_filter(array_map('intval', explode(',', (string)$old['schedule_assignees']))));
                     $tbAudit('schedule_assignees','Schedule assignees',$oldScheduleNames,$namesFor($scheduleAssignees));
                     if ($namesFor($oldAssigneeIds) !== $namesFor($assignees)) $audit[]=['assignees','Assignees',$namesFor($oldAssigneeIds),$namesFor($assignees)];
+                    // #54 v2 feedback: the generic save entry says exactly what
+                    // changed - the changed field labels plus the per-field
+                    // from/to sentence - instead of a vague "may have changed".
+                    history($pdo,$id,'Task updated',$audit
+                        ? 'The followings are changed: '.implode(', ',array_column($audit,1)).'. '
+                          .implode('; ',array_map(fn(array $a): string => $a[1].' changed from "'.$a[2].'" to "'.$a[3].'"',$audit)).'.'
+                        : 'No fields were changed.');
                 } else {
                     $pdo->prepare('INSERT INTO tasks(title,description,status_id,complexity,priority,parent_id,schedule_period,schedule_status_id,schedule_assignees,project_id,created_by) VALUES(?,?,?,?,?,?,?,?,?,?,?)')->execute([$title,$description,$statusId,$complexity,$priority,$parentId,$schedulePeriod,$scheduleStatusId,$scheduleAssigneesCsv,$projectId,user()['id']]);
                     $id = (int)$pdo->lastInsertId();
@@ -384,7 +390,9 @@ if (user()) {
                 $id = (int)$_POST['task_id']; $body = trim($_POST['body'] ?? '');
                 if (!task_exists($pdo,$id) || $body === '') throw new RuntimeException('Comment cannot be empty.');
                 $pdo->prepare('INSERT INTO comments(task_id,user_id,body) VALUES(?,?,?)')->execute([$id,user()['id'],$body]);
-                history($pdo,$id,'Comment added','A comment was added.'); redirect('?page=task&id='.$id.'#comments');
+                // #54 v2 feedback: the history entry carries the comment itself,
+                // so the audit shows what was written, not just that something was.
+                history($pdo,$id,'Comment added',$body); redirect('?page=task&id='.$id.'#comments');
             }
             if ($action === 'link_task') {
                 $id=(int)$_POST['task_id']; $other=(int)$_POST['related_task_id']; $type=$_POST['link_type'] ?? '';
@@ -893,7 +901,16 @@ if ($page==='task_history') {
     if(!$entry){ http_response_code(404); exit('History entry not found.'); }
     render_header('Change details',$config,$error); ?>
     <div class="d-flex justify-content-between align-items-center mb-3"><div><h1 class="h3 mb-0">Change details</h1><div class="muted">On task <a class="fw-semibold text-decoration-none" href="?page=task&id=<?=$entry['task_id']?>">#<?=$entry['task_id']?> · <?=h($entry['task_title'])?></a></div></div><a class="btn btn-outline-secondary" href="?page=task&id=<?=$entry['task_id']?>">Back to the task</a></div>
-    <div class="card p-4 mb-4"><h2 class="h5"><?=h($entry['event'])?></h2><div class="small muted mb-2">by <?=tb_user_with_activity(['display_name'=>$entry['actor'],'last_seen_at'=>$entry['actor_last_seen']??null])?> · <?=h($entry['created_at'])?></div><?php if($entry['details']): ?><div class="prewrap"><?=h($entry['details'])?></div><?php endif; ?><?php if($entry['field']): ?><table class="table table-bordered align-middle mt-3 mb-0"><tbody><tr><th class="w-25" scope="row">Field</th><td class="fw-semibold"><?=h((string)$entry['field'])?></td></tr><tr><th scope="row">From</th><td><div class="prewrap"><?=h((string)($entry['old_value'] ?? '—'))?></div></td></tr><tr><th scope="row">To</th><td><div class="prewrap"><?=h((string)($entry['new_value'] ?? '—'))?></div></td></tr></tbody></table><?php endif; ?></div>
+    <div class="card p-4 mb-4"><h2 class="h5"><?=h($entry['event'])?></h2><div class="small muted mb-2">by <?=tb_user_with_activity(['display_name'=>$entry['actor'],'last_seen_at'=>$entry['actor_last_seen']??null])?> · <?=h($entry['created_at'])?></div><?php if($entry['details']): ?><div class="prewrap"><?=h($entry['details'])?></div><?php endif; ?><?php if($entry['field']): ?><table class="table table-bordered align-middle mt-3 mb-0"><tbody><tr><th class="w-25" scope="row">Field</th><td class="fw-semibold"><?=h((string)$entry['field'])?></td></tr><tr><th scope="row">From</th><td><div class="prewrap"><?=h((string)($entry['old_value'] ?? '—'))?></div></td></tr><tr><th scope="row">To</th><td><div class="prewrap"><?=h((string)($entry['new_value'] ?? '—'))?></div></td></tr></tbody></table><?php endif; ?><?php if($entry['event']==='Comment added'): ?><a class="small text-decoration-none" href="?page=task&id=<?=$entry['task_id']?>#comments">Open the comment on the task page</a><?php endif; ?><?php if($entry['event']==='Task updated' && !$entry['field']):
+    // #54 v2 feedback: the generic save entry lists the changed fields of
+    // exactly this save in one From/To table - the field rows of the save sit
+    // directly after it in the write order, up to the next event-level row.
+    $g=$pdo->prepare('SELECT * FROM task_history WHERE task_id=? AND field IS NOT NULL AND id>? AND id<(SELECT COALESCE(MIN(id),1000000000) FROM task_history WHERE task_id=? AND field IS NULL AND id>?) ORDER BY id');
+    $g->execute([(int)$entry['task_id'],(int)$entry['id'],(int)$entry['task_id'],(int)$entry['id']]);
+    $groupChanges=$g->fetchAll();
+    if($groupChanges): ?>
+<table class="table table-bordered align-middle mt-3 mb-0"><thead><tr><th scope="col">Changed</th><th scope="col">From</th><th scope="col">To</th></tr></thead><tbody><?php foreach($groupChanges as $c): ?><tr><th scope="row" class="fw-semibold"><a class="text-decoration-none" href="?page=task_history&id=<?=$c['id']?>"><?=h((string)$c['details'])?></a></th><td><div class="prewrap"><?=h((string)($c['old_value'] ?? '—'))?></div></td><td><div class="prewrap"><?=h((string)($c['new_value'] ?? '—'))?></div></td></tr><?php endforeach; ?></tbody></table>
+    <?php endif; endif; ?></div>
     <?php render_footer(); exit;
 }
 

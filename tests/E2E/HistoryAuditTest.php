@@ -66,6 +66,24 @@ final class HistoryAuditTest extends E2eTestCase
         $this->assertSame('Field changed', $audit['title']['event']);
         $this->assertSame('Title changed', $audit['title']['details']);
         $this->assertSame('Administrator', $this->actorName($audit['title']));
+
+        // #54 v2 feedback: the generic entry's details text names the changed
+        // fields and spells out every from/to in the same sentence.
+        $generic = null;
+        foreach ($this->rows($taskId) as $row) {
+            if ($row['event'] === 'Task updated' && $row['field'] === null) $generic = $row;
+        }
+        $this->assertNotNull($generic);
+        $this->assertSame(
+            'The followings are changed: Title, Description, Status, Complexity, Priority, Assignees. '
+            . 'Title changed from "Audit target" to "Audit target renamed"; '
+            . 'Description changed from "Original description." to "Updated description."; '
+            . 'Status changed from "TODO" to "IN PROGRESS"; '
+            . 'Complexity changed from "1" to "5"; '
+            . 'Priority changed from "1" to "7"; '
+            . 'Assignees changed from "—" to "Administrator".',
+            $generic['details']
+        );
     }
 
     private function actorName(array $row): string
@@ -94,6 +112,7 @@ final class HistoryAuditTest extends E2eTestCase
         $this->assertCount(2, $rows, 'The generic Task updated entry stays, without any field rows.');
         $this->assertSame('Task updated', $rows[1]['event']);
         $this->assertNull($rows[1]['field']);
+        $this->assertSame('No fields were changed.', $rows[1]['details'], 'The unchanged save says so instead of hinting at changes.');
     }
 
     public function test_the_task_page_history_links_to_the_change_details(): void
@@ -125,12 +144,16 @@ final class HistoryAuditTest extends E2eTestCase
         $this->assertTrue($details->contains('page=task&id=' . $taskId), 'The details page links back to the task.');
         $this->assertTrue($details->contains('by'), 'The actor renders on the details page.');
 
-        // The generic entry renders without a field table (its row is found
-        // via the database because same-second rows list in no fixed order).
+        // The generic entry's details page: the full audit of the save - the
+        // summary sentence plus the From/To table of exactly this save's fields.
         $genericRowId = (int)TestServer::pdo()->query("SELECT id FROM task_history WHERE task_id={$taskId} AND event='Task updated' AND field IS NULL")->fetchColumn();
         $generic = $admin->get('/?page=task_history&id=' . $genericRowId);
         $this->assertTrue($generic->contains('Task updated'));
-        $this->assertStringStartsNotWith('<th', $generic->body, 'No field table renders for the generic entry.');
+        // the save changed title AND description (the helper seeds a description)
+        $this->assertTrue($generic->contains('The followings are changed: Title, Description.'), 'The generic entry says what changed.');
+        $this->assertTrue($generic->contains('Title changed'), 'The changed-field table renders on the generic entry page.');
+        $this->assertTrue($generic->contains('Linked history'), 'The From value renders in the group table.');
+        $this->assertTrue($generic->contains('Linked history v2'), 'The To value renders in the group table.');
     }
 
     public function test_event_level_entries_render_without_a_field_table(): void
@@ -150,8 +173,56 @@ final class HistoryAuditTest extends E2eTestCase
         $details = $admin->get('/?page=task_history&id=' . $commentRow['id']);
         $this->assertSame(200, $details->status);
         $this->assertTrue($details->contains('Comment added'));
-        $this->assertTrue($details->contains('A comment was added.'), 'The entry details text renders on the details page.');
+        // #54 v2 feedback: the entry shows the comment itself, not just that
+        // something was added, plus a link to it on the task page.
+        $this->assertTrue($details->contains('A plain comment.'), 'The comment text renders on the details page.');
+        $this->assertFalse($details->contains('A comment was added.'), 'The generic filler text is gone.');
+        $this->assertTrue($details->contains('page=task&id=' . $taskId . '#comments'), 'The details page links to the comment on the task page.');
         $this->assertStringStartsNotWith('<th', $details->body, 'No field table renders for an event entry.');
+    }
+
+    public function test_the_generic_entry_groups_exactly_its_own_save_fields(): void
+    {
+        // #54 v2: two saves, each changing one different field. The first
+        // save's details page lists only the title row, the second's only the
+        // status row - the From/To table never leaks another save's fields.
+        $admin = $this->adminSession();
+        $taskId = $admin->createTask('Grouped audit');
+
+        $admin->post('/?page=edit&id=' . $taskId, [
+            'action' => 'save_task',
+            'id' => (string)$taskId,
+            'title' => 'Grouped audit v2',
+            'description' => 'Same text.',
+            'status_id' => '1',
+            'assignees' => [],
+        ]);
+        $admin->post('/?page=edit&id=' . $taskId, [
+            'action' => 'save_task',
+            'id' => (string)$taskId,
+            'title' => 'Grouped audit v2',
+            'description' => 'Same text.',
+            'status_id' => '2',
+            'assignees' => [],
+        ]);
+
+        $genericIds = [];
+        foreach ($this->rows($taskId) as $row) {
+            if ($row['event'] === 'Task updated' && $row['field'] === null) $genericIds[] = (int)$row['id'];
+        }
+        $this->assertCount(2, $genericIds);
+
+        $first = $admin->get('/?page=task_history&id=' . $genericIds[0]);
+        $this->assertTrue($first->contains('The followings are changed: Title, Description.'), 'The first save changed title and description.');
+        $this->assertTrue($first->contains('Title changed'));
+        $this->assertFalse($first->contains('Status changed'), 'The second save\'s field row must not leak into the first save\'s page.');
+
+        $second = $admin->get('/?page=task_history&id=' . $genericIds[1]);
+        $this->assertTrue($second->contains('The followings are changed: Status.'));
+        $this->assertTrue($second->contains('Status changed'));
+        $this->assertTrue($second->contains('TODO'), 'The from value of the status change renders.');
+        $this->assertTrue($second->contains('IN PROGRESS'));
+        $this->assertFalse($second->contains('Title changed'), 'The first save\'s field row must not leak into the second save\'s page.');
     }
 
     public function test_the_schedule_and_project_changes_are_audited(): void

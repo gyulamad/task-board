@@ -146,6 +146,16 @@ human-readable — status and project names, task titles and assignee display
 names instead of raw ids. The board's generic "Task updated" entry stays, so
 nothing that reads the history changes meaning.
 
+Since the #54 v2 feedback the generic save entry says exactly what happened
+instead of a vague "may have changed": its details text reads
+"The followings are changed: Status, Assignees. Status changed from "TODO" to
+"IN PROGRESS"; Assignees changed from "Jane" to "John"." — and the change
+details page of that entry renders the same list as a From/To table of exactly
+that save's fields (each changed field links to its own field row's details
+page). Comment entries carry the comment itself as their details text and link
+to it on the task page, so the audit shows what was written, not just that
+something was added.
+
 - Every history row carries a **details** link to the change details page
   (`?page=task_history&id=N`): the event, who made the change and when, and
   for field changes a From/To table with the exact recorded values.

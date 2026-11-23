@@ -102,15 +102,15 @@ final class ActivitySettingsTest extends E2eTestCase
 
         // the admin's own request keeps their dot fresh (tb_touch_last_seen),
         // so the aged periods are asserted on another user: the worker below,
-        // rendered in the admin page's users table
+        // rendered in the Users page's users table (#42)
         $this->regularUserSession();
         $this->backdateMinutes('worker', 180);
-        $adminPage = $admin->get('/?page=admin');
-        $this->assertSame(200, $adminPage->status);
-        $this->assertStringContainsString('tb-activity-red', $adminPage->body);
+        $usersPage = $admin->get('/?page=users');
+        $this->assertSame(200, $usersPage->status);
+        $this->assertStringContainsString('tb-activity-red', $usersPage->body);
         $this->backdateMinutes('worker', 2 * 1440);
-        $adminPage = $admin->get('/?page=admin');
-        $this->assertStringContainsString('tb-activity-grey', $adminPage->body);
+        $usersPage = $admin->get('/?page=users');
+        $this->assertStringContainsString('tb-activity-grey', $usersPage->body);
     }
 
     public function test_a_character_period_renders_its_glyph_on_the_board(): void
@@ -125,12 +125,12 @@ final class ActivitySettingsTest extends E2eTestCase
         $this->assertSame(302, $response->status);
 
         // the admin's own dot is always fresh, so the glyph is asserted on the
-        // aged worker in the admin page's users table
+        // aged worker in the Users page's users table (#42)
         $this->backdateMinutes('worker', 90);
-        $adminPage = $admin->get('/?page=admin');
-        $this->assertSame(200, $adminPage->status);
-        $this->assertStringContainsString('tb-activity-char', $adminPage->body);
-        $this->assertStringContainsString('>·</span>', $adminPage->body, 'the glyph is rendered escaped');
+        $usersPage = $admin->get('/?page=users');
+        $this->assertSame(200, $usersPage->status);
+        $this->assertStringContainsString('tb-activity-char', $usersPage->body);
+        $this->assertStringContainsString('>·</span>', $usersPage->body, 'the glyph is rendered escaped');
     }
 
     public function test_an_invalid_save_is_refused_and_keeps_the_old_periods(): void

@@ -957,6 +957,26 @@ function tb_migrate_schema(PDO $pdo): void {
         }
     }
 
+    // Status colours (#42): the statuses page reads/writes statuses.color and
+    // the badge renderings select it unconditionally, so a deployment that
+    // lands without the upgrade SQL adds the column on the first request.
+    // Skipped when the statuses table is missing entirely: a board without a
+    // statuses table is pre-install and gets the full schema.sql (column
+    // included) from the install guard.
+    $hasStatuses = $isMysql
+        ? (bool)$pdo->query("SHOW TABLES LIKE 'statuses'")->fetchColumn()
+        : (bool)$pdo->query("SELECT 1 FROM sqlite_master WHERE type='table' AND name='statuses'")->fetchColumn();
+    if ($hasStatuses) {
+        $statusColumns = $isMysql
+            ? array_column($pdo->query('SHOW COLUMNS FROM statuses')->fetchAll(PDO::FETCH_ASSOC), 'Field')
+            : array_column($pdo->query('PRAGMA table_info(statuses)')->fetchAll(PDO::FETCH_ASSOC), 'name');
+        if (!in_array('color', $statusColumns, true)) {
+            $pdo->exec($isMysql
+                ? 'ALTER TABLE statuses ADD COLUMN color VARCHAR(7) NULL DEFAULT NULL AFTER is_done'
+                : 'ALTER TABLE statuses ADD COLUMN color TEXT NULL DEFAULT NULL');
+        }
+    }
+
     // Activity status periods (#34): the settings page stores the configured
     // period list in the app_settings table and the board reads it
     // unconditionally on every request, so a deployment that lands without
@@ -1052,4 +1072,56 @@ function tb_cleanup_orphan_uploads(PDO $pdo): int {
         if (is_file($dir . '/' . $entry) && unlink($dir . '/' . $entry)) $removed++;
     }
     return $removed;
+}
+
+/*
+ * Status colours (#42): administrators can give every task status an optional
+ * #RRGGBB colour on the Task statuses page. The colour renders on every
+ * status badge of the board (task list, task/project/archive pages); NULL
+ * keeps the default badge look the board has always had.
+ */
+
+/** The validation message for a posted status colour, or null when it is
+ * usable. Empty means "no colour" and is always valid. */
+function tb_status_color_validation_error(?string $raw): ?string {
+    if (trim((string)$raw) === '') return null;
+    if (!preg_match('/^#[0-9a-fA-F]{6}$/', trim((string)$raw))) {
+        return 'Status colour must be a #RRGGBB hex value, or empty for the default look.';
+    }
+    return null;
+}
+
+/** A validated colour, normalized for storage: lowercase #rrggbb, or NULL for
+ * "no colour". Only call this after tb_status_color_validation_error() passed. */
+function tb_status_color_normalized(?string $raw): ?string {
+    $raw = strtolower(trim((string)$raw));
+    return $raw === '' ? null : $raw;
+}
+
+/** True when the string is a well-formed #rrggbb colour. Used defensively at
+ * render time, so a tampered or legacy row value falls back to the default
+ * badge instead of producing markup. */
+function tb_status_color_is_valid(?string $raw): bool {
+    return $raw !== null && preg_match('/^#[0-9a-fA-F]{6}$/', $raw) === 1;
+}
+
+/** Readable text colour for a #rrggbb background: near-black on light fills,
+ * white on dark ones, from the WCAG relative luminance of the fill. */
+function tb_status_text_color(string $hex): string {
+    $lum = 0.2126 * hexdec(substr($hex, 1, 2)) / 255
+         + 0.7152 * hexdec(substr($hex, 3, 2)) / 255
+         + 0.0722 * hexdec(substr($hex, 5, 2)) / 255;
+    return $lum > 0.6 ? '#1a1a1a' : '#ffffff';
+}
+
+/** The badge markup for a status name and its optional colour. Without a
+ * colour this renders exactly the markup the board has always used, so
+ * existing pages keep their look. The name is escaped; the colour passed the
+ * strict #rrggbb check before it can reach the style attribute. */
+function tb_status_badge(string $name, ?string $color): string {
+    if (!tb_status_color_is_valid($color)) {
+        return '<span class="badge text-bg-light border">' . h($name) . '</span>';
+    }
+    $color = strtolower($color);
+    return '<span class="badge border" style="background-color:' . $color . ';color:' . tb_status_text_color($color) . '">' . h($name) . '</span>';
 }

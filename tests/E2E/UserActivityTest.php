@@ -80,7 +80,7 @@ final class UserActivityTest extends E2eTestCase
     public function test_the_admin_page_shows_the_last_active_column(): void
     {
         $admin = $this->adminSession();
-        $response = $admin->post('/?page=admin', [
+        $response = $admin->post('/?page=users', [
             'action' => 'add_user',
             'username' => 'jane',
             'display_name' => 'Jane Doe',
@@ -93,7 +93,7 @@ final class UserActivityTest extends E2eTestCase
         // requested pages: the label is fresh, and this board is minute
         // resolution, so only the 'active: ' prefix is asserted here — the
         // exact wording lives in tests/Unit/LastSeenLabelTest.php.
-        $page = $admin->get('/?page=admin');
+        $page = $admin->get('/?page=users');
         $this->assertSame(200, $page->status);
         $this->assertTrue($page->contains('<th>Last active</th>'), 'The users table must have the Last active column.');
         $this->assertTrue($page->contains('>never</td>'), 'A user that has not been seen must read never.');
@@ -132,7 +132,7 @@ final class UserActivityTest extends E2eTestCase
     {
         $admin = $this->adminSession();
         $admin->get('/?page=tasks');   // stamp the admin as active
-        $response = $admin->post('/?page=admin', [
+        $response = $admin->post('/?page=users', [
             'action' => 'add_user',
             'username' => 'jane',
             'display_name' => 'Jane Doe',
@@ -180,7 +180,7 @@ final class UserActivityTest extends E2eTestCase
 
         // Admin page: the users table pairs the dot with each name (the
         // Last active column of v1 stays alongside).
-        $adminPage = $admin->get('/?page=admin');
+        $adminPage = $admin->get('/?page=users');
         $this->assertSame(200, $adminPage->status);
         $this->assertTrue(
             $adminPage->contains('tb-activity-red" title="Inactive for over an hour"></span>Jane Doe'),

@@ -15,7 +15,7 @@ final class UserManagementTest extends E2eTestCase
 {
     private function createUser(AppSession $admin, string $username, string $display, string $password, string $role = 'user'): void
     {
-        $response = $admin->post('/?page=admin', [
+        $response = $admin->post('/?page=users', [
             'action' => 'add_user',
             'username' => $username,
             'display_name' => $display,
@@ -39,7 +39,7 @@ final class UserManagementTest extends E2eTestCase
         $admin = $this->adminSession();
         $this->createUser($admin, 'dave', 'Dave User', 'DavePass12345');
 
-        $response = $admin->post('/?page=admin', [
+        $response = $admin->post('/?page=users', [
             'action' => 'edit_user',
             'id' => (string)$this->userId('dave'),
             'username' => 'david',
@@ -49,7 +49,7 @@ final class UserManagementTest extends E2eTestCase
         ]);
         $this->assertSame(302, $response->status);
 
-        $adminPage = $admin->get('/?page=admin');
+        $adminPage = $admin->get('/?page=users');
         $this->assertTrue($adminPage->contains('Dave Edited'));
         $this->assertTrue($adminPage->contains('david'));
         $this->assertFalse($adminPage->contains('Dave User'));
@@ -64,7 +64,7 @@ final class UserManagementTest extends E2eTestCase
         $admin = $this->adminSession();
         $this->createUser($admin, 'eve', 'Eve User', 'EvePass12345');
 
-        $response = $admin->post('/?page=admin', [
+        $response = $admin->post('/?page=users', [
             'action' => 'edit_user',
             'id' => (string)$this->userId('eve'),
             'username' => 'eve',
@@ -88,7 +88,7 @@ final class UserManagementTest extends E2eTestCase
         $admin = $this->adminSession();
         $this->createUser($admin, 'promoted', 'Promoted User', 'PromoPass12345');
 
-        $admin->post('/?page=admin', [
+        $admin->post('/?page=users', [
             'action' => 'edit_user',
             'id' => (string)$this->userId('promoted'),
             'username' => 'promoted',
@@ -97,10 +97,10 @@ final class UserManagementTest extends E2eTestCase
             'password' => '',
         ]);
         $secondAdmin = new AppSession('promoted', 'PromoPass12345');
-        $this->assertTrue($secondAdmin->get('/?page=admin')->contains('Create user'));
+        $this->assertTrue($secondAdmin->get('/?page=users')->contains('Create user'));
 
         // With two administrators the demotion of one must succeed.
-        $response = $admin->post('/?page=admin', [
+        $response = $admin->post('/?page=users', [
             'action' => 'edit_user',
             'id' => (string)$this->userId('promoted'),
             'username' => 'promoted',
@@ -119,7 +119,7 @@ final class UserManagementTest extends E2eTestCase
         $admin = $this->adminSession();
         $this->createUser($admin, 'dave', 'Dave User', 'DavePass12345');
 
-        $duplicate = $admin->post('/?page=admin', [
+        $duplicate = $admin->post('/?page=users', [
             'action' => 'edit_user',
             'id' => (string)$this->userId('dave'),
             'username' => 'admin',
@@ -129,7 +129,7 @@ final class UserManagementTest extends E2eTestCase
         ]);
         $this->assertTrue($duplicate->contains('This username is already taken.'));
 
-        $blank = $admin->post('/?page=admin', [
+        $blank = $admin->post('/?page=users', [
             'action' => 'edit_user',
             'id' => (string)$this->userId('dave'),
             'username' => '  ',
@@ -139,7 +139,7 @@ final class UserManagementTest extends E2eTestCase
         ]);
         $this->assertTrue($blank->contains('Enter a username and a display name.'));
 
-        $short = $admin->post('/?page=admin', [
+        $short = $admin->post('/?page=users', [
             'action' => 'edit_user',
             'id' => (string)$this->userId('dave'),
             'username' => 'dave',
@@ -160,7 +160,7 @@ final class UserManagementTest extends E2eTestCase
         $admin = $this->adminSession(); // the only administrator of this fresh board
         $adminId = $this->userId('admin');
 
-        $demote = $admin->post('/?page=admin', [
+        $demote = $admin->post('/?page=users', [
             'action' => 'edit_user',
             'id' => (string)$adminId,
             'username' => 'admin',
@@ -170,7 +170,7 @@ final class UserManagementTest extends E2eTestCase
         ]);
         $this->assertTrue($demote->contains('At least one administrator must remain.'));
 
-        $delete = $admin->post('/?page=admin', [
+        $delete = $admin->post('/?page=users', [
             'action' => 'delete_user',
             'id' => (string)$adminId,
         ]);
@@ -187,7 +187,7 @@ final class UserManagementTest extends E2eTestCase
         $this->createUser($admin, 'victim', 'Victim User', 'VictimPass12345');
 
         $mallory = new AppSession('mallory', 'MalloryPass12345');
-        $mallory->post('/?page=admin', [
+        $mallory->post('/?page=users', [
             'action' => 'edit_user',
             'id' => (string)$this->userId('admin'),
             'username' => 'hacked',
@@ -195,7 +195,7 @@ final class UserManagementTest extends E2eTestCase
             'role' => 'user',
             'password' => '',
         ]);
-        $mallory->post('/?page=admin', [
+        $mallory->post('/?page=users', [
             'action' => 'delete_user',
             'id' => (string)$this->userId('victim'),
         ]);
@@ -213,13 +213,13 @@ final class UserManagementTest extends E2eTestCase
         $admin = $this->adminSession();
         $this->createUser($admin, 'ghost', 'Ghost User', 'GhostPass12345');
 
-        $response = $admin->post('/?page=admin', [
+        $response = $admin->post('/?page=users', [
             'action' => 'delete_user',
             'id' => (string)$this->userId('ghost'),
         ]);
         $this->assertSame(302, $response->status);
-        $this->assertTrue($admin->get('/?page=admin')->contains('User deleted.'));
-        $this->assertFalse($admin->get('/?page=admin')->contains('Ghost User'));
+        $this->assertTrue($admin->get('/?page=users')->contains('User deleted.'));
+        $this->assertFalse($admin->get('/?page=users')->contains('Ghost User'));
 
         $login = new AppSession();
         $this->assertTrue($login->login('ghost', 'GhostPass12345')->contains('Invalid username or password.'));
@@ -242,7 +242,7 @@ final class UserManagementTest extends E2eTestCase
             'body' => 'A comment that must survive the deletion.',
         ]);
 
-        $response = $admin->post('/?page=admin', [
+        $response = $admin->post('/?page=users', [
             'action' => 'delete_user',
             'id' => (string)$contribId,
         ]);
@@ -306,7 +306,7 @@ final class UserManagementTest extends E2eTestCase
         $this->assertNotFalse($projectId);
         $s->closeCursor(); // an open statement holds a shared lock that would block the DELETE below
 
-        $delete = $admin->post('/?page=admin', ['action' => 'delete_user', 'id' => (string)$pmId]);
+        $delete = $admin->post('/?page=users', ['action' => 'delete_user', 'id' => (string)$pmId]);
         $this->assertSame(302, $delete->status, 'User deletion must not fail on the projects foreign key.');
 
         $s = TestServer::pdo()->prepare('SELECT created_by FROM projects WHERE id=?');

@@ -153,4 +153,51 @@ final class SchemaSelfHealTest extends E2eTestCase
         $this->assertSame(2, (int)$row['schedule_status_id']);
         $this->assertSame('1', (string)$row['schedule_assignees']);
     }
+
+    /** Rebuilds the statuses table without its color column to simulate a
+     * pre-#42 database (task #42's status colours). */
+    private function dropColorColumn(): void
+    {
+        $pdo = TestServer::pdo();
+        if ($pdo->getAttribute(PDO::ATTR_DRIVER_NAME) === 'mysql') {
+            $pdo->exec('ALTER TABLE statuses DROP COLUMN color');
+            return;
+        }
+        // SQLite: rebuild the table in its pre-#42 shape. Legacy rename
+        // semantics keep the other tables' REFERENCES clauses pointing at
+        // "statuses", exactly the dropProjectsSchema() trick above.
+        $pdo->exec('PRAGMA legacy_alter_table=ON');
+        $pdo->exec('ALTER TABLE statuses RENAME TO statuses_pre42');
+        $pdo->exec('PRAGMA legacy_alter_table=OFF');
+        $pdo->exec("CREATE TABLE statuses (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name VARCHAR(40) NOT NULL UNIQUE,
+            sort_order INTEGER NOT NULL DEFAULT 0,
+            is_done INTEGER NOT NULL DEFAULT 0
+        )");
+        $pdo->exec('INSERT INTO statuses(id,name,sort_order,is_done) SELECT id,name,sort_order,is_done FROM statuses_pre42');
+        $pdo->exec('DROP TABLE statuses_pre42');
+    }
+
+    public function test_the_status_colour_column_is_self_healed(): void
+    {
+        $this->dropColorColumn();
+        $admin = $this->adminSession();   // the first request runs the self-heal
+
+        $pdo = TestServer::pdo();
+        if ($pdo->getAttribute(PDO::ATTR_DRIVER_NAME) === 'mysql') {
+            $names = array_column($pdo->query('SHOW COLUMNS FROM statuses')->fetchAll(PDO::FETCH_ASSOC), 'Field');
+        } else {
+            $names = array_column($pdo->query('PRAGMA table_info(statuses)')->fetchAll(PDO::FETCH_ASSOC), 'name');
+        }
+        $this->assertContains('color', $names, 'The #42 colour column must be back after the self-heal.');
+        // The heal keeps the seed rows, and the stored names/order are intact.
+        $this->assertSame('3', (string)$pdo->query('SELECT COUNT(*) FROM statuses')->fetchColumn());
+
+        // The healed column is immediately usable through the real form.
+        $response = $admin->post('/?page=statuses', ['action' => 'add_status', 'name' => 'POSTHEAL', 'color' => '#112233']);
+        $this->assertSame(302, $response->status, 'Storing a colour must work right after the self-heal.');
+        $row = TestServer::pdo()->query("SELECT color FROM statuses WHERE name='POSTHEAL'")->fetch();
+        $this->assertSame('#112233', (string)$row['color']);
+    }
 }

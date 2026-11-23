@@ -13,7 +13,10 @@ CREATE TABLE statuses (
     id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
     name VARCHAR(40) NOT NULL UNIQUE,
     sort_order INT NOT NULL DEFAULT 0,
-    is_done TINYINT(1) NOT NULL DEFAULT 0
+    is_done TINYINT(1) NOT NULL DEFAULT 0,
+    -- Status colours (#42): an optional #RRGGBB value; NULL keeps the default
+    -- badge look. Rendered on every status badge of the board.
+    color VARCHAR(7) NULL DEFAULT NULL
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 CREATE TABLE projects (

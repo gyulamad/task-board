@@ -16,10 +16,10 @@ A lightweight multi-user task and message board for PHP 8.2+ and MySQL/MariaDB s
 - Sortable task list: clicking a column name (Task, Status, Assignees, Parent, Updated) orders the list; shared helpers make it easy to reuse on other CRUD lists
 - Saved searches on the task list: a Save search button stores the current list filters under a name and the Saved searches dropdown re-opens them; the searches are per user and travel as plain URLs
 - Comments, attachments, history and task relationships
-- Admin can add status labels and mark completion statuses; existing statuses can be renamed, reordered and deleted from the Administration page (a status still used by tasks and the last remaining status cannot be deleted)
-- Admin can add status labels and mark completion statuses
-- Last activity on the Administration page: a Last active column shows when each user was last seen ("active: 23 minutes ago", "1h 12m ago", "never"); refreshed by authenticated requests, throttled to one write per couple of minutes (#30)
-- Activity dots next to every user name across the board (navbar, task/project lists and detail pages, comments, attachments, history, admin page): green = active in the last 15 minutes, yellow = not active in the last hour, red = inactive longer or never seen; one shared renderer (tb_user_with_activity) keeps them consistent (#30)
+- Task and project administration split into focused pages (#42): the Administration page is a compact hub linking to Users (create, edit, delete accounts) and Task statuses (rename, reorder, completion flag, colour, delete), with the uploads maintenance action and the activity periods link kept on the hub
+- Admin can add status labels and mark completion statuses; existing statuses can be renamed, reordered, given an optional #RRGGBB colour and deleted on the Task statuses page (a status still used by tasks and the last remaining status cannot be deleted). The colour renders on every status badge of the board — task list, task/project/archive pages — with an automatically readable text colour; statuses without one keep the built-in badge look
+- Last activity on the Users administration page: a Last active column shows when each user was last seen ("active: 23 minutes ago", "1h 12m ago", "never"); refreshed by authenticated requests, throttled to one write per couple of minutes (#30)
+- Activity dots next to every user name across the board (navbar, task/project lists and detail pages, comments, attachments, history, Users page): green = active in the last 15 minutes, yellow = not active in the last hour, red = inactive longer or never seen; one shared renderer (tb_user_with_activity) keeps them consistent (#30)
 - Per-task auto-reopen schedule: an external cron job resets overdue tasks to TODO, unassigns them and comments "Reopen by auto-scheduler"
 - Mobile friendly navigation: below the `lg` breakpoint the menu (links, theme switcher, sign-out) collapses behind a hamburger toggler and drops down only when toggled; from `lg` up the bar stays expanded as before (#32)
 - Admin-only software updater for the latest GitHub release or a selected repository branch
@@ -162,6 +162,29 @@ URL part under a name: the saved search is the actual search link.
 Fresh installs get the `saved_searches` table from `schema.sql`; existing boards are
 upgraded automatically on the first request after deployment (the idempotent
 self-heal in `tb_migrate_schema()` recreates the table if it is missing).
+
+## Administration pages (#42)
+The admin areas live on focused pages instead of one long Administration page:
+
+- **Administration** (`?page=admin`) is the hub: link cards to the Users and
+  Task statuses pages, the activity status periods and the software updater,
+  plus the uploads maintenance action (clean up orphaned attachment files).
+- **Users** (`?page=users`) holds the account management: the create form and
+  the users table with role badges, the Last active column (#30) and the
+  edit/delete actions. User create/edit/delete actions return here.
+- **Task statuses** (`?page=statuses`) holds the status editor: rename, display
+  order, the completion flag and the delete guard rails, plus the new colour
+  picker. Every row shows the badge exactly as the board renders it, a colour
+  input and a **Default colour** checkbox that restores the built-in look.
+
+Status colours are stored as `#rrggbb` in `statuses.color`; `NULL` keeps the
+default badge (`badge text-bg-light border`) the board has always rendered. The
+shared `tb_status_badge()` renderer outputs the fill with an automatically
+readable text colour (dark text on light fills, white on dark ones, from the
+WCAG relative luminance) and falls back to the default badge for any value that
+is not a well-formed `#rrggbb`. Fresh installs get the column from `schema.sql`;
+existing boards are upgraded automatically on the first request after deployment
+(the idempotent `ALTER TABLE statuses ADD COLUMN color` in `tb_migrate_schema()`).
 
 ## Requirements
 - PHP 8.2+ recommended

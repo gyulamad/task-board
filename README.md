@@ -17,6 +17,7 @@ A lightweight multi-user task and message board for PHP 8.2+ and MySQL/MariaDB s
 - Task archive: Delete/Archive actions soft-delete a task (hidden from lists, restorable); permanent deletion happens only from the Archive page, by an administrator or the creator
 - Sortable task list: clicking a column name (Task, Status, Assignees, Parent, Updated) orders the list; shared helpers make it easy to reuse on other CRUD lists
 - Saved searches on the task list: a Save search button stores the current list filters under a name and the Saved searches dropdown re-opens them; the searches are per user and travel as plain URLs
+- Full change audit (#54): every task save writes one history row per changed field with the from/to values recorded human-readable (status and project names, task titles, assignee names), and every history row on the task page links to a change details page showing exactly who changed what from what, when
 - Kanban board page (#43): one column per task status with every non-archived task in its status column; the task list's filter card and saved searches sit on top, shared as one implementation (DRY) so filters and searches behave the same on both views
 - Clone tasks (#46): a Clone button on the task edit page opens the create page prefilled from the source task (title, description, status, complexity, parent, project, schedule targets and assignees); modifying and saving creates a brand-new task, cancelling leaves the original untouched
 - Complexity estimation and dependency waterflow chart (#44): every task carries a complexity (default 1, edited on the task form); the Waterflow page arranges all non-archived tasks into dependency levels from their "Depends on" links and sizes each task's block width by its complexity relative to the widest task in view, with the shared filter card and saved searches on top
@@ -134,6 +135,26 @@ untouched (no comment spam on tasks nobody has picked up yet). Tasks without a
 schedule are never touched.
 The controller answers in plain text, e.g. `Auto-scheduler reopened 2 task(s): #12, #14.`
 or `Auto-scheduler: nothing to reopen.`, which is convenient to watch in cron logs.
+
+## Change details, full audit (#54)
+The task page's History is a full audit trail: every save of the task form
+writes one history row **per changed field** (title, description, status,
+complexity, priority, parent task, project, schedule period, schedule status,
+schedule assignees and the assignee roster), with the from/to values recorded
+human-readable — status and project names, task titles and assignee display
+names instead of raw ids. The board's generic "Task updated" entry stays, so
+nothing that reads the history changes meaning.
+
+- Every history row carries a **details** link to the change details page
+  (`?page=task_history&id=N`): the event, who made the change and when, and
+  for field changes a From/To table with the exact recorded values.
+- Event-level entries (task created, comments, attachments, archive, restore,
+  bulk actions) keep their free-text details and render without the field
+  table; their details link still shows the full record.
+- The audit columns (`field`, `old_value`, `new_value`) are added to
+  `task_history` by the idempotent self-heal in `tb_migrate_schema()` on
+  existing boards and come from `schema.sql` on fresh installs; older rows
+  keep NULL and render as event entries.
 
 ## Kanban board (#43)
 The **Kanban** link in the menu opens a second view of the tasks: one column per

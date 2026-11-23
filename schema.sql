@@ -113,6 +113,13 @@ CREATE TABLE task_history (
     user_id INT UNSIGNED NULL,
     event VARCHAR(80) NOT NULL,
     details TEXT NULL,
+    -- Full audit (#54): when the entry records a field change, the field
+    -- name and its from/to values live here (human-readable: the status
+    -- and project names, task titles, assignee display names). NULL for
+    -- the event-level entries (created, comment added, archived, ...).
+    field VARCHAR(40) NULL DEFAULT NULL,
+    old_value TEXT NULL DEFAULT NULL,
+    new_value TEXT NULL DEFAULT NULL,
     created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY (task_id) REFERENCES tasks(id) ON DELETE CASCADE,
     FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE SET NULL

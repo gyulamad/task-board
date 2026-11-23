@@ -22,6 +22,15 @@ function history(PDO $pdo, int $taskId, string $event, string $details = ''): vo
     $s = $pdo->prepare('INSERT INTO task_history(task_id,user_id,event,details) VALUES(?,?,?,?)');
     $s->execute([$taskId, user()['id'], $event, $details]);
 }
+
+/** Full audit (#54): one task_history row per changed field, carrying the
+ * field name and its from/to values verbatim (human-readable: status and
+ * project names, task titles, assignee display names). The change details
+ * page (?page=task_history&id=N) renders exactly that. */
+function history_change(PDO $pdo, int $taskId, string $field, string $label, string $oldValue, string $newValue): void {
+    $s = $pdo->prepare('INSERT INTO task_history(task_id,user_id,event,details,field,old_value,new_value) VALUES(?,?,?,?,?,?,?)');
+    $s->execute([$taskId, user()['id'], 'Field changed', $label . ' changed', $field, $oldValue, $newValue]);
+}
 function task_exists(PDO $pdo, int $id): bool {
     $s = $pdo->prepare('SELECT 1 FROM tasks WHERE id=?'); $s->execute([$id]); return (bool)$s->fetchColumn();
 }
@@ -987,6 +996,21 @@ function tb_migrate_schema(PDO $pdo): void {
         $pdo->exec($isMysql
             ? 'ALTER TABLE tasks ADD COLUMN archived_at TIMESTAMP NULL DEFAULT NULL AFTER updated_at'
             : 'ALTER TABLE tasks ADD COLUMN archived_at TEXT NULL DEFAULT NULL');
+    }
+
+    // Full audit (#54): task_history gains the field/old_value/new_value
+    // columns on existing boards, so the change details page can show who
+    // changed what from what for every save. Fresh installs get them from
+    // schema.sql; the older rows keep NULL and render as event entries.
+    $historyColumns = $isMysql
+        ? array_column($pdo->query('SHOW COLUMNS FROM task_history')->fetchAll(PDO::FETCH_ASSOC), 'Field')
+        : array_column($pdo->query('PRAGMA table_info(task_history)')->fetchAll(PDO::FETCH_ASSOC), 'name');
+    foreach (['field' => 'VARCHAR(40) NULL DEFAULT NULL', 'old_value' => 'TEXT NULL DEFAULT NULL', 'new_value' => 'TEXT NULL DEFAULT NULL'] as $auditColumn => $auditSql) {
+        if (!in_array($auditColumn, $historyColumns, true)) {
+            $pdo->exec($isMysql
+                ? 'ALTER TABLE task_history ADD COLUMN ' . $auditColumn . ' ' . $auditSql
+                : 'ALTER TABLE task_history ADD COLUMN ' . $auditColumn . ' TEXT NULL DEFAULT NULL');
+        }
     }
 
     $hasProjects = $isMysql

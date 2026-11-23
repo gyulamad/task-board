@@ -28,6 +28,7 @@ A lightweight multi-user task and message board for PHP 8.2+ and MySQL/MariaDB s
 - Per-task auto-reopen schedule: an external cron job resets overdue tasks to TODO, unassigns them and comments "Reopen by auto-scheduler"
 - Mobile friendly navigation: below the `lg` breakpoint the menu (links, theme switcher, sign-out) collapses behind a hamburger toggler and drops down only when toggled; from `lg` up the bar stays expanded as before (#32)
 - Admin-only software updater for the latest GitHub release or a selected repository branch
+- Full backup download on the Software updates page (#49): one ZIP with the complete application code (including config.php), every file of the uploads folder and an SQL dump of the whole database, built on demand and streamed straight to the administrator
 - PDO prepared statements, output escaping, CSRF tokens and upload MIME checks
 
 ## Install on shared hosting
@@ -54,6 +55,7 @@ A lightweight multi-user task and message board for PHP 8.2+ and MySQL/MariaDB s
 - The updater requires PHP's ZIP extension (`ZipArchive`), outbound HTTPS access to GitHub, and write permission for the allowlisted application files. It updates only `index.php`, `updater.php`, `src/helpers.php`, `version.json`, `schema.sql`, `README.md`, `config.example.php`, `.gitignore` and `uploads/.htaccess`; it creates missing sub-directories such as `src/` on demand and never replaces `config.php` or user-uploaded files.
 - The updater rechecks the source at install time, validates archive paths, rejects symbolic links, stages file replacements, and creates a temporary backup before writing. If a write fails, it attempts to restore files already replaced. Keep an independent backup of both files and the database before updating; temporary hosting storage may be cleared by the host.
 - The updater does not run database migrations. Review release notes and apply any required `schema.sql` changes manually after backing up the database. Do not install experimental branches on a production board.
+- The full backup download (#49) re-checks the administrator password and streams a ZIP that contains `config.php` and the whole database (password hashes included) to the browser; nothing is kept on the server. Store the downloaded archive somewhere safe.
 - The task scheduler needs the `tasks.schedule_period` column. Fresh installs get it from `schema.sql`; existing boards are upgraded automatically (an idempotent `ALTER TABLE ... ADD COLUMN` runs once on the first request after deployment, so the database user needs ALTER permission for that moment).
 - User deletion relies on `ON DELETE SET NULL` foreign keys for `tasks.created_by`, `projects.created_by`, `comments.user_id`, `attachments.user_id` and `task_history.user_id`. Fresh installs get this from `schema.sql`. Boards installed before this change must apply it manually (nullable columns + `ON DELETE SET NULL` on those five foreign keys; check the exact constraint names with `SHOW CREATE TABLE`) before deleting users.
 - Database relationships are one-directional as entered: for example, on task A choose "blocks" and task B to mean A blocks B.
@@ -264,6 +266,25 @@ WCAG relative luminance) and falls back to the default badge for any value that
 is not a well-formed `#rrggbb`. Fresh installs get the column from `schema.sql`;
 existing boards are upgraded automatically on the first request after deployment
 (the idempotent `ALTER TABLE statuses ADD COLUMN color` in `tb_migrate_schema()`).
+
+## Full backup download (#49)
+The Software updates page has a **Download full backup** button: an administrator
+entering their current password receives one ZIP package that is the complete
+restore point of the installation — the thing to take right before applying an
+update (the install form's reminder to make a database backup points at it).
+
+- `code/` mirrors the application directory as served, including `config.php`
+  (a backup without it would not be restorable); `.git`, `vendor/` and stray
+  `*.zip`/`*.sqlite` files parked in the root are excluded.
+- `uploads/` contains the uploaded attachment files exactly as stored on disk,
+  including the folder's `.htaccess`.
+- `database/` holds a full SQL dump of every table (schema and data), wrapped in
+  `SET FOREIGN_KEY_CHECKS=0/1` on MySQL/MariaDB so the import order cannot trip
+  over foreign keys; `MANIFEST.txt` documents what the archive holds and how to
+  restore it.
+- The archive is built in a private temporary file and streamed to the browser —
+  no copy is kept on the server. The action is a CSRF-protected POST and
+  re-checks the current administrator password, exactly like the install action.
 
 ## Requirements
 - PHP 8.2+ recommended

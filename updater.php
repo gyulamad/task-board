@@ -166,6 +166,231 @@ function tb_update_install(array $files): string {
     }
 }
 
+/** Re-checks the signed-in administrator's current password for the page's sensitive actions (#49). */
+function tb_update_verify_admin_password(PDO $pdo, string $password): bool {
+    $admin = $pdo->prepare('SELECT password_hash FROM users WHERE id=? AND role=\'admin\'');
+    $admin->execute([user()['id']]);
+    $hash = $admin->fetchColumn();
+    return $hash !== false && (string)$hash !== '' && password_verify($password, (string)$hash);
+}
+
+// ---- Full backup download (#49) -----------------------------------------------------------
+// A full backup before applying an update: one ZIP with (a) the complete
+// application code as served from this directory, (b) every uploaded
+// attachment file and (c) an SQL dump of the whole database.
+//
+// Everything lives in updater.php on purpose: the updater only ever replaces
+// the allowlisted TASK_BOARD_UPDATE_FILES, so a brand-new src/backup.php could
+// never reach installations that update through this page (the running old
+// updater would skip it and the next request would fatal on the missing
+// require). Keeping the code inside updater.php — which IS on the allowlist —
+// makes the feature deployable through the updater itself.
+const TASK_BOARD_BACKUP_SKIP_DIRS = ['.git', 'vendor', 'uploads'];
+const TASK_BOARD_BACKUP_SKIP_ROOT_SUFFIXES = ['.zip', '.sqlite'];
+
+/** Collects the relative paths of all files under $dir that the backup includes (#49). */
+function tb_backup_list_files(string $dir): array {
+    $files = [];
+    $iterator = new RecursiveIteratorIterator(
+        new RecursiveDirectoryIterator($dir, FilesystemIterator::SKIP_DOTS),
+        RecursiveIteratorIterator::LEAVES_ONLY
+    );
+    foreach ($iterator as $file) {
+        /** @var SplFileInfo $file */
+        if (!$file->isFile() || !$file->isReadable()) continue;
+        $relative = str_replace('\\', '/', substr(str_replace('\\', '/', (string)$file), strlen(rtrim($dir, '/')) + 1));
+        if ($relative === '' || str_contains($relative, '..')) continue; // cannot happen from the filesystem, kept as a guard
+        $parts = explode('/', $relative);
+        if (in_array($parts[0], TASK_BOARD_BACKUP_SKIP_DIRS, true)) continue;
+        // A backup ZIP or SQLite file that someone parked in the document root
+        // must not be folded into the next backup (backup-of-backup growth).
+        if (count($parts) === 1) {
+            foreach (TASK_BOARD_BACKUP_SKIP_ROOT_SUFFIXES as $suffix) {
+                if (str_ends_with(strtolower($relative), $suffix)) continue 2;
+            }
+        }
+        $files[] = $relative;
+    }
+    sort($files);
+    return $files;
+}
+
+/** Quotes a PHP value as a SQL literal for the active database driver (#49). */
+function tb_backup_sql_literal(PDO $pdo, mixed $value): string {
+    if ($value === null) return 'NULL';
+    if (is_int($value) || is_float($value)) return (string)$value;
+    return $pdo->quote((string)$value);
+}
+
+/** The identifier $name quoted for the active database driver (#49). */
+function tb_backup_quote_identifier(string $driver, string $name): string {
+    if ($driver === 'mysql') return '`' . str_replace('`', '``', $name) . '`';
+    return '"' . str_replace('"', '""', $name) . '"';
+}
+
+/** The base tables of the current database, sorted by name (#49). */
+function tb_backup_table_list(PDO $pdo, string $driver): array {
+    if ($driver === 'mysql') {
+        $rows = $pdo->query("SHOW FULL TABLES WHERE Table_type='BASE TABLE'")->fetchAll(PDO::FETCH_NUM);
+        $tables = array_map(fn(array $row): string => (string)$row[0], $rows);
+    } else {
+        $rows = $pdo->query("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'")->fetchAll(PDO::FETCH_NUM);
+        $tables = array_map(fn(array $row): string => (string)$row[0], $rows);
+    }
+    sort($tables, SORT_STRING);
+    return $tables;
+}
+
+/** The CREATE statement of one table for the active database driver (#49). */
+function tb_backup_table_schema(PDO $pdo, string $driver, string $table): string {
+    if ($driver === 'mysql') {
+        $row = $pdo->query('SHOW CREATE TABLE ' . tb_backup_quote_identifier($driver, $table))->fetch(PDO::FETCH_NUM);
+        if (!$row || !isset($row[1])) throw new RuntimeException('Could not read the schema of table ' . $table . '.');
+        return (string)$row[1];
+    }
+    $stmt = $pdo->prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name=?");
+    $stmt->execute([$table]);
+    $sql = $stmt->fetchColumn();
+    if ($sql === false || trim((string)$sql) === '') throw new RuntimeException('Could not read the schema of table ' . $table . '.');
+    return (string)$sql;
+}
+
+/** Writes the schema + data dump of the whole database to $dumpPath (#49). Returns [tables, rows]. */
+function tb_backup_write_dump(PDO $pdo, string $dumpPath): array {
+    $driver = (string)$pdo->getAttribute(PDO::ATTR_DRIVER_NAME);
+    $handle = fopen($dumpPath, 'wb');
+    if ($handle === false) throw new RuntimeException('Could not create the SQL dump file.');
+    $tables = tb_backup_table_list($pdo, $driver);
+    $rows = 0;
+    try {
+        fwrite($handle, "-- Task Board full database dump (#49)\n-- Generated (UTC): " . gmdate('c') . "\n-- Driver: {$driver}\n\n");
+        if ($driver === 'mysql') {
+            fwrite($handle, "SET NAMES utf8mb4;\nSET FOREIGN_KEY_CHECKS=0;\n\n");
+        } else {
+            fwrite($handle, "PRAGMA foreign_keys=OFF;\nBEGIN TRANSACTION;\n\n");
+        }
+        foreach ($tables as $table) {
+            $quoted = tb_backup_quote_identifier($driver, $table);
+            fwrite($handle, "-- Table: {$table}\nDROP TABLE IF EXISTS {$quoted};\n");
+            fwrite($handle, tb_backup_table_schema($pdo, $driver, $table) . ";\n");
+            $stmt = $pdo->query('SELECT * FROM ' . $quoted);
+            if ($stmt === false) throw new RuntimeException('Could not read the rows of table ' . $table . '.');
+            while (($row = $stmt->fetch(PDO::FETCH_ASSOC)) !== false) {
+                if ($row === []) continue;
+                $columns = implode(', ', array_map(fn(string $c): string => tb_backup_quote_identifier($driver, $c), array_keys($row)));
+                $values = implode(', ', array_map(fn(mixed $v): string => tb_backup_sql_literal($pdo, $v), array_values($row)));
+                fwrite($handle, "INSERT INTO {$quoted} ({$columns}) VALUES ({$values});\n");
+                $rows++;
+            }
+            fwrite($handle, "\n");
+        }
+        if ($driver === 'mysql') {
+            fwrite($handle, "SET FOREIGN_KEY_CHECKS=1;\n");
+        } else {
+            fwrite($handle, "COMMIT;\n");
+        }
+    } finally {
+        fclose($handle);
+    }
+    return [count($tables), $rows];
+}
+
+/** Builds the MANIFEST.txt that documents what the archive contains (#49). */
+function tb_backup_manifest(string $driver, array $codeFiles, array $uploadFiles, int $tables, int $rows, string $dumpName): string {
+    $installed = is_file(__DIR__ . '/version.json') ? (json_decode((string)file_get_contents(__DIR__ . '/version.json'), true) ?: []) : [];
+    $lines = [
+        'Task Board full backup',
+        'Generated (UTC): ' . gmdate('c'),
+        'PHP: ' . PHP_VERSION . ' · Database driver: ' . $driver,
+        'Installed source: ' . ($installed['source'] ?? 'unknown') . ' · ref: ' . ($installed['ref'] ?? 'not recorded') . ' · installed at: ' . ($installed['installed_at'] ?? 'unknown'),
+        '',
+        'Contents:',
+        '  code/       the complete application directory as served (includes config.php; excludes .git, vendor/ and the uploads/ folder)',
+        '  uploads/    the uploads folder exactly as stored on disk, including its .htaccess (' . count($uploadFiles) . ' file' . (count($uploadFiles) === 1 ? '' : 's') . ')',
+        "  database/   full SQL dump (schema + data) of every table: {$tables} table" . ($tables === 1 ? '' : 's') . ", {$rows} row" . ($rows === 1 ? '' : 's') . ' (' . $dumpName . ')',
+        '  ' . count($codeFiles) . ' code file' . (count($codeFiles) === 1 ? '' : 's') . ' included',
+        '',
+        'Restore hints:',
+        '  1. Restore code/ into the web root (config.php is included and is needed for the database credentials).',
+        '  2. Recreate the empty database and import database/' . $dumpName . ' (the MySQL dump wraps the import in SET FOREIGN_KEY_CHECKS=0/1; the SQLite dump in PRAGMA foreign_keys=OFF / COMMIT).',
+        '  3. Copy uploads/ back over the uploads directory.',
+        '  This archive contains credentials (config.php and password hashes): keep it in a safe place.',
+    ];
+    return implode("\n", $lines) . "\n";
+}
+
+/** Builds the full backup ZIP in a private temp file. Returns [path, dump, name, driver]. */
+function tb_backup_build(PDO $pdo): array {
+    if (!class_exists(ZipArchive::class)) throw new RuntimeException('The PHP ZIP extension (ZipArchive) is required for the full backup.');
+    $stamp = gmdate('Ymd-His');
+    $name = 'task-board-backup-' . $stamp . '.zip';
+    $dumpName = 'task-board-dump-' . $stamp . '.sql';
+    $zipPath = tempnam(sys_get_temp_dir(), 'tb-backup-');
+    $dumpPath = tempnam(sys_get_temp_dir(), 'tb-dump-');
+    if ($zipPath === false || $dumpPath === false) throw new RuntimeException('Could not create the temporary backup files.');
+    try {
+        [$tables, $rows] = tb_backup_write_dump($pdo, $dumpPath);
+        $driver = (string)$pdo->getAttribute(PDO::ATTR_DRIVER_NAME);
+        $codeFiles = tb_backup_list_files(__DIR__);
+        $uploadDir = __DIR__ . '/uploads';
+        $uploadFiles = is_dir($uploadDir) ? tb_backup_list_files($uploadDir) : [];
+
+        $zip = new ZipArchive();
+        if ($zip->open($zipPath, ZipArchive::CREATE | ZipArchive::OVERWRITE) !== true) {
+            throw new RuntimeException('Could not create the backup ZIP archive.');
+        }
+        try {
+            foreach ($codeFiles as $relative) {
+                if (!$zip->addFile(__DIR__ . '/' . $relative, 'code/' . $relative)) {
+                    throw new RuntimeException('Could not add ' . $relative . ' to the backup ZIP.');
+                }
+            }
+            foreach ($uploadFiles as $relative) {
+                if (!$zip->addFile($uploadDir . '/' . $relative, 'uploads/' . $relative)) {
+                    throw new RuntimeException('Could not add the uploaded file ' . $relative . ' to the backup ZIP.');
+                }
+            }
+            if (!$zip->addFile($dumpPath, 'database/' . $dumpName)) {
+                throw new RuntimeException('Could not add the SQL dump to the backup ZIP.');
+            }
+            if ($zip->addFromString('MANIFEST.txt', tb_backup_manifest($driver, $codeFiles, $uploadFiles, $tables, $rows, $dumpName)) !== true) {
+                throw new RuntimeException('Could not add the backup manifest to the ZIP.');
+            }
+            if ($zip->close() !== true) {
+                throw new RuntimeException('Could not finish the backup ZIP archive.');
+            }
+        } catch (Throwable $e) {
+            $zip->close();
+            throw $e;
+        }
+        return ['path' => $zipPath, 'dump' => $dumpPath, 'name' => $name];
+    } catch (Throwable $e) {
+        @unlink($zipPath);
+        @unlink($dumpPath);
+        throw $e;
+    }
+}
+
+/** Streams the finished backup ZIP as a download and stops the request (#49). */
+function tb_backup_send(array $backup): never {
+    try {
+        while (ob_get_level() > 0) ob_end_clean();
+        $size = filesize($backup['path']);
+        if ($size === false) throw new RuntimeException('Could not read the finished backup ZIP.');
+        header('Content-Type: application/zip');
+        header('Content-Disposition: attachment; filename="' . $backup['name'] . '"');
+        header('Content-Length: ' . $size);
+        header('Cache-Control: no-store, max-age=0');
+        if (!readfile($backup['path'])) throw new RuntimeException('Could not stream the backup ZIP.');
+    } finally {
+        @unlink($backup['path']);
+        @unlink($backup['dump']);
+    }
+    exit;
+}
+
+// ---- End full backup download (#49) --------------------------------------------------------
+
 function task_board_update_page(PDO $pdo, array $config): void {
     $error = '';
     $message = '';
@@ -173,11 +398,26 @@ function task_board_update_page(PDO $pdo, array $config): void {
     $selectedBranch = trim($_POST['branch'] ?? 'master');
     $sourceInfo = null;
 
-    if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['action'] ?? '') === 'install_update') {
+    // Full backup download (#49): the restore point an administrator takes
+    // before installing an update. Sensitive payload (code incl. config.php,
+    // uploaded files, whole SQL dump), so it re-checks the admin password like
+    // the install action does; the zip streams to the browser and no copy is
+    // kept on the server beyond the request.
+    if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['action'] ?? '') === 'download_backup') {
+        if (!tb_update_verify_admin_password($pdo, (string)($_POST['current_password'] ?? ''))) {
+            $error = 'Your current administrator password was not accepted.';
+        } else {
+            try {
+                tb_backup_send(tb_backup_build($pdo));
+            } catch (Throwable $e) {
+                $error = $e->getMessage();
+            }
+        }
+    } elseif ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['action'] ?? '') === 'install_update') {
         $admin = $pdo->prepare('SELECT password_hash FROM users WHERE id=? AND role=\'admin\'');
         $admin->execute([user()['id']]);
         $hash = $admin->fetchColumn();
-        if (!$hash || !password_verify($_POST['current_password'] ?? '', (string)$hash)) {
+        if (!$hash || !tb_update_verify_admin_password($pdo, (string)($_POST['current_password'] ?? ''))) {
             $error = 'Your current administrator password was not accepted.';
         } else {
             try {
@@ -228,9 +468,16 @@ function task_board_update_page(PDO $pdo, array $config): void {
             <div class="mb-3" id="branch-wrap" <?=$selectedType==='branch'?'':'hidden'?>><label class="form-label" for="branch">Branch name</label><input class="form-control" id="branch" name="branch" value="<?=h($selectedBranch)?>" maxlength="100" placeholder="master"></div>
             <button class="btn btn-outline-primary">Check source</button>
         </form>
+        <hr><h3 class="h6">Download a full backup</h3>
+        <p class="small muted">One ZIP package with the complete application code (including <span class="font-monospace">config.php</span>), every uploaded attachment file and an SQL dump of the whole database — the restore point to keep before installing an update. The archive holds credentials, so keep the downloaded file safe; nothing is stored on the server.</p>
+        <form method="post" class="mb-3" onsubmit="return confirm('Prepare and download the full backup ZIP now?')"><?=csrf_field()?>
+            <input type="hidden" name="action" value="download_backup">
+            <div class="mb-3"><label class="form-label" for="backup_password">Current administrator password</label><input class="form-control" type="password" id="backup_password" name="current_password" autocomplete="current-password" required></div>
+            <button class="btn btn-outline-secondary">Download full backup (code, uploads, SQL dump)</button>
+        </form>
         <?php if ($sourceInfo): ?>
             <hr><h3 class="h6">Install <?=h($sourceInfo['label'])?></h3>
-            <p class="small muted">The updater changes only the application's allowlisted files. It never overwrites config.php or uploaded files, deletes files, executes SQL, or runs downloaded scripts as part of extraction. A private backup is created first. Make your own database backup before updating.</p>
+            <p class="small muted">The updater changes only the application's allowlisted files. It never overwrites config.php or uploaded files, deletes files, executes SQL, or runs downloaded scripts as part of extraction. A private backup is created first. Make your own database backup before updating — the full backup download above is exactly that.</p>
             <form method="post" onsubmit="return confirm('Install this update now? Make sure you have a database backup.')"><?=csrf_field()?>
                 <input type="hidden" name="action" value="install_update">
                 <input type="hidden" name="source_type" value="<?=h($selectedType)?>">

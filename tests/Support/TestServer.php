@@ -92,6 +92,10 @@ final class TestServer
         foreach (['index.php', 'updater.php'] as $file) {
             copy($root . '/' . $file, $dir . '/' . $file);
         }
+        // The favicons (#60) live at the document root, next to index.php.
+        foreach (['favicon.ico', 'favicon.svg'] as $file) {
+            if (is_file($root . '/' . $file)) copy($root . '/' . $file, $dir . '/' . $file);
+        }
         copy($root . '/src/helpers.php', $dir . '/src/helpers.php');
         if (is_file($root . '/uploads/.htaccess')) {
             copy($root . '/uploads/.htaccess', $dir . '/uploads/.htaccess');

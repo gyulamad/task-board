@@ -16,6 +16,7 @@ A lightweight multi-user task and message board for PHP 8.2+ and MySQL/MariaDB s
 - Sortable task list: clicking a column name (Task, Status, Assignees, Parent, Updated) orders the list; shared helpers make it easy to reuse on other CRUD lists
 - Saved searches on the task list: a Save search button stores the current list filters under a name and the Saved searches dropdown re-opens them; the searches are per user and travel as plain URLs
 - Kanban board page (#43): one column per task status with every non-archived task in its status column; the task list's filter card and saved searches sit on top, shared as one implementation (DRY) so filters and searches behave the same on both views
+- Clone tasks (#46): a Clone button on the task edit page opens the create page prefilled from the source task (title, description, status, complexity, parent, project, schedule targets and assignees); modifying and saving creates a brand-new task, cancelling leaves the original untouched
 - Complexity estimation and dependency waterflow chart (#44): every task carries a complexity (default 1, edited on the task form); the Waterflow page arranges all non-archived tasks into dependency levels from their "Depends on" links and sizes each task's block width by its complexity relative to the widest task in view, with the shared filter card and saved searches on top
 - Task priority (#45): every task carries a priority number (default 1, edited on the task form, shown on the task page) and the task list gained a sortable Priority column so the biggest numbers sort to the top
 - Comments, attachments, history and task relationships
@@ -146,6 +147,17 @@ dropdowns and the saved searches behave exactly like on the task list:
 - opening a saved search from the board navigates to `?page=kanban&...`, from
   the task list to `?page=tasks&...`,
 - archived tasks never appear on the board (they live in the archive only).
+
+## Clone tasks (#46)
+The task edit page has a **Clone** button next to Save/Cancel. It opens the task
+create page as `?page=new&clone=<id>` with every form field prefilled from the
+source task — title, description, status, complexity, parent, project, the
+auto-reopen schedule targets and the assignees. The prefilled form can be
+modified and saved like any other create (the regular save_task action runs, so
+the clone gets its own history entry) or cancelled. Comments, attachments,
+history and relationships are not copied: they belong to the original task, and
+the clone is a brand-new task. Cloning works from archived sources too — the
+copy is always a fresh, non-archived task — and an unknown clone id answers 404.
 
 ## Task complexity and the dependency waterflow chart (#44)
 Every task carries a **complexity** — how big the task is, a whole number from 1

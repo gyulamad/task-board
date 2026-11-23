@@ -1116,24 +1116,28 @@ if ($page==='messages') {
     <?php render_footer(); exit;
 }
 
-// ---- Notifications (#58, per-item seen #73) -----------------------------------------------
+// ---- Notifications (#58, per-item seen #73, page-open clear #79) ----------
 // One stream per user: the board drops a notification into it whenever a
 // task-history event hits a task the user is assigned to (minus their own
-// edits). Opening the stream alone marks nothing seen (#73): every row links
-// through ?page=notification_seen&id=... and exactly the clicked notification
-// is marked seen on the way to its task, so the badge on the page and in the
-// navbar always counts what you have not opened yet.
+// edits). Opening the stream marks everything seen (#79): the red flag
+// disappears until new unseen ones arrive; every row still links through
+// ?page=notification_seen&id=... so a single click marks exactly that row
+// seen on the way to its task, and the Mark-all-as-seen button clears the
+// whole stream in one POST.
 if ($page==='notifications') {
     $me=(int)user()['id'];
     $newCount=tb_unseen_notification_count($pdo,$me);
-    // The navbar badge renders later in the same request, so it reuses the
-    // count already computed here instead of querying again (#56 pattern).
-    $GLOBALS['TB_NOTIFICATION_BADGE']=$newCount;
     $s=$pdo->prepare('SELECT n.*,t.title task_title FROM notifications n JOIN tasks t ON t.id=n.task_id WHERE n.user_id=? ORDER BY n.id DESC LIMIT 200');
     $s->execute([$me]);
     $items=$s->fetchAll();
+    // Opening the page marks everything seen (#79 point 2): the red navbar
+    // flag disappears on this very load and stays gone until new unseen
+    // notifications arrive. Reading one by one still works - the per-item
+    // click-through (#73) marks its row seen on the way to the task, and the
+    // Mark-all-as-seen button is the bulk shortcut in one POST.
+    $pdo->prepare('UPDATE notifications SET is_seen=1 WHERE user_id=? AND is_seen=0')->execute([$me]);
     render_header('Notifications',$config,$error); ?>
-    <div class="d-flex justify-content-between align-items-center mb-3"><div><h1 class="h3 mb-0">Notifications</h1><div class="muted">Everything that happened on the tasks you are assigned to - new ones show here and as a red number in the navbar; clicking one marks it seen and opens its task, and the button clears them all at once.</div></div><div class="d-flex gap-2 align-items-center"><span class="badge text-bg-danger fs-6"><?=$newCount?> new notification<?=$newCount===1?'':'s'?></span><?php if($newCount): ?><form method="post" class="d-inline"><?=csrf_field()?><input type="hidden" name="action" value="mark_all_seen"><button class="btn btn-outline-primary btn-sm" title="Mark every notification as seen">Mark all as seen</button></form><?php endif; ?></div></div>
+    <div class="d-flex justify-content-between align-items-center mb-3"><div><h1 class="h3 mb-0">Notifications</h1><div class="muted">Everything that happened on the tasks you are assigned to. Opening this page marks everything seen - the red flag disappears until new ones arrive; clicking a single one opens the task it came from, and the button clears them all in one click.</div></div><div class="d-flex gap-2 align-items-center"><span class="badge text-bg-danger fs-6"><?=$newCount?> new notification<?=$newCount===1?'':'s'?></span><?php if($newCount): ?><form method="post" class="d-inline"><?=csrf_field()?><input type="hidden" name="action" value="mark_all_seen"><button class="btn btn-outline-primary btn-sm" title="Mark every notification as seen">Mark all as seen</button></form><?php endif; ?></div></div>
     <div class="card p-4"><h2 class="h5">Stream</h2><?php foreach($items as $n): ?><div class="border-bottom py-2<?=$n['is_seen']?'':' fw-semibold'?>"><div><a class="fw-semibold text-decoration-none" href="?page=notification_seen&id=<?=$n['id']?>">#<?=$n['task_id']?> · <?=h($n['task_title'])?></a> <strong><?=h($n['event'])?></strong> <span class="small muted"><?=h($n['created_at'])?></span><?php if(!$n['is_seen']): ?> <span class="badge text-bg-danger">new</span><?php endif; ?></div></div><?php endforeach; if(!$items): ?><div class="small muted">No notifications yet. Assign yourself to a task and follow its history.</div><?php endif; ?></div>
     <?php render_footer(); exit;
 }

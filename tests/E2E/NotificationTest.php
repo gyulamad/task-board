@@ -83,11 +83,14 @@ final class NotificationTest extends E2eTestCase
             $this->assertTrue($stream->contains('<a class="fw-semibold text-decoration-none" href="?page=notification_seen&id=' . $row['id'] . '">#' . $id . ' · Watched task</a>'));
         }
         $this->assertTrue($stream->contains('Comment added'));
+        // The rows still render their "new" markers on the consuming load
+        // (the list is read before the mark-seen), but the flag itself is
+        // gone on this very page (#79 point 2)...
         $this->assertSame(2, substr_count($stream->body, '<span class="badge text-bg-danger">new</span>'));
-        // Opening the stream alone marks nothing seen (#73): both stay unseen
-        // and the navbar badge keeps counting them.
-        $this->assertSame(2, $this->unseenCount($this->userId('wanda')));
-        $this->assertTrue($wanda->get('/?')->contains('title="New notifications"'));
+        $this->assertFalse($stream->contains('badge text-bg-danger" title="New notifications"'));
+        // ...and everywhere else from now on, until new unseen ones arrive.
+        $this->assertSame(0, $this->unseenCount($this->userId('wanda')));
+        $this->assertFalse($wanda->get('/?')->contains('title="New notifications"'));
     }
 
     public function test_clicking_a_notification_marks_only_it_seen_and_opens_the_task(): void
@@ -106,11 +109,9 @@ final class NotificationTest extends E2eTestCase
         $this->assertSame('?page=task&id=' . $id, (string)$response->header('location'));
         $this->assertSame(1, $this->unseenCount($this->userId('wendy')), 'Only the clicked notification becomes seen.');
 
-        // The stream now carries one remaining "new" marker and the navbar
-        // badge counts exactly the remainder.
-        $stream = $wendy->get('/?page=notifications');
-        $this->assertSame(1, substr_count($stream->body, '<span class="badge text-bg-danger">new</span>'));
-        $this->assertTrue($stream->contains('title="New notifications">1</span>'));
+        // The navbar badge counts exactly the remainder on pages that do not
+        // consume the stream.
+        $this->assertTrue($wendy->get('/?')->contains('title="New notifications">1</span>'));
 
         // Clicking the last unseen one clears the badge completely...
         $response = $wendy->get('/?page=notification_seen&id=' . $rows[1]['id']);
@@ -168,6 +169,24 @@ final class NotificationTest extends E2eTestCase
         $this->assertSame(0, substr_count($stream->body, '<span class="badge text-bg-danger">new</span>'));
         $this->assertFalse($nora->get('/?')->contains('title="New notifications"'));
         $this->assertStringNotContainsString('mark_all_seen', $stream->body, 'Nothing new, so the button hides again.');
+    }
+
+    public function test_opening_the_stream_clears_the_flag_until_new_ones_arrive(): void
+    {
+        $admin = $this->adminSession();
+        $petra = $this->createRegularUser($admin, 'petra');
+        $id = $admin->createTask('Flag task', ['assignees' => [$this->userId('petra')]]);
+
+        // Opening the stream consumes everything: the navbar flag disappears
+        // on the very page that did it (#79 point 2)...
+        $stream = $petra->get('/?page=notifications');
+        $this->assertSame(0, $this->unseenCount($this->userId('petra')));
+        $this->assertFalse($stream->contains('badge text-bg-danger" title="New notifications"'), 'The flag is gone on the page that consumed the notifications.');
+        $this->assertFalse($petra->get('/?')->contains('title="New notifications"'));
+
+        // ...and comes back the moment something new arrives.
+        $admin->post('/?page=task&id=' . $id, ['action' => 'comment', 'task_id' => (string)$id, 'body' => 'fresh ping']);
+        $this->assertTrue($petra->get('/?')->contains('title="New notifications">1</span>'));
     }
 
     public function test_the_mark_all_button_is_hidden_when_nothing_is_new(): void

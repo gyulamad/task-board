@@ -478,6 +478,299 @@ function tb_update_migration_status(PDO $pdo, string $dir): ?array {
     return $rows;
 }
 
+// ---- Upgrade packs (#59/#69) ---------------------------------------------------------------
+// A pack upgrades an instance without GitHub: one ZIP holding the patched or
+// new application files under files/, an optional deletions.json (files to
+// remove), an optional migration.sql (stored version-marked in migrations/
+// and applied through the #68 migration engine, so it is recorded once and
+// never runs twice) and a pack.json whose previous_version must equal the
+// running instance's recorded version hash before the pack is accepted. The
+// engine lives in updater.php on purpose (same reason as the #49 backup and
+// the #68 upload): the updater only ever replaces the allowlisted files, so
+// pack code placed anywhere else could never reach installations that update
+// through this page.
+
+const TASK_BOARD_PACK_MAX_BYTES = 20 * 1024 * 1024; // same archive limit as the GitHub update install
+const TASK_BOARD_PACK_PROTECTED = ['config.php', 'index.php', 'updater.php', 'src/helpers.php'];
+
+/** True when $relative is a path an upgrade pack may add, modify or delete (#59/#69). */
+function tb_pack_path_is_allowed(string $relative): bool {
+    if ($relative === '' || str_starts_with($relative, '/') || str_contains($relative, '\\')) return false;
+    if (preg_match('#(^|/)\.\.(/|$)#', $relative)) return false;
+    if (in_array($relative, TASK_BOARD_PACK_PROTECTED, true)) return false;
+    return $relative !== 'uploads' && !str_starts_with($relative, 'uploads/');
+}
+
+/** The recorded version hash of this installation (version.json "sha"), or null when nothing is recorded (#59/#69). */
+function tb_pack_current_version_hash(?string $appDir = null): ?string {
+    $path = ($appDir ?? __DIR__) . '/version.json';
+    if (!is_file($path)) return null;
+    $installed = json_decode((string)file_get_contents($path), true);
+    $sha = is_array($installed) ? (string)($installed['sha'] ?? '') : '';
+    return $sha !== '' ? $sha : null;
+}
+
+/**
+ * Reads and validates an uploaded upgrade pack (#59/#69). Returns
+ * [previous_version, new_version, files => [relative => content],
+ * deletions => string[], migration => ?string]. Every path is checked with
+ * tb_pack_path_is_allowed(), so a pack cannot touch config.php, uploads/ or
+ * escape the application directory.
+ */
+function tb_pack_read(string $zipData): array {
+    if (!class_exists(ZipArchive::class)) throw new RuntimeException('The PHP ZIP extension (ZipArchive) is required for upgrade packs.');
+    if (strlen($zipData) > TASK_BOARD_PACK_MAX_BYTES) throw new RuntimeException('The upgrade pack exceeds the 20 MB limit.');
+    $tmp = tempnam(sys_get_temp_dir(), 'tb-pack-');
+    if ($tmp === false || file_put_contents($tmp, $zipData, LOCK_EX) === false) throw new RuntimeException('Could not prepare the upgrade pack.');
+    $zip = new ZipArchive();
+    $opened = false;
+    try {
+        if ($zip->open($tmp) !== true) throw new RuntimeException('The upgrade pack is not a valid ZIP archive.');
+        $opened = true;
+        $entries = [];
+        for ($i = 0; $i < $zip->numFiles; $i++) {
+            $stat = $zip->statIndex($i);
+            if (!$stat || !isset($stat['name'])) continue;
+            $name = str_replace('\\', '/', (string)$stat['name']);
+            $name = implode('/', array_filter(explode('/', trim($name, '/')), fn(string $part): bool => $part !== ''));
+            if ($name === '') continue;
+            if (str_starts_with($name, '/') || preg_match('#(^|/)\.\.(/|$)#', $name)) throw new RuntimeException('The upgrade pack contains an unsafe path.');
+            $opsys = 0; $attributes = 0;
+            if ($zip->getExternalAttributesIndex($i, $opsys, $attributes) && $opsys === ZipArchive::OPSYS_UNIX) {
+                $mode = ($attributes >> 16) & 0170000;
+                if ($mode === 0120000) throw new RuntimeException('The upgrade pack contains a symbolic link.');
+            }
+            if ((int)$stat['size'] > 5 * 1024 * 1024) throw new RuntimeException('An upgrade pack file exceeds the 5 MB safety limit.');
+            $stream = $zip->getStream($stat['name']);
+            if (!$stream) throw new RuntimeException('Could not read an upgrade pack file.');
+            $content = stream_get_contents($stream, 5 * 1024 * 1024 + 1);
+            fclose($stream);
+            if ($content === false || strlen($content) > 5 * 1024 * 1024) throw new RuntimeException('An upgrade pack file exceeds the safety limit.');
+            $entries[$name] = $content;
+        }
+        // The entries may sit at the archive root or inside one top directory
+        // (the wrapper zip tools and GitHub archives produce). When pack.json
+        // is not at the root but every entry shares one top directory, strip
+        // that wrapper; anything else is an unexpected layout.
+        if (!isset($entries['pack.json'])) {
+            $roots = [];
+            foreach (array_keys($entries) as $entryName) {
+                $parts = explode('/', $entryName, 2);
+                if (count($parts) === 2) $roots[$parts[0]] = true;
+            }
+            if (count($roots) === 1) {
+                $root = (string)array_key_first($roots);
+                $stripped = [];
+                foreach ($entries as $entryName => $content) {
+                    if (!str_starts_with($entryName, $root . '/')) throw new RuntimeException('The upgrade pack has an unexpected directory layout.');
+                    $stripped[substr($entryName, strlen($root) + 1)] = $content;
+                }
+                $entries = $stripped;
+            }
+        }
+        if (!isset($entries['pack.json'])) throw new RuntimeException('The upgrade pack is missing its pack.json metadata (expected pack.json with previous_version and new_version).');
+        $meta = null;
+        $deletions = [];
+        $migration = null;
+        $files = [];
+        foreach ($entries as $name => $content) {
+            if ($name === 'pack.json') {
+                $meta = json_decode($content, true);
+                if (!is_array($meta)) throw new RuntimeException('The pack.json of the upgrade pack is not valid JSON.');
+            } elseif ($name === 'deletions.json') {
+                $deletions = json_decode($content, true);
+                if (!is_array($deletions)) throw new RuntimeException('The deletions.json of the upgrade pack is not valid JSON.');
+            } elseif ($name === 'migration.sql') {
+                $migration = $content;
+            } elseif (str_starts_with($name, 'files/')) {
+                $relative = substr($name, strlen('files/'));
+                if ($relative === '') continue;
+                if ($relative === 'pack.json' || $relative === 'deletions.json' || $relative === 'migration.sql' || str_starts_with($relative, 'files/')) {
+                    throw new RuntimeException('The upgrade pack file name ' . $relative . ' is reserved by the pack format.');
+                }
+                if (!tb_pack_path_is_allowed($relative)) throw new RuntimeException('The upgrade pack file ' . $relative . ' is outside the allowed application paths.');
+                $files[$relative] = $content;
+            }
+            // anything else in the archive is ignored, like unknown GitHub archive entries
+        }
+        if (!is_array($meta)) throw new RuntimeException('The pack.json of the upgrade pack is not valid JSON.');
+        $previous = trim((string)($meta['previous_version'] ?? ''));
+        $new = trim((string)($meta['new_version'] ?? ''));
+        foreach ([$previous, $new] as $version) {
+            if ($version === '' || !preg_match('/^[A-Za-z0-9._-]{1,128}$/', $version)) throw new RuntimeException('The pack.json must carry a previous_version and a new_version hash.');
+        }
+        $cleanDeletions = [];
+        foreach ((array)$deletions as $entry) {
+            $relative = ltrim(str_replace('\\', '/', (string)$entry), '/');
+            if ($relative === '') continue;
+            if (!tb_pack_path_is_allowed($relative)) throw new RuntimeException('The upgrade pack deletion ' . $relative . ' is outside the allowed application paths.');
+            $cleanDeletions[] = $relative;
+        }
+        if (!$files && !$cleanDeletions && $migration === null) throw new RuntimeException('The upgrade pack is empty: it carries no files, deletions or migration.');
+        return ['previous_version' => $previous, 'new_version' => $new, 'files' => $files, 'deletions' => array_values(array_unique($cleanDeletions)), 'migration' => $migration];
+    } finally {
+        if ($opened) $zip->close();
+        @unlink($tmp);
+    }
+}
+
+/**
+ * Stores the pack's migration.sql in migrations/ under the #68 convention
+ * (<14-digit-UTC-stamp>-upgrade_pack.sql) so the engine scans, applies and
+ * records it exactly like an uploaded script. The stamp is what the runner
+ * keys on, so a name conflict (two packs within the same second) waits for
+ * the next second instead of creating two files with the same version.
+ */
+function tb_pack_store_migration(string $sql, string $migDir): string {
+    if (!is_dir($migDir) && !@mkdir($migDir, 0775, true) && !is_dir($migDir)) {
+        throw new RuntimeException('Could not create the migrations directory for the pack migration.');
+    }
+    $target = null;
+    for ($attempt = 0; $attempt < 3; $attempt++) {
+        $candidate = $migDir . '/' . gmdate('YmdHis') . '-upgrade_pack.sql';
+        if (!file_exists($candidate)) {
+            $target = $candidate;
+            break;
+        }
+        if ($attempt < 2) sleep(1);
+    }
+    if ($target === null) throw new RuntimeException('Could not reserve a migration file name in migrations/.');
+    if (file_put_contents($target, $sql, LOCK_EX) === false) {
+        throw new RuntimeException('Could not store the pack migration in migrations/.');
+    }
+    return $target;
+}
+
+/**
+ * Applies a validated upgrade pack (#59/#69): backs up everything it is about
+ * to change, writes the pack files, deletes the listed files, stores the pack
+ * migration in migrations/ and applies pending migrations through the #68
+ * engine, then records the pack's new_version in version.json. Any failure
+ * rolls the file changes back where possible (and removes a stored migration
+ * that never applied, so it cannot auto-apply on a later request against
+ * rolled-back code). Returns the report parts for the page message.
+ */
+function tb_pack_apply(PDO $pdo, array $pack, ?string $appDir = null): array {
+    $appDir = $appDir ?? __DIR__;
+    $current = tb_pack_current_version_hash($appDir);
+    if ($current === null) {
+        throw new RuntimeException('This instance has no recorded version hash (version.json is missing or empty), so the pack cannot verify it upgrades the right installation. Install an update once, or record the current hash in version.json.');
+    }
+    if (!hash_equals($current, (string)$pack['previous_version'])) {
+        throw new RuntimeException('The pack expects to upgrade an instance at version "' . $pack['previous_version'] . '", but this installation is at "' . $current . '". The pack does not fit.');
+    }
+    $backupDir = sys_get_temp_dir() . '/task-board-pack-backup-' . bin2hex(random_bytes(12));
+    if (!mkdir($backupDir, 0700)) throw new RuntimeException('Could not create a private pack backup.');
+    $backedUp = [];
+    $written = [];
+    $deleted = [];
+    $migrationFile = null;
+    $migrationApplied = false;
+    try {
+        foreach ((array)$pack['files'] as $relative => $content) {
+            if (!tb_pack_path_is_allowed((string)$relative)) throw new RuntimeException('The upgrade pack file ' . $relative . ' is outside the allowed application paths.');
+            $target = $appDir . '/' . $relative;
+            $parent = dirname($target);
+            if (!is_dir($parent) && !@mkdir($parent, 0775, true) && !is_dir($parent)) throw new RuntimeException('Could not create the directory needed for ' . $relative . '.');
+            if (is_link($target)) throw new RuntimeException('A symbolic link target was rejected.');
+            if (is_file($target)) {
+                $backup = $backupDir . '/' . str_replace('/', '__', (string)$relative);
+                if (!copy($target, $backup)) throw new RuntimeException('Could not back up ' . $relative . '.');
+                $backedUp[(string)$relative] = $backup;
+            } else {
+                $backedUp[(string)$relative] = null;
+            }
+        }
+        foreach ((array)$pack['deletions'] as $relative) {
+            if (!tb_pack_path_is_allowed((string)$relative)) throw new RuntimeException('The upgrade pack deletion ' . $relative . ' is outside the allowed application paths.');
+            $target = $appDir . '/' . $relative;
+            if (is_link($target)) throw new RuntimeException('A symbolic link target was rejected.');
+            if (is_file($target)) {
+                $backup = $backupDir . '/' . str_replace('/', '__', (string)$relative);
+                if (!copy($target, $backup)) throw new RuntimeException('Could not back up ' . $relative . '.');
+                $backedUp[(string)$relative] = $backup;
+            }
+        }
+        // Files first, then deletions, then the migration: a pack that swaps
+        // application code and migrates the schema lands completely or not at
+        // all (the migration keeps its own record in the migrations table).
+        foreach ((array)$pack['files'] as $relative => $content) {
+            $target = $appDir . '/' . $relative;
+            $tmp = tempnam(dirname($target), '.tb-pack-');
+            if ($tmp === false || file_put_contents($tmp, $content, LOCK_EX) !== strlen($content)) throw new RuntimeException('Could not write ' . $relative . '.');
+            $mode = is_file($target) ? (fileperms($target) & 0777) : 0644;
+            @chmod($tmp, $mode);
+            if (!rename($tmp, $target)) { @unlink($tmp); throw new RuntimeException('Could not replace ' . $relative . '.'); }
+            $written[] = (string)$relative;
+        }
+        foreach ((array)$pack['deletions'] as $relative) {
+            $target = $appDir . '/' . $relative;
+            if (is_file($target) && !@unlink($target)) throw new RuntimeException('Could not delete ' . $relative . '.');
+            $deleted[] = (string)$relative;
+        }
+        if ((string)($pack['migration'] ?? '') !== '') {
+            $migrationFile = tb_pack_store_migration((string)$pack['migration'], $appDir . '/migrations');
+        }
+        $migrations = tb_apply_pending_migrations($pdo, $appDir . '/migrations');
+        // 'applied' holds the recorded version stamps; ours is the 14-digit
+        // stamp that leads the stored file name.
+        $migrationApplied = $migrationFile !== null
+            && in_array(substr(basename($migrationFile), 0, 14), $migrations['applied'], true);
+        // The migration engine reports failures instead of throwing; a pack
+        // whose migration fails is an incomplete upgrade, so fail the pack
+        // (the failed migration stays unrecorded and the files roll back).
+        if (!empty($migrations['failed'])) {
+            throw new RuntimeException('The migration run failed for ' . implode(', ', array_keys($migrations['failed'])) . ': ' . (string)reset($migrations['failed']));
+        }
+        // The pack's new_version becomes the recorded hash, so the next pack
+        // (or GitHub update) verifies against what this pack produced.
+        $installed = is_file($appDir . '/version.json') ? (json_decode((string)file_get_contents($appDir . '/version.json'), true) ?: []) : [];
+        $installed = ['source' => 'upgrade-pack', 'ref' => 'pack', 'sha' => (string)$pack['new_version'], 'installed_at' => gmdate('c')] + $installed;
+        $tmpJson = tempnam($appDir, '.tb-version-');
+        if ($tmpJson === false || file_put_contents($tmpJson, json_encode($installed, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES) . "\n", LOCK_EX) === false) throw new RuntimeException('Could not record the new version.');
+        if (!rename($tmpJson, $appDir . '/version.json')) throw new RuntimeException('Could not record the new version.');
+        return [
+            'files_changed' => $written,
+            'files_deleted' => $deleted,
+            'migration_file' => $migrationFile,
+            'migrations' => $migrations,
+            'new_version' => (string)$pack['new_version'],
+        ];
+    } catch (Throwable $e) {
+        // A stored migration that never applied must not linger: with the file
+        // changes rolled back it would auto-apply on the first next request
+        // against the rolled-back code. An applied one stays recorded.
+        if ($migrationFile !== null && !$migrationApplied) @unlink($migrationFile);
+        foreach (array_reverse($written) as $relative) {
+            $target = $appDir . '/' . $relative;
+            $backup = $backedUp[$relative] ?? null;
+            if ($backup && is_file($backup)) @copy($backup, $target);
+            elseif (is_file($target)) @unlink($target);
+        }
+        foreach (array_reverse($deleted) as $relative) {
+            $backup = $backedUp[$relative] ?? null;
+            if ($backup && is_file($backup)) @copy($backup, $appDir . '/' . $relative);
+        }
+        throw new RuntimeException($e->getMessage() . ' The file changes of this pack were rolled back where possible; check the Software updates page for pending migrations.');
+    }
+}
+
+/** One-line human summary of a tb_pack_apply() result (#59/#69). */
+function tb_pack_result_text(array $report): string {
+    $parts = [];
+    if ($report['files_changed']) $parts[] = count($report['files_changed']) . ' file' . (count($report['files_changed']) === 1 ? '' : 's') . ' written (' . implode(', ', $report['files_changed']) . ')';
+    if ($report['files_deleted']) $parts[] = count($report['files_deleted']) . ' file' . (count($report['files_deleted']) === 1 ? '' : 's') . ' deleted (' . implode(', ', $report['files_deleted']) . ')';
+    if ($report['migration_file'] !== null) $parts[] = 'pack migration stored as ' . basename((string)$report['migration_file']);
+    $migrations = $report['migrations'] ?? ['applied' => [], 'failed' => []];
+    if (!empty($migrations['applied'])) {
+        $parts[] = 'migrations applied: ' . implode(', ', $migrations['applied']);
+    } elseif (empty($migrations['failed'])) {
+        $parts[] = 'no pending migrations were found';
+    }
+    $parts[] = 'instance is now at version "' . $report['new_version'] . '"';
+    return implode('; ', $parts) . '.';
+}
+
 function task_board_update_page(PDO $pdo, array $config): void {
     $error = '';
     $message = '';
@@ -542,6 +835,23 @@ function task_board_update_page(PDO $pdo, array $config): void {
                 $error = $e->getMessage();
             }
         }
+    } elseif ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['action'] ?? '') === 'apply_pack') {
+        // Runs pack files and SQL against this installation, so it re-checks
+        // the administrator password like the install and upload actions (#59/#69).
+        if (!tb_update_verify_admin_password($pdo, (string)($_POST['current_password'] ?? ''))) {
+            $error = 'Your current administrator password was not accepted.';
+        } else {
+            try {
+                if (!isset($_FILES['pack_zip']) || !is_array($_FILES['pack_zip']) || (int)($_FILES['pack_zip']['error'] ?? UPLOAD_ERR_NO_FILE) !== UPLOAD_ERR_OK) {
+                    throw new RuntimeException('Choose an upgrade pack ZIP to apply.');
+                }
+                $pack = tb_pack_read((string)file_get_contents((string)$_FILES['pack_zip']['tmp_name']));
+                $packReport = tb_pack_apply($pdo, $pack);
+                $message = 'Upgrade pack applied: ' . tb_pack_result_text($packReport);
+            } catch (Throwable $e) {
+                $error = $e->getMessage();
+            }
+        }
     } elseif ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['action'] ?? '') === 'check_update') {
         try {
             $sourceInfo = tb_update_source($selectedType, $selectedBranch);
@@ -593,6 +903,15 @@ function task_board_update_page(PDO $pdo, array $config): void {
             <div class="mb-3"><label class="form-label" for="migration_password">Current administrator password</label><input class="form-control" type="password" id="migration_password" name="current_password" autocomplete="current-password" required></div>
             <button class="btn btn-outline-primary">Upload and apply migration</button>
         </form>
+        <hr><h3 class="h6">Apply an upgrade pack</h3>
+        <p class="small muted">A pack upgrades this instance without GitHub. The ZIP carries <span class="font-monospace">pack.json</span> (<span class="font-monospace">previous_version</span> = the hash this instance must be at, <span class="font-monospace">new_version</span> = the hash it becomes), the patched or new application files under <span class="font-monospace">files/</span>, an optional <span class="font-monospace">deletions.json</span> (array of files to remove) and an optional <span class="font-monospace">migration.sql</span> that runs through the same migration engine the upload above uses (#68). The pack is accepted only when <span class="font-monospace">previous_version</span> matches this installation's recorded hash; <span class="font-monospace">config.php</span>, the boot files and <span class="font-monospace">uploads/</span> are untouchable, and everything the pack changes is backed up and rolled back when the pack fails.</p>
+        <form method="post" enctype="multipart/form-data" class="row g-2 align-items-end" onsubmit="return confirm('Apply this upgrade pack now? Make sure you have a database backup.')"><?=csrf_field()?>
+            <input type="hidden" name="action" value="apply_pack">
+            <div class="col-md-5"><label class="form-label" for="pack_zip">Upgrade pack ZIP (max 20 MB)</label><input class="form-control" type="file" id="pack_zip" name="pack_zip" accept=".zip" required></div>
+            <div class="col-md-3"><label class="form-label" for="pack_password">Current administrator password</label><input class="form-control" type="password" id="pack_password" name="current_password" autocomplete="current-password" required></div>
+            <div class="col-md-2"><button class="btn btn-outline-primary">Validate and apply pack</button></div>
+        </form>
+        <p class="small muted mt-2">This installation is at version hash: <span class="font-monospace"><?=h(tb_pack_current_version_hash() ?? 'not recorded (version.json missing or empty)')?></span></p>
         <?php if ($migrationRows !== null): ?>
             <h3 class="h6">Migration state</h3>
             <div class="table-responsive"><table class="table table-sm table-bordered align-middle mb-3"><thead><tr><th scope="col">Version</th><th scope="col">File</th><th scope="col">Applied</th></tr></thead><tbody>

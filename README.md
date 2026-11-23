@@ -21,6 +21,7 @@ A lightweight multi-user task and message board for PHP 8.2+ and MySQL/MariaDB s
 - Kanban board page (#43): one column per task status with every non-archived task in its status column; the task list's filter card and saved searches sit on top, shared as one implementation (DRY) so filters and searches behave the same on both views
 - Clone tasks (#46): a Clone button on the task edit page opens the create page prefilled from the source task (title, description, status, complexity, parent, project, schedule targets and assignees); modifying and saving creates a brand-new task, cancelling leaves the original untouched
 - Complexity estimation and dependency waterflow chart (#44): every task carries a complexity (default 1, edited on the task form); the Waterflow page arranges all non-archived tasks into dependency levels from their "Depends on" links and sizes each task's block width by its complexity relative to the widest task in view, with the shared filter card and saved searches on top
+- Settings page (#55): a personal Settings page in the navbar, currently showing an under-development notice — it is the base the future preference screens will build on
 - Task priority (#45): every task carries a priority number (default 1, edited on the task form, shown on the task page) and the task list gained a sortable Priority column so the biggest numbers sort to the top
 - Comments, attachments, history and task relationships
 - Know-hows knowledge base (#53): a Documents page with CRUD for every process, rule book and other know-how worth writing down — each document can carry comments and attachments of its own (the same upload allowlist, downloads and deletion rules as the tasks), with a title/content search, and editing or deleting reserved to the document's creator or an administrator
@@ -244,6 +245,13 @@ that shows what is active. The collapse only hides the inputs visually; they
 stay in the DOM and keep submitting, and the two forms carry each other's
 current values as hidden inputs, so a plain search keeps the active dropdown
 filters and the Filter button keeps the typed search text.
+
+## Settings page (#55)
+The navbar's **Settings** entry opens the personal settings page
+(`?page=settings`). It currently shows an under-development notice — the page
+exists so the future preference screens (profile details, notification and
+display preferences) have a home to grow into. Only signed-in users can reach
+it, like every other page.
 
 ## Task archive
 Deleting a task never removes it right away. The **Archive** button on the task page,

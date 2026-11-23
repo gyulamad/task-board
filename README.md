@@ -17,6 +17,7 @@ A lightweight multi-user task and message board for PHP 8.2+ and MySQL/MariaDB s
 - Saved searches on the task list: a Save search button stores the current list filters under a name and the Saved searches dropdown re-opens them; the searches are per user and travel as plain URLs
 - Kanban board page (#43): one column per task status with every non-archived task in its status column; the task list's filter card and saved searches sit on top, shared as one implementation (DRY) so filters and searches behave the same on both views
 - Complexity estimation and dependency waterflow chart (#44): every task carries a complexity (default 1, edited on the task form); the Waterflow page arranges all non-archived tasks into dependency levels from their "Depends on" links and sizes each task's block width by its complexity relative to the widest task in view, with the shared filter card and saved searches on top
+- Task priority (#45): every task carries a priority number (default 1, edited on the task form, shown on the task page) and the task list gained a sortable Priority column so the biggest numbers sort to the top
 - Comments, attachments, history and task relationships
 - Task and project administration split into focused pages (#42): the Administration page is a compact hub linking to Users (create, edit, delete accounts) and Task statuses (rename, reorder, completion flag, colour, delete), with the uploads maintenance action and the activity periods link kept on the hub
 - Admin can add status labels and mark completion statuses; existing statuses can be renamed, reordered, given an optional #RRGGBB colour and deleted on the Task statuses page (a status still used by tasks and the last remaining status cannot be deleted). The colour renders on every status badge of the board — task list, task/project/archive pages — with an automatically readable text colour; statuses without one keep the built-in badge look
@@ -166,6 +167,17 @@ The filter card on top is the task list's shared component (DRY, like the kanban
 board): search box, assignee/status/parent/project dropdowns and saved searches
 all behave exactly like on the task list, and a search saved from the chart
 returns to the chart while the same saved search still opens on the task list.
+
+## Task priority (#45)
+Every task carries a **priority** — an ordering weight, a whole number from 1 to
+1000, default 1. It is edited on the task form next to the complexity and shown
+on the task page; the task list has a sortable **Priority** column (the same
+allowlisted sort mechanics as the other columns, so `?sort=priority&dir=desc`
+works and travels inside saved searches). Fresh installs get `tasks.priority`
+from `schema.sql`; existing boards are upgraded automatically on the first
+request after deployment (the idempotent `ALTER TABLE tasks ADD COLUMN priority`
+in `tb_migrate_schema()`). The number itself carries no behaviour — it is a
+sorting/visibility aid, not an escalation rule.
 
 ## Task archive
 Deleting a task never removes it right away. The **Archive** button on the task page,

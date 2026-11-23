@@ -49,6 +49,8 @@ CREATE TABLE tasks (
     -- Complexity estimation (#44): how big a task is, default 1. Drives the
     -- block width of the dependency waterflow chart page.
     complexity INT UNSIGNED NOT NULL DEFAULT 1,
+    -- Priority (#45): ordering weight of a task, default 1, whole numbers.
+    priority INT UNSIGNED NOT NULL DEFAULT 1,
     parent_id INT UNSIGNED NULL,
     schedule_period VARCHAR(20) NULL DEFAULT NULL,
     -- Scheduler targets (#31): the status and assignee list the cron job sets

@@ -942,6 +942,17 @@ function tb_migrate_schema(PDO $pdo): void {
             ? 'ALTER TABLE tasks ADD COLUMN complexity INT UNSIGNED NOT NULL DEFAULT 1 AFTER status_id'
             : 'ALTER TABLE tasks ADD COLUMN complexity INTEGER NOT NULL DEFAULT 1');
     }
+    // Priority (#45): the task list's sortable Priority column and the task
+    // form read tasks.priority unconditionally, so a deployment that lands
+    // without the upgrade SQL adds the column on the first request. Fresh
+    // installs get it from schema.sql. Runs after the complexity ALTER so the
+    // MySQL "AFTER complexity" placement finds its anchor column even on a
+    // table that needed both upgrades in the same request.
+    if (!in_array('priority', $taskColumns, true)) {
+        $pdo->exec($isMysql
+            ? 'ALTER TABLE tasks ADD COLUMN priority INT UNSIGNED NOT NULL DEFAULT 1 AFTER complexity'
+            : 'ALTER TABLE tasks ADD COLUMN priority INTEGER NOT NULL DEFAULT 1');
+    }
     // Scheduler targets (#31): must run after the schedule_period ALTER so the
     // MySQL "AFTER schedule_period" placement finds its anchor column even on
     // a table that needed both upgrades in the same request.

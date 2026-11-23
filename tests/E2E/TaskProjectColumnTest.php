@@ -113,6 +113,7 @@ final class TaskProjectColumnTest extends E2eTestCase
     {
         $admin = $this->adminSession();
         $none = $admin->get('/?page=tasks&q=does-not-exist-anywhere');
-        $this->assertTrue($none->contains('<td colspan="8" class="text-center muted py-4">No tasks found.</td>'));
+        // #45 added the Priority column after Project, so the empty state spans 9 columns now.
+        $this->assertTrue($none->contains('<td colspan="9" class="text-center muted py-4">No tasks found.</td>'));
     }
 }

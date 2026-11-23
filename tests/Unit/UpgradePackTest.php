@@ -80,10 +80,10 @@ final class UpgradePackTest extends TestCase
         $this->assertTrue(tb_pack_path_is_allowed('README.md'));
         $this->assertTrue(tb_pack_path_is_allowed('deep/nested/file.php'));
         $this->assertTrue(tb_pack_path_is_allowed('migrations/20260101120000-shipped.sql'), 'a pack may ship migration scripts');
+        $this->assertTrue(tb_pack_path_is_allowed('index.php'), 'the boot files are modifiable - a pack must carry the same changes a GitHub update does (#70)');
+        $this->assertTrue(tb_pack_path_is_allowed('updater.php'));
+        $this->assertTrue(tb_pack_path_is_allowed('src/helpers.php'));
         $this->assertFalse(tb_pack_path_is_allowed('config.php'), 'credentials stay untouchable');
-        $this->assertFalse(tb_pack_path_is_allowed('index.php'), 'the boot files stay untouchable');
-        $this->assertFalse(tb_pack_path_is_allowed('updater.php'));
-        $this->assertFalse(tb_pack_path_is_allowed('src/helpers.php'));
         $this->assertFalse(tb_pack_path_is_allowed('uploads/a.zip'), 'uploaded files stay untouchable');
         $this->assertFalse(tb_pack_path_is_allowed('uploads'));
         $this->assertFalse(tb_pack_path_is_allowed('../outside.php'), 'no traversal');
@@ -91,6 +91,18 @@ final class UpgradePackTest extends TestCase
         $this->assertFalse(tb_pack_path_is_allowed('/absolute.php'), 'no absolute paths');
         $this->assertFalse(tb_pack_path_is_allowed('back\\slash.php'), 'backslashes are not separators');
         $this->assertFalse(tb_pack_path_is_allowed(''));
+    }
+
+    public function test_deletion_guard(): void
+    {
+        $this->assertTrue(tb_pack_deletion_is_allowed('gone.php'));
+        $this->assertTrue(tb_pack_deletion_is_allowed('src/obsolete.php'));
+        $this->assertTrue(tb_pack_deletion_is_allowed('migrations/20260101120000-obsolete.sql'));
+        $this->assertFalse(tb_pack_deletion_is_allowed('index.php'), 'deleting a boot file would brick the installation');
+        $this->assertFalse(tb_pack_deletion_is_allowed('updater.php'));
+        $this->assertFalse(tb_pack_deletion_is_allowed('src/helpers.php'));
+        $this->assertFalse(tb_pack_deletion_is_allowed('config.php'));
+        $this->assertFalse(tb_pack_deletion_is_allowed('uploads/a.zip'));
     }
 
     public function test_current_version_hash_reads_version_json(): void
@@ -155,7 +167,8 @@ final class UpgradePackTest extends TestCase
         $expect('reserved by the pack format', ['pack.json' => $this->packJson(), 'files/pack.json' => 'confusing']);
         $expect('pack is empty', ['pack.json' => $this->packJson()]);
         $expect('not valid JSON', ['pack.json' => $this->packJson(), 'deletions.json' => 'no json']);
-        $expect('outside the allowed application paths', ['pack.json' => $this->packJson(), 'deletions.json' => json_encode(['uploads/secret.zip'])]);
+        $expect('cannot be deleted', ['pack.json' => $this->packJson(), 'deletions.json' => json_encode(['index.php'])]);
+        $expect('untouchable', ['pack.json' => $this->packJson(), 'deletions.json' => json_encode(['uploads/secret.zip'])]);
     }
 
     public function test_pack_read_rejects_an_invalid_zip(): void

@@ -491,14 +491,30 @@ function tb_update_migration_status(PDO $pdo, string $dir): ?array {
 // through this page.
 
 const TASK_BOARD_PACK_MAX_BYTES = 20 * 1024 * 1024; // same archive limit as the GitHub update install
-const TASK_BOARD_PACK_PROTECTED = ['config.php', 'index.php', 'updater.php', 'src/helpers.php'];
+const TASK_BOARD_PACK_FORBIDDEN_PATHS = ['config.php'];
+const TASK_BOARD_PACK_UNDELETABLE = ['index.php', 'updater.php', 'src/helpers.php'];
 
-/** True when $relative is a path an upgrade pack may add, modify or delete (#59/#69). */
+/**
+ * True when $relative is a path an upgrade pack may add or modify (#59/#69).
+ * config.php (credentials) and uploads/ (instance data) are untouchable; the
+ * boot files ARE modifiable — a pack must be able to deliver the same changes
+ * a GitHub update carries (#70, the generator emits them).
+ */
 function tb_pack_path_is_allowed(string $relative): bool {
     if ($relative === '' || str_starts_with($relative, '/') || str_contains($relative, '\\')) return false;
     if (preg_match('#(^|/)\.\.(/|$)#', $relative)) return false;
-    if (in_array($relative, TASK_BOARD_PACK_PROTECTED, true)) return false;
+    if (in_array($relative, TASK_BOARD_PACK_FORBIDDEN_PATHS, true)) return false;
     return $relative !== 'uploads' && !str_starts_with($relative, 'uploads/');
+}
+
+/**
+ * True when $relative is a path an upgrade pack may delete (#59/#69): a pack
+ * can replace the boot files, but deleting index.php, updater.php or
+ * src/helpers.php would brick the installation, so deletions of them are
+ * refused while everything else follows the same rules as file changes.
+ */
+function tb_pack_deletion_is_allowed(string $relative): bool {
+    return tb_pack_path_is_allowed($relative) && !in_array($relative, TASK_BOARD_PACK_UNDELETABLE, true);
 }
 
 /** The recorded version hash of this installation (version.json "sha"), or null when nothing is recorded (#59/#69). */
@@ -603,7 +619,7 @@ function tb_pack_read(string $zipData): array {
         foreach ((array)$deletions as $entry) {
             $relative = ltrim(str_replace('\\', '/', (string)$entry), '/');
             if ($relative === '') continue;
-            if (!tb_pack_path_is_allowed($relative)) throw new RuntimeException('The upgrade pack deletion ' . $relative . ' is outside the allowed application paths.');
+            if (!tb_pack_deletion_is_allowed($relative)) throw new RuntimeException('The upgrade pack deletion ' . $relative . ' is not allowed: uploads/ and config.php are untouchable and the boot files cannot be deleted.');
             $cleanDeletions[] = $relative;
         }
         if (!$files && !$cleanDeletions && $migration === null) throw new RuntimeException('The upgrade pack is empty: it carries no files, deletions or migration.');
@@ -682,7 +698,7 @@ function tb_pack_apply(PDO $pdo, array $pack, ?string $appDir = null): array {
             }
         }
         foreach ((array)$pack['deletions'] as $relative) {
-            if (!tb_pack_path_is_allowed((string)$relative)) throw new RuntimeException('The upgrade pack deletion ' . $relative . ' is outside the allowed application paths.');
+            if (!tb_pack_deletion_is_allowed((string)$relative)) throw new RuntimeException('The upgrade pack deletion ' . $relative . ' is not allowed: uploads/ and config.php are untouchable and the boot files cannot be deleted.');
             $target = $appDir . '/' . $relative;
             if (is_link($target)) throw new RuntimeException('A symbolic link target was rejected.');
             if (is_file($target)) {
@@ -771,6 +787,190 @@ function tb_pack_result_text(array $report): string {
     return implode('; ', $parts) . '.';
 }
 
+// ---- Upgrade pack generator (#59/#70) ------------------------------------------------------
+// Builds a #69 upgrade pack from this installation: the running tree is
+// diffed against a chosen base version (a GitHub commit SHA or release tag)
+// and everything that differs — changed or added files, files that are gone,
+// and the migrations/ scripts — is emitted as the pack ZIP, so another
+// instance can upgrade to this one without GitHub access. The base fetch
+// reuses the updater's trusted GitHub source; the pack itself carries no
+// credentials (config.php and uploads/ are never included).
+
+const TASK_BOARD_PACK_GENERATOR_SKIP_DIRS = ['.git', 'uploads'];
+const TASK_BOARD_PACK_GENERATOR_SKIP_ROOT = ['config.php', 'version.json', 'pack.json', 'deletions.json', 'migration.sql'];
+const TASK_BOARD_PACK_GENERATOR_SKIP_ROOT_SUFFIXES = ['.zip', '.sqlite'];
+
+/**
+ * The application files an upgrade pack may carry, as [relative => content]
+ * (#59/#70): everything under the application directory except the credentials,
+ * the instance identity (version.json), the uploaded attachments, the pack
+ * format's reserved names and local artifacts.
+ */
+function tb_pack_generator_tree(?string $appDir = null): array {
+    $appDir = $appDir ?? __DIR__;
+    $files = [];
+    $iterator = new RecursiveIteratorIterator(
+        new RecursiveDirectoryIterator($appDir, FilesystemIterator::SKIP_DOTS),
+        RecursiveIteratorIterator::LEAVES_ONLY
+    );
+    foreach ($iterator as $file) {
+        /** @var SplFileInfo $file */
+        if (!$file->isFile() || !$file->isReadable() || is_link($file->getPathname())) continue;
+        $relative = str_replace('\\', '/', substr(str_replace('\\', '/', (string)$file), strlen(rtrim($appDir, '/')) + 1));
+        if ($relative === '' || str_contains($relative, '..')) continue;
+        $parts = explode('/', $relative);
+        if (in_array($parts[0], TASK_BOARD_PACK_GENERATOR_SKIP_DIRS, true)) continue;
+        if (count($parts) === 1) {
+            if (in_array($relative, TASK_BOARD_PACK_GENERATOR_SKIP_ROOT, true)) continue;
+            foreach (TASK_BOARD_PACK_GENERATOR_SKIP_ROOT_SUFFIXES as $suffix) {
+                if (str_ends_with(strtolower($relative), $suffix)) continue 2;
+            }
+        }
+        $content = file_get_contents((string)$file);
+        if ($content === false || strlen($content) > 5 * 1024 * 1024) continue; // oversized local files cannot travel in a pack
+        $files[$relative] = $content;
+    }
+    ksort($files, SORT_STRING);
+    return $files;
+}
+
+/**
+ * Extracts the base version tree from a GitHub archive (#59/#70):
+ * [relative => content] with the single top directory stripped, unsafe
+ * entries and symlinks rejected — the same safety rules the update installer
+ * applies.
+ */
+function tb_pack_generator_base_tree(string $archiveData): array {
+    if (!class_exists(ZipArchive::class)) throw new RuntimeException('The PHP ZIP extension (ZipArchive) is required for the pack generator.');
+    $tmp = tempnam(sys_get_temp_dir(), 'tb-packbase-');
+    if ($tmp === false || file_put_contents($tmp, $archiveData, LOCK_EX) === false) throw new RuntimeException('Could not prepare the base version archive.');
+    $zip = new ZipArchive();
+    $opened = false;
+    try {
+        if ($zip->open($tmp) !== true) throw new RuntimeException('The base version archive is not a valid ZIP archive.');
+        $opened = true;
+        $entries = [];
+        for ($i = 0; $i < $zip->numFiles; $i++) {
+            $stat = $zip->statIndex($i);
+            if (!$stat || !isset($stat['name'])) continue;
+            $name = str_replace('\\', '/', (string)$stat['name']);
+            $name = implode('/', array_filter(explode('/', trim($name, '/')), fn(string $part): bool => $part !== ''));
+            if ($name === '') continue;
+            if (str_starts_with($name, '/') || preg_match('#(^|/)\.\.(/|$)#', $name)) throw new RuntimeException('The base version archive contains an unsafe path.');
+            $opsys = 0; $attributes = 0;
+            if ($zip->getExternalAttributesIndex($i, $opsys, $attributes) && $opsys === ZipArchive::OPSYS_UNIX) {
+                $mode = ($attributes >> 16) & 0170000;
+                if ($mode === 0120000) throw new RuntimeException('The base version archive contains a symbolic link.');
+            }
+            if ((int)$stat['size'] > 5 * 1024 * 1024) throw new RuntimeException('A base version file exceeds the safety limit.');
+            $stream = $zip->getStream($stat['name']);
+            if (!$stream) throw new RuntimeException('Could not read a base version file.');
+            $content = stream_get_contents($stream, 5 * 1024 * 1024 + 1);
+            fclose($stream);
+            if ($content === false) throw new RuntimeException('Could not read a base version file.');
+            $entries[$name] = $content;
+        }
+        // GitHub archives wrap everything in one top directory; strip it.
+        $stripped = [];
+        foreach ($entries as $name => $content) {
+            $slash = strpos($name, '/');
+            if ($slash === false) continue; // a stray root-level entry (docs of the wrapper) is not application code
+            if (!isset($strippedRoot)) $strippedRoot = substr($name, 0, $slash);
+            if (substr($name, 0, $slash) !== $strippedRoot) throw new RuntimeException('The base version archive has an unexpected directory layout.');
+            $stripped[substr($name, $slash + 1)] = $content;
+        }
+        return $stripped;
+    } finally {
+        if ($opened) $zip->close();
+        @unlink($tmp);
+    }
+}
+
+/** The pinned base source for the pack generator: a commit SHA or a release tag (#59/#70). */
+function tb_pack_generator_source(string $ref): array {
+    if (preg_match('/^[a-f0-9]{40}$/i', $ref)) return tb_update_pinned_source('branch', $ref);
+    if (preg_match('/^[A-Za-z0-9._-]{1,100}$/', $ref)) return tb_update_pinned_source('release', $ref);
+    throw new RuntimeException('The base version must be a commit SHA or a release tag.');
+}
+
+/**
+ * Builds the upgrade pack from the running tree vs the base version (#59/#70).
+ * Returns [path, name, previous_version, new_version, added, changed, deleted].
+ * $baseFetcher defaults to the trusted GitHub download and is injectable for
+ * tests.
+ */
+function tb_pack_generate(string $baseRef, ?string $appDir = null, ?callable $baseFetcher = null): array {
+    if (!class_exists(ZipArchive::class)) throw new RuntimeException('The PHP ZIP extension (ZipArchive) is required for the pack generator.');
+    $appDir = $appDir ?? __DIR__;
+    $source = tb_pack_generator_source(trim($baseRef));
+    $newVersion = tb_pack_current_version_hash($appDir);
+    if ($newVersion === null) {
+        throw new RuntimeException('This instance has no recorded version hash (version.json is missing or empty). Install an update once, or record the current hash in version.json — a pack can only be generated when the version it brings is known.');
+    }
+    $fetch = $baseFetcher ?? fn(string $url): string => tb_update_http_get($url, 20 * 1024 * 1024);
+    $base = tb_pack_generator_base_tree((string)$fetch($source['url']));
+    $running = tb_pack_generator_tree($appDir);
+    $added = [];
+    $changed = [];
+    $deleted = [];
+    foreach ($running as $relative => $content) {
+        if (!array_key_exists($relative, $base)) $added[] = $relative;
+        elseif (!hash_equals((string)$base[$relative], (string)$content)) $changed[] = $relative;
+    }
+    foreach (array_keys($base) as $relative) {
+        if (!array_key_exists($relative, $running) && tb_pack_deletion_is_allowed($relative)) $deleted[] = $relative;
+    }
+    if (!$added && !$changed && !$deleted) {
+        throw new RuntimeException('The running tree matches the base version ' . $source['label'] . ' exactly — there is nothing to pack.');
+    }
+    sort($added, SORT_STRING);
+    sort($changed, SORT_STRING);
+    sort($deleted, SORT_STRING);
+    $zipPath = tempnam(sys_get_temp_dir(), 'tb-packgen-');
+    $zip = new ZipArchive();
+    if ($zip->open($zipPath, ZipArchive::CREATE | ZipArchive::OVERWRITE) !== true) throw new RuntimeException('Could not create the upgrade pack archive.');
+    try {
+        $zip->addFromString('pack.json', json_encode(['previous_version' => trim($baseRef), 'new_version' => $newVersion], JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES) . "\n");
+        if ($deleted) $zip->addFromString('deletions.json', json_encode($deleted, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES) . "\n");
+        foreach ($running as $relative => $content) {
+            if (in_array($relative, $added, true) || in_array($relative, $changed, true)) {
+                if ($zip->addFromString('files/' . $relative, $content) !== true) throw new RuntimeException('Could not add ' . $relative . ' to the upgrade pack.');
+            }
+        }
+        if ($zip->close() !== true) throw new RuntimeException('Could not finish the upgrade pack archive.');
+    } catch (Throwable $e) {
+        $zip->close();
+        @unlink($zipPath);
+        throw $e;
+    }
+    return [
+        'path' => $zipPath,
+        'name' => 'upgrade-pack-' . gmdate('Ymd-His') . '.zip',
+        'previous_version' => trim($baseRef),
+        'new_version' => (string)$newVersion,
+        'added' => $added,
+        'changed' => $changed,
+        'deleted' => $deleted,
+    ];
+}
+
+/** Streams the generated pack ZIP as a download and stops the request (#59/#70). */
+function tb_pack_generator_send(array $pack): never {
+    try {
+        while (ob_get_level() > 0) ob_end_clean();
+        $size = filesize($pack['path']);
+        if ($size === false) throw new RuntimeException('Could not read the finished upgrade pack.');
+        header('Content-Type: application/zip');
+        header('Content-Disposition: attachment; filename="' . $pack['name'] . '"');
+        header('Content-Length: ' . $size);
+        header('Cache-Control: no-store, max-age=0');
+        if (!readfile($pack['path'])) throw new RuntimeException('Could not stream the upgrade pack.');
+    } finally {
+        @unlink($pack['path']);
+    }
+    exit;
+}
+
 function task_board_update_page(PDO $pdo, array $config): void {
     $error = '';
     $message = '';
@@ -852,6 +1052,18 @@ function task_board_update_page(PDO $pdo, array $config): void {
                 $error = $e->getMessage();
             }
         }
+    } elseif ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['action'] ?? '') === 'generate_pack') {
+        // The pack carries the application code (minus credentials), so it
+        // re-checks the administrator password like the backup download (#59/#70).
+        if (!tb_update_verify_admin_password($pdo, (string)($_POST['current_password'] ?? ''))) {
+            $error = 'Your current administrator password was not accepted.';
+        } else {
+            try {
+                tb_pack_generator_send(tb_pack_generate((string)($_POST['base_version'] ?? '')));
+            } catch (Throwable $e) {
+                $error = $e->getMessage();
+            }
+        }
     } elseif ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['action'] ?? '') === 'check_update') {
         try {
             $sourceInfo = tb_update_source($selectedType, $selectedBranch);
@@ -904,7 +1116,7 @@ function task_board_update_page(PDO $pdo, array $config): void {
             <button class="btn btn-outline-primary">Upload and apply migration</button>
         </form>
         <hr><h3 class="h6">Apply an upgrade pack</h3>
-        <p class="small muted">A pack upgrades this instance without GitHub. The ZIP carries <span class="font-monospace">pack.json</span> (<span class="font-monospace">previous_version</span> = the hash this instance must be at, <span class="font-monospace">new_version</span> = the hash it becomes), the patched or new application files under <span class="font-monospace">files/</span>, an optional <span class="font-monospace">deletions.json</span> (array of files to remove) and an optional <span class="font-monospace">migration.sql</span> that runs through the same migration engine the upload above uses (#68). The pack is accepted only when <span class="font-monospace">previous_version</span> matches this installation's recorded hash; <span class="font-monospace">config.php</span>, the boot files and <span class="font-monospace">uploads/</span> are untouchable, and everything the pack changes is backed up and rolled back when the pack fails.</p>
+        <p class="small muted">A pack upgrades this instance without GitHub. The ZIP carries <span class="font-monospace">pack.json</span> (<span class="font-monospace">previous_version</span> = the hash this instance must be at, <span class="font-monospace">new_version</span> = the hash it becomes), the patched or new application files under <span class="font-monospace">files/</span>, an optional <span class="font-monospace">deletions.json</span> (array of files to remove) and an optional <span class="font-monospace">migration.sql</span> that runs through the same migration engine the upload above uses (#68). The pack is accepted only when <span class="font-monospace">previous_version</span> matches this installation's recorded hash; <span class="font-monospace">config.php</span> and <span class="font-monospace">uploads/</span> are untouchable, the boot files can be replaced but never deleted, and everything the pack changes is backed up and rolled back when the pack fails.</p>
         <form method="post" enctype="multipart/form-data" class="row g-2 align-items-end" onsubmit="return confirm('Apply this upgrade pack now? Make sure you have a database backup.')"><?=csrf_field()?>
             <input type="hidden" name="action" value="apply_pack">
             <div class="col-md-5"><label class="form-label" for="pack_zip">Upgrade pack ZIP (max 20 MB)</label><input class="form-control" type="file" id="pack_zip" name="pack_zip" accept=".zip" required></div>
@@ -912,6 +1124,14 @@ function task_board_update_page(PDO $pdo, array $config): void {
             <div class="col-md-2"><button class="btn btn-outline-primary">Validate and apply pack</button></div>
         </form>
         <p class="small muted mt-2">This installation is at version hash: <span class="font-monospace"><?=h(tb_pack_current_version_hash() ?? 'not recorded (version.json missing or empty)')?></span></p>
+        <hr><h3 class="h6">Generate an upgrade pack</h3>
+        <p class="small muted">Build a pack from this installation for another instance: the running tree is diffed against a base version (a commit SHA or a release tag of the <a href="https://github.com/gyulamad/task-board" target="_blank" rel="noopener">repository</a>), and the ZIP lands in the exact format the pack apply section above consumes — changed or added files under <span class="font-monospace">files/</span>, a <span class="font-monospace">deletions.json</span> for files that are gone, and the <span class="font-monospace">migrations/</span> scripts travel as files so the receiving instance's migration engine applies only the ones it is missing. The pack never carries <span class="font-monospace">config.php</span> or uploaded files; the receiving instance records the pack's <span class="font-monospace">new_version</span> (this installation's hash) when it applies.</p>
+        <form method="post" class="row g-2 align-items-end" onsubmit="return confirm('Generate the upgrade pack ZIP now? This downloads the base version from GitHub and streams the pack.')"><?=csrf_field()?>
+            <input type="hidden" name="action" value="generate_pack">
+            <div class="col-md-4"><label class="form-label" for="base_version">Base version (commit SHA or release tag)</label><input class="form-control font-monospace" id="base_version" name="base_version" maxlength="100" placeholder="3b0e45f… (full commit SHA) or v1.2.3" required></div>
+            <div class="col-md-3"><label class="form-label" for="generate_password">Current administrator password</label><input class="form-control" type="password" id="generate_password" name="current_password" autocomplete="current-password" required></div>
+            <div class="col-md-2"><button class="btn btn-outline-primary">Generate pack ZIP</button></div>
+        </form>
         <?php if ($migrationRows !== null): ?>
             <h3 class="h6">Migration state</h3>
             <div class="table-responsive"><table class="table table-sm table-bordered align-middle mb-3"><thead><tr><th scope="col">Version</th><th scope="col">File</th><th scope="col">Applied</th></tr></thead><tbody>

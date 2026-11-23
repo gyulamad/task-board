@@ -744,7 +744,36 @@ function render_header(string $title, array $config, string $error = ''): void {
     <?php if (!empty($_SESSION['flash'])): ?><div class="alert alert-success"><?=h($_SESSION['flash'])?></div><?php unset($_SESSION['flash']); endif; ?>
     <?php if($error): ?><div class="alert alert-danger"><?=h($error)?></div><?php endif;
 }
-function render_footer(): void { ?></main><script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script></body></html><?php }
+function render_footer(): void { ?></main><?php if (user()): ?><script>
+(function(){
+// (#64) The red navbar badges are server-rendered at page load; this poller
+// keeps them live while the board stays open: every 10 seconds it reads the
+// tiny ?page=badges JSON feed and swaps the two badges in or out, exactly
+// like a fresh page load would render them. Without JS nothing changes - the
+// badges still render server-side on every full page load.
+var busy=false;
+function apply(kind,title,count){
+    var link=document.querySelector('a.nav-link[href="?page='+kind+'"]');
+    if(!link) return;
+    var badge=link.querySelector('span.badge[title="'+title+'"]');
+    if(count>0){
+        if(!badge){badge=document.createElement('span');badge.className='badge text-bg-danger';badge.title=title;link.appendChild(badge);}
+        badge.textContent=String(count);
+    } else if(badge){ badge.remove(); }
+}
+function tick(){
+    if(busy||document.hidden) return;
+    busy=true;
+    fetch('?page=badges',{credentials:'same-origin'})
+        .then(function(r){return r.ok?r.json():null;})
+        .then(function(d){if(d){apply('messages','New messages',d.messages|0);apply('notifications','New notifications',d.notifications|0);}})
+        .catch(function(){})
+        .then(function(){busy=false;});
+}
+setInterval(tick,10000);
+document.addEventListener('visibilitychange',function(){if(!document.hidden)tick();});
+})();
+</script><?php endif; ?><script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script></body></html><?php }
 
 // ---- Task scheduler (#18, targets #31) ----------------------------------------------------
 // Tasks may opt in to a recurring schedule. An external cron job calls ?page=cronjob
@@ -917,6 +946,22 @@ if ($page==='cronjob') {
 // ---- End task scheduler cron controller ---------------------------------------------------
 
 if (!user() && !in_array($page,['login','install'],true)) redirect('?page=login');
+
+// ---- Live badge counters (#64) -------------------------------------------------------------
+// A tiny JSON feed for the navbar badge poller: the red messages and
+// notifications badges are server-rendered at page load, and this endpoint
+// lets the footer script keep them current between page loads (#64 - the
+// flag should show up without a manual refresh). Read-only, login-guarded
+// like the pages whose badges it reports, and marked no-store so no proxy
+// serves one user's counters to another.
+if ($page==='badges') {
+    header('Content-Type: application/json; charset=utf-8');
+    header('Cache-Control: no-store');
+    exit(json_encode([
+        'messages' => tb_unread_message_count($pdo, (int)user()['id']),
+        'notifications' => tb_unseen_notification_count($pdo, (int)user()['id']),
+    ]));
+}
 
 if ($page==='login') {
     render_header('Sign in',$config,$error); ?>

@@ -21,6 +21,11 @@ function redirect(string $url = '?'): never { header('Location: ' . $url); exit;
 function history(PDO $pdo, int $taskId, string $event, string $details = ''): void {
     $s = $pdo->prepare('INSERT INTO task_history(task_id,user_id,event,details) VALUES(?,?,?,?)');
     $s->execute([$taskId, user()['id'], $event, $details]);
+    // Notifications (#58): every event-level history row lands in the stream
+    // of the task's assignees, minus whoever made the change. The per-field
+    // audit rows written by history_change() deliberately stay silent, so one
+    // task save pings each assignee exactly once.
+    tb_notify_task_assignees($pdo, $taskId, (int)(user()['id'] ?? 0), $event, (int)$pdo->lastInsertId());
 }
 
 /** Full audit (#54): one task_history row per changed field, carrying the
@@ -1291,6 +1296,44 @@ function tb_migrate_schema(PDO $pdo): void {
             )");
         }
     }
+
+    // Notifications (#58): the navbar badge and the notifications page read
+    // the notifications table unconditionally, so a deployment that lands
+    // without the upgrade SQL recreates it on the first request - the same
+    // self-heal discipline the messages table follows (#56). Fresh installs
+    // get it from schema.sql; the DDL mirrors schema.sql.
+    $hasNotifications = $isMysql
+        ? (bool)$pdo->query("SHOW TABLES LIKE 'notifications'")->fetchColumn()
+        : (bool)$pdo->query("SELECT 1 FROM sqlite_master WHERE type='table' AND name='notifications'")->fetchColumn();
+    if (!$hasNotifications) {
+        if ($isMysql) {
+            $pdo->exec("CREATE TABLE notifications (
+                id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+                user_id INT UNSIGNED NOT NULL,
+                task_id INT UNSIGNED NOT NULL,
+                history_id INT UNSIGNED NULL,
+                event VARCHAR(100) NOT NULL,
+                is_seen TINYINT UNSIGNED NOT NULL DEFAULT 0,
+                created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+                FOREIGN KEY (task_id) REFERENCES tasks(id) ON DELETE CASCADE,
+                FOREIGN KEY (history_id) REFERENCES task_history(id) ON DELETE SET NULL
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4");
+        } else {
+            $pdo->exec("CREATE TABLE notifications (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL,
+                task_id INTEGER NOT NULL,
+                history_id INTEGER NULL,
+                event TEXT NOT NULL,
+                is_seen INTEGER NOT NULL DEFAULT 0,
+                created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+                FOREIGN KEY (task_id) REFERENCES tasks(id) ON DELETE CASCADE,
+                FOREIGN KEY (history_id) REFERENCES task_history(id) ON DELETE SET NULL
+            )");
+        }
+    }
 }
 
 /**
@@ -1449,6 +1492,30 @@ function tb_unread_message_count(PDO $pdo, int $userId): int {
     $s = $pdo->prepare('SELECT COUNT(*) FROM messages WHERE recipient_id=? AND is_read=0');
     $s->execute([$userId]);
     return (int)$s->fetchColumn();
+}
+
+/** Notifications (#58): how many unseen notifications the signed-in user has.
+ * Drives the red badge next to the navbar's Notifications link and the count
+ * on the notifications page. */
+function tb_unseen_notification_count(PDO $pdo, int $userId): int {
+    $s = $pdo->prepare('SELECT COUNT(*) FROM notifications WHERE user_id=? AND is_seen=0');
+    $s->execute([$userId]);
+    return (int)$s->fetchColumn();
+}
+
+/** Notifications (#58): drops one notification per assignee of the task,
+ * minus the actor - you do not get pinged for your own edit (actor 0, as used
+ * by system paths without a session, excludes nobody). history() calls this
+ * for every event-level history row; the per-field audit rows (#54) stay
+ * notification-free, so one save pings each assignee exactly once.
+ * $historyId points at the change-details page of the triggering entry. */
+function tb_notify_task_assignees(PDO $pdo, int $taskId, int $actorId, string $event, int $historyId): void {
+    $s = $pdo->prepare('SELECT user_id FROM task_assignees WHERE task_id=? AND user_id<>?');
+    $s->execute([$taskId, $actorId]);
+    $ins = $pdo->prepare('INSERT INTO notifications(user_id,task_id,history_id,event) VALUES(?,?,?,?)');
+    foreach ($s->fetchAll() as $row) {
+        $ins->execute([(int)$row['user_id'], $taskId, $historyId, $event]);
+    }
 }
 
 /** Know-hows (#53): the first $max characters of a text for the list excerpt,

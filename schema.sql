@@ -225,5 +225,23 @@ CREATE TABLE messages (
     FOREIGN KEY (recipient_id) REFERENCES users(id) ON DELETE SET NULL
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
+-- Notifications (#58): the board drops one row per task-history event into
+-- every assignee's stream (minus the actor), so each user sees at the top of
+-- the board and on the Notifications page which of their tasks moved. Both
+-- ends cascade: without the task (or the recipient) a notification has no
+-- meaning, unlike a conversation. is_seen drives the red navbar badge.
+CREATE TABLE notifications (
+    id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+    user_id INT UNSIGNED NOT NULL,
+    task_id INT UNSIGNED NOT NULL,
+    history_id INT UNSIGNED NULL,
+    event VARCHAR(100) NOT NULL,
+    is_seen TINYINT UNSIGNED NOT NULL DEFAULT 0,
+    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+    FOREIGN KEY (task_id) REFERENCES tasks(id) ON DELETE CASCADE,
+    FOREIGN KEY (history_id) REFERENCES task_history(id) ON DELETE SET NULL
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
 INSERT INTO statuses (name, sort_order, is_done) VALUES
 ('TODO', 1, 0), ('IN PROGRESS', 2, 0), ('DONE', 3, 1);

@@ -394,7 +394,7 @@ final class ProjectsTest extends E2eTestCase
         $this->assertTrue($home->contains('page=projects">Projects</a>'));
 
         $form = $admin->get('/?page=new');
-        $this->assertTrue($form->contains('<label class="form-label">Project</label>'));
+        $this->assertTrue($form->contains('<label class="form-label" for="task-project">Project</label>'));
         $this->assertTrue($form->contains('#' . $projectId . ' - Nav project'));
 
         $projectForm = $admin->get('/?page=project_new');

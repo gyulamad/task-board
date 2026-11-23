@@ -8,6 +8,7 @@ A lightweight multi-user task and message board for PHP 8.2+ and MySQL/MariaDB s
 - Task CRUD, multi-assignee selection, status and parent task
 - Project CRUD with the same building blocks as tasks: name, description, status, multi-assignee selection, sortable and paginated list with bulk delete
 - Each task can belong to a project (Project dropdown on the task form); the task detail page links back to it
+- Creating a task with no Project selected pops a confirmation box first: OK stores the project-less task, Cancel keeps you on the form to pick one; editing keeps saving without the dialog (#47)
 - Projects menu; per-project [Tasks…] button and a Project filter on the task list that shows which project is listed
 - Task and project templates (Templates CRUD); on the task create page a template selector prefills the description with the template text
 - Filter by assignee/status/parent task/project and search by title/description; the project filter also offers a "No project" option for the tasks that belong to no project (#28)
@@ -190,6 +191,18 @@ from `schema.sql`; existing boards are upgraded automatically on the first
 request after deployment (the idempotent `ALTER TABLE tasks ADD COLUMN priority`
 in `tb_migrate_schema()`). The number itself carries no behaviour — it is a
 sorting/visibility aid, not an escalation rule.
+
+## Creating a task without a project (#47)
+The **Project** dropdown on the task form is optional. To keep project-less
+tasks a conscious choice, saving a NEW task with no project selected pops a
+confirmation box — "No Project is selected. Create this task without a
+project?" — before anything is stored: **OK** creates the task without a
+project exactly as before, **Cancel** aborts the save so a project can be
+picked first. The dialog is the same built-in confirm pattern the board
+already uses for its destructive actions (archive, delete, bulk moves), so
+no new script or dependency comes with it. Editing an existing task keeps
+saving without a dialog: the stored project is visible on the edit form and
+unsetting it is a deliberate change, not an oversight to warn about.
 
 ## Task archive
 Deleting a task never removes it right away. The **Archive** button on the task page,

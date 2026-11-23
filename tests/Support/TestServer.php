@@ -53,6 +53,16 @@ final class TestServer
         return self::$url;
     }
 
+    /** The document root the application server is serving (temp copy for SQLite mode). */
+    public static function docRoot(): string
+    {
+        self::ensureRunning();
+        if (self::$docRoot === null) {
+            throw new RuntimeException('The test server document root is not known yet.');
+        }
+        return self::$docRoot;
+    }
+
     public static function ensureRunning(): void
     {
         if (self::$url !== null) {

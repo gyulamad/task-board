@@ -3,6 +3,7 @@ declare(strict_types=1);
 
 namespace TaskBoard\Tests\E2E;
 
+use TaskBoard\Tests\Support\AppSession;
 use TaskBoard\Tests\Support\TestServer;
 
 final class CommentsAttachmentsTest extends E2eTestCase
@@ -167,5 +168,125 @@ final class CommentsAttachmentsTest extends E2eTestCase
         $download = $admin->get('/?page=download&id=1');
         $this->assertSame(404, $download->status);
         $this->assertTrue($download->contains('File not found.'));
+    }
+
+    public function test_attachment_can_be_deleted_by_the_uploader(): void
+    {
+        $admin = $this->adminSession();
+        $id = $admin->createTask('Attachment delete task');
+        $attachmentId = $this->uploadTextFile($admin, $id, 'deleteme.txt', 'delete me payload');
+        $storedName = (string)TestServer::pdo()->query('SELECT stored_name FROM attachments WHERE id=' . $attachmentId)->fetchColumn();
+        $storedFile = TestServer::docRoot() . '/uploads/' . $storedName;
+        $this->assertFileExists($storedFile);
+
+        $response = $admin->post('/?page=task&id=' . $id, [
+            'action' => 'delete_attachment',
+            'attachment_id' => (string)$attachmentId,
+        ]);
+        $this->assertSame(302, $response->status);
+        $this->assertStringContainsString('?page=task&id=' . $id, (string)$response->header('location'));
+
+        $page = $admin->taskPage($id);
+        // The download link is gone; the filename itself remains visible in the
+        // history entry (the audit trail keeps the name on purpose).
+        $this->assertFalse($page->contains('?page=download&id=' . $attachmentId));
+        $this->assertTrue($page->contains('Attachment deleted.'));
+
+        // The row is gone, the download link 404s and the stored file was removed.
+        $this->assertSame(0, (int)TestServer::pdo()->query('SELECT COUNT(*) FROM attachments WHERE id=' . $attachmentId)->fetchColumn());
+        $download = $admin->get('/?page=download&id=' . $attachmentId);
+        $this->assertSame(404, $download->status);
+        $this->assertFileDoesNotExist($storedFile);
+    }
+
+    public function test_attachment_deletion_is_limited_to_the_admin_or_the_uploader(): void
+    {
+        $admin = $this->adminSession();
+        $this->createUser($admin, 'worker', 'Worker User', 'WorkerPass12345');
+        $id = $admin->createTask('Guarded attachment task');
+        $attachmentId = $this->uploadTextFile($admin, $id, 'guarded.txt', 'guarded payload');
+
+        $worker = new AppSession('worker', 'WorkerPass12345');
+        $response = $worker->post('/?page=task&id=' . $id, [
+            'action' => 'delete_attachment',
+            'attachment_id' => (string)$attachmentId,
+        ]);
+        $this->assertSame(200, $response->status);
+        $this->assertTrue($response->contains('Only an administrator or the uploader can delete an attachment.'));
+
+        // Nothing was removed: the row, the download and the stored file remain.
+        $this->assertSame(1, (int)TestServer::pdo()->query('SELECT COUNT(*) FROM attachments WHERE id=' . $attachmentId)->fetchColumn());
+        $download = $worker->get('/?page=download&id=' . $attachmentId);
+        $this->assertSame(200, $download->status);
+        $this->assertSame('guarded payload', $download->body);
+        // A non-privileged visitor is not offered the delete button either.
+        $page = $worker->taskPage($id);
+        $this->assertFalse($page->contains('delete_attachment'));
+    }
+
+    public function test_admin_can_delete_another_users_attachment(): void
+    {
+        $admin = $this->adminSession();
+        $this->createUser($admin, 'uploader', 'Uploader User', 'UploaderPass1234');
+        $id = $admin->createTask('Admin cleanup task');
+
+        $uploader = new AppSession('uploader', 'UploaderPass1234');
+        $attachmentId = $this->uploadTextFile($uploader, $id, 'from-uploader.txt', 'uploader payload');
+
+        $response = $admin->post('/?page=task&id=' . $id, [
+            'action' => 'delete_attachment',
+            'attachment_id' => (string)$attachmentId,
+        ]);
+        $this->assertSame(302, $response->status);
+        $this->assertSame(0, (int)TestServer::pdo()->query('SELECT COUNT(*) FROM attachments WHERE id=' . $attachmentId)->fetchColumn());
+
+        $page = $admin->taskPage($id);
+        $this->assertFalse($page->contains('?page=download&id=' . $attachmentId));
+        $this->assertTrue($page->contains('Attachment deleted.'));
+    }
+
+    public function test_deleting_a_missing_attachment_is_rejected(): void
+    {
+        $admin = $this->adminSession();
+        $id = $admin->createTask('Ghost attachment task');
+
+        $response = $admin->post('/?page=task&id=' . $id, [
+            'action' => 'delete_attachment',
+            'attachment_id' => '4242',
+        ]);
+        $this->assertSame(200, $response->status);
+        $this->assertTrue($response->contains('Attachment not found.'));
+    }
+
+    /** Uploads a small text file through the real form and returns the new attachment id. */
+    private function uploadTextFile(AppSession $session, int $taskId, string $filename, string $content): int
+    {
+        $file = tempnam(sys_get_temp_dir(), 'upload-');
+        file_put_contents($file, $content);
+        $response = $session->upload('/?page=task&id=' . $taskId, [
+            'action' => 'upload',
+            'task_id' => (string)$taskId,
+        ], 'file', $file, $filename, 'text/plain');
+        unlink($file);
+        $this->assertSame(302, $response->status);
+
+        $s = TestServer::pdo()->prepare('SELECT id FROM attachments WHERE task_id=? AND original_name=? ORDER BY id DESC');
+        $s->execute([$taskId, $filename]);
+        $id = $s->fetchColumn();
+        $this->assertNotFalse($id, 'Attachment ' . $filename . ' was not stored.');
+        return (int)$id;
+    }
+
+    /** Adds a plain user through the admin page so a second session can log in. */
+    private function createUser(AppSession $admin, string $username, string $display, string $password): void
+    {
+        $response = $admin->post('/?page=admin', [
+            'action' => 'add_user',
+            'username' => $username,
+            'display_name' => $display,
+            'password' => $password,
+            'role' => 'user',
+        ]);
+        $this->assertSame(302, $response->status);
     }
 }

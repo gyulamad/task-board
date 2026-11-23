@@ -1839,6 +1839,64 @@ if ($page==='project') {
     <?php render_footer(); exit;
 }
 
+// ---- Projects list v2 (Task #81, the #57 refactor recipe) -----------------
+// The projects list rebuilt on the shared CRUD list engine (src/crud.php):
+// the count/page/fetch query, the URL builder, the sortable table skeleton,
+// the pagination window and the bulk-select wiring come from the abstraction.
+// The list stays unfiltered exactly like today (no search card yet - the
+// parity tests pin the same feature set), and the shared sort_header() takes
+// over from the page's private header copy, so the a11y markup matches the
+// other lists from now on.
+if ($page==='projects-v2') {
+    $list=tb_crud_list([
+        'pdo'=>$pdo,
+        'table'=>'projects pr JOIN statuses s ON s.id=pr.status_id',
+        'select'=>'pr.id,pr.name,pr.updated_at,pr.created_by,s.name status_name,s.color status_color,(SELECT COUNT(*) FROM tasks t WHERE t.project_id=pr.id) task_count',
+        'where'=>[],
+        'params'=>[],
+        'sortColumns'=>[
+            'name'=>'pr.name {dir}',
+            'status'=>'s.sort_order {dir}, s.name {dir}',
+            'tasks'=>'task_count {dir}',
+            'updated'=>'pr.updated_at {dir}',
+        ],
+        'defaultSort'=>'updated',
+        'defaultDir'=>'desc',
+        'orderBySuffix'=>'pr.id {dir}',
+    ]);
+    $projects=$list['rows'];$projectSort=$list['sort'];$totalProjects=$list['total'];$totalPages=$list['pages'];$projectPage=$list['page'];
+    $projectsPage='projects-v2';
+    $projectsUrl=tb_crud_url_builder($projectsPage,['sort','dir']);
+    $projectAssignees=project_assignees_by_project($pdo, array_column($projects,'id'));
+    $projectColumns=[
+        ['header'=>'<th class="ps-3" style="width:36px"><input type="checkbox" class="form-check-input" id="check-all-projects" aria-label="Select all projects on this page"></th>','cell'=>fn(array $pr): string => '<td class="ps-3"><input type="checkbox" class="form-check-input project-row-check" name="project_ids[]" value="'.$pr['id'].'" aria-label="Select project #'.$pr['id'].'"></td>'],
+        ['label'=>'Project','sortKey'=>'name','sort'=>$projectSort,'url'=>$projectsUrl,'cell'=>fn(array $pr): string => '<td><a class="fw-semibold text-decoration-none" href="?page=project&id='.$pr['id'].'">#'.$pr['id'].' · '.h($pr['name']).'</a></td>'],
+        ['label'=>'Status','sortKey'=>'status','sort'=>$projectSort,'url'=>$projectsUrl,'cell'=>fn(array $pr): string => '<td>'.tb_status_badge((string)$pr['status_name'], $pr['status_color'] ?? null).'</td>'],
+        ['label'=>'Assignees','cell'=>function(array $pr) use ($projectAssignees): string {
+            $puHtml=[];foreach($projectAssignees[(int)$pr['id']]??[] as $pu){$puHtml[]=tb_user_with_activity($pu);}
+            return '<td>'.(implode(', ',$puHtml)?:'—').'</td>';
+        }],
+        ['label'=>'Tasks','sortKey'=>'tasks','sort'=>$projectSort,'url'=>$projectsUrl,'cell'=>fn(array $pr): string => '<td class="text-nowrap"><span class="me-2">'.$pr['task_count'].' task'.($pr['task_count']===1?'':'s').'</span><a class="btn btn-sm btn-outline-primary" href="?page=tasks-v2&project='.$pr['id'].'">Tasks…</a></td>'],
+        ['label'=>'Updated','sortKey'=>'updated','sort'=>$projectSort,'url'=>$projectsUrl,'cell'=>fn(array $pr): string => '<td class="small muted">'.h($pr['updated_at']).'</td>'],
+        ['label'=>'Actions','cell'=>function(array $pr): string {
+            $canDelete=is_admin()||(int)$pr['created_by']===(int)user()['id'];
+            return '<td class="text-nowrap"><a class="btn btn-sm btn-outline-secondary" href="?page=project_edit&id='.$pr['id'].'">Edit</a>'.($canDelete ? ' <button type="submit" class="btn btn-sm btn-outline-danger" form="delete-project-'.$pr['id'].'">Delete</button>' : '').'</td>';
+        }],
+    ];
+    ob_start(); ?>
+<button type="submit" class="btn btn-outline-danger" id="bulk-projects-btn" disabled>Delete selected (<span id="bulk-projects-count">0</span>)</button>
+    <?php $bulkControls=trim(ob_get_clean());
+    render_header('Projects',$config,$error); ?>
+    <div class="d-flex justify-content-between align-items-center mb-3"><div><h1 class="h3 mb-0">Projects</h1><div class="muted"><?=$totalProjects?> project<?=$totalProjects===1?'':'s'?></div></div><a class="btn btn-primary" href="?page=project_new">+ New project</a></div>
+    <form method="post" id="bulk-projects-form" onsubmit="return confirm('Delete all selected projects permanently?')"><?=csrf_field()?><input type="hidden" name="action" value="bulk_delete_projects"><input type="hidden" name="return" value="<?=h($projectsUrl(['p'=>$projectPage]))?>"><?php foreach (['sort','dir'] as $fk): if(($_GET[$fk]??'')!==''): ?><input type="hidden" name="<?=$fk?>" value="<?=h($_GET[$fk])?>"><?php endif; endforeach; ?>
+    <div class="card"><?=tb_crud_table(['columns'=>$projectColumns,'rows'=>$projects,'emptyText'=>'No projects yet.','emptyColspan'=>7])?></div>
+    <?php echo tb_crud_pagination(['ariaLabel'=>'Project list pages','page'=>$projectPage,'pages'=>$totalPages,'url'=>$projectsUrl,'trailing'=>$bulkControls]), "\n"; ?>
+    </form>
+    <?php foreach($projects as $pr): if(is_admin()||(int)$pr['created_by']===(int)user()['id']): ?><form method="post" id="delete-project-<?=$pr['id']?>" class="d-none" onsubmit="return confirm('Delete project #<?=$pr['id']?> permanently?')"><?=csrf_field()?><input type="hidden" name="action" value="delete_project"><input type="hidden" name="id" value="<?=$pr['id']?>"><input type="hidden" name="return" value="<?=h($projectsUrl(['p'=>$projectPage]))?>"></form><?php endif; endforeach; ?>
+    <?=tb_crud_bulk_select_script(['selectAllId'=>'check-all-projects','rowClass'=>'project-row-check','bulkButtonId'=>'bulk-projects-btn','countId'=>'bulk-projects-count','regionSwapEvent'=>false])?>
+    <?php render_footer(); exit;
+}
+
 if ($page==='projects') {
     // Sorting for the projects list. Same conventions as the sortable task
     // list (?sort=/?dir= query parameters, allowlist mapping, {dir}

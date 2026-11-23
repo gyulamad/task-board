@@ -215,17 +215,23 @@ function tb_crud_table(array $opts): string {
  * parameterized so every list can keep its own element ids and row class.
  *
  * $opts keys:
- *   selectAllId  - id of the "select all" checkbox in the table head
- *   rowClass     - class of the per-row checkboxes
- *   bulkButtonId - id of the bulk action button (optional)
- *   countId      - id of the selected-count badge span (optional)
- *   moveButtonId - id of the "move to project" submit (optional)
- *   moveSelectId - id of the target-project select (optional)
+ *   selectAllId    - id of the "select all" checkbox in the table head
+ *   rowClass       - class of the per-row checkboxes
+ *   bulkButtonId   - id of the bulk action button (optional)
+ *   countId        - id of the selected-count badge span (optional)
+ *   moveButtonId   - id of the "move to project" submit (optional)
+ *   moveSelectId   - id of the target-project select (optional)
+ *   regionSwapEvent- re-sync on the "tb-list-region:swapped" event (default
+ *                    true). Lists that render inside the realtime region
+ *                    (#51) need it; lists without a region omit it, so the
+ *                    "no refresh on pages without a list" contract keeps
+ *                    holding for them.
  *
  * The wiring is exactly the one the task list shipped with #51: every
  * element is looked up inside sync() and every listener is delegated on
- * document (plus a re-sync on the region swap event), so the wiring keeps
- * working when the auto-refresh swaps the list region's content.
+ * document (plus a re-sync on the region swap event when the page opts in),
+ * so the wiring keeps working when the auto-refresh swaps the list region's
+ * content.
  */
 function tb_crud_bulk_select_script(array $opts): string {
     $allId = (string)$opts['selectAllId'];
@@ -234,6 +240,7 @@ function tb_crud_bulk_select_script(array $opts): string {
     $countId = isset($opts['countId']) ? (string)$opts['countId'] : null;
     $moveBtnId = isset($opts['moveButtonId']) ? (string)$opts['moveButtonId'] : null;
     $moveSelectId = isset($opts['moveSelectId']) ? (string)$opts['moveSelectId'] : null;
+    $swapEvent = $opts['regionSwapEvent'] ?? true;
     $sync = 'function sync(){var all=document.getElementById(\'' . $allId . '\');var bs=rows();var n=bs.filter(function(b){return b.checked;}).length;';
     if ($btnId !== null) {
         $sync .= 'var btn=document.getElementById(\'' . $btnId . '\');if(btn)btn.disabled=n===0;';
@@ -249,19 +256,19 @@ function tb_crud_bulk_select_script(array $opts): string {
         $sync .= 'var lbl=document.getElementById(\'' . $countId . '\');if(lbl)lbl.textContent=String(n);';
     }
     $sync .= '}';
+    $swapListener = $swapEvent ? 'document.addEventListener(\'tb-list-region:swapped\',sync);' . "\n" : '';
     return '<script>
 (function(){
-// (#51) Every element is looked up inside sync() and every listener is
-// delegated on document, so the wiring keeps working when the auto-refresh
-// swaps the list region\'s content underneath it.
+// (bulk wiring) Every element is looked up inside sync() and every listener
+// is delegated on document, so the wiring keeps working when a realtime
+// region (#51) swaps the list content underneath it.
 function rows(){return Array.prototype.slice.call(document.querySelectorAll(\'.' . $rowClass . '\'));}
 ' . $sync . '
 document.addEventListener(\'change\',function(e){
   if(e.target&&e.target.id===\'' . $allId . '\'){var v=e.target.checked;rows().forEach(function(b){b.checked=v;});sync();return;}
   if(e.target&&e.target.classList&&e.target.classList.contains(\'' . $rowClass . '\'))sync();
 });
-document.addEventListener(\'tb-list-region:swapped\',sync);
-sync();
+' . $swapListener . 'sync();
 })();
 </script>';
 }

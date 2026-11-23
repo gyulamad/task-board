@@ -620,4 +620,129 @@ final class CrudAbstractionTest extends E2eTestCase
         $new = str_replace('documents-v2', 'documents', $new);
         $this->assertSame($old, $new, 'The v2 know-hows list must render the identical chrome to ?page=documents.');
     }
+
+    // --- projects-v2: the projects list feature set (Task #81) --------------
+
+    private function createProject(AppSession $session, string $name): int
+    {
+        $session->get('/?page=project_new');
+        $response = $session->post('/?page=project_new', [
+            'action' => 'save_project',
+            'id' => '0',
+            'name' => $name,
+            'description' => 'Created by the CRUD abstraction suite',
+            'status_id' => '1',
+        ]);
+        if (!preg_match('/page=project&id=(\d+)/', (string)$response->header('location'), $m)) {
+            throw new \RuntimeException('Project creation did not redirect to the project page.');
+        }
+        return (int)$m[1];
+    }
+
+    public function test_projects_v2_carries_the_full_list_chrome(): void
+    {
+        $admin = $this->adminSession();
+        $this->createProject($admin, 'Chrome project');
+        $page = $admin->get('/?page=projects-v2');
+
+        $this->assertSame(200, $page->status);
+        $this->assertTrue($page->contains('id="bulk-projects-form"'), 'The bulk delete form renders.');
+        $this->assertTrue($page->contains('id="check-all-projects"'), 'The select-all checkbox renders.');
+        $this->assertTrue($page->contains('aria-label="Select all projects on this page"'));
+        $this->assertTrue($page->contains('aria-sort="descending"'), 'The default updated-desc sort exposes the direction.');
+        $this->assertTrue($page->contains('aria-label="Order by Updated, currently desc, activate to sort ascending"'), 'The shared sort_header() renders the full a11y label.');
+        $this->assertTrue($page->contains('aria-label="Order by Project, currently unsorted, activate to sort descending"'));
+        $this->assertSame(0, substr_count($page->body, 'tb-list-region'), 'The projects list carries no realtime region, exactly like the classic page.');
+        $this->assertTrue($page->contains('page=projects-v2&amp;sort=name&amp;dir=asc'), 'The header links stay on the v2 page.');
+        $this->assertTrue($page->contains('href="?page=tasks-v2&project='), 'The per-row Tasks... link opens the task list filtered.');
+    }
+
+    public function test_projects_v2_columns_sort(): void
+    {
+        $admin = $this->adminSession();
+        $this->createProject($admin, 'Alpha project');
+        $this->createProject($admin, 'Zulu project');
+
+        $asc = $admin->get('/?page=projects-v2&sort=name&dir=asc');
+        $this->assertGreaterThan(
+            strpos($asc->body, 'Alpha project'),
+            strpos($asc->body, 'Zulu project'),
+            'Ascending name order puts Alpha first.'
+        );
+        $this->assertTrue($asc->contains('aria-sort="ascending"'));
+
+        $desc = $admin->get('/?page=projects-v2&sort=name&dir=desc');
+        $this->assertGreaterThan(
+            strpos($desc->body, 'Zulu project'),
+            strpos($desc->body, 'Alpha project'),
+            'Descending name order puts Zulu first.'
+        );
+
+        // The unknown sort key falls back to the default; the crafted value
+        // can never reach the SQL (the shared allowlist discipline).
+        $crafted = $admin->get('/?page=projects-v2&sort=name;DROP%20TABLE%20projects&dir=desc');
+        $this->assertSame(200, $crafted->status);
+        $this->assertTrue($crafted->contains('Alpha project'), 'The crafted sort is ignored and the list renders.');
+    }
+
+    public function test_projects_v2_paginates(): void
+    {
+        $admin = $this->adminSession();
+        for ($i = 1; $i <= 21; $i++) {
+            $this->createProject($admin, 'listproj' . str_pad((string)$i, 2, '0', STR_PAD_LEFT));
+        }
+
+        $page1 = $admin->get('/?page=projects-v2');
+        $this->assertTrue($page1->contains('21 projects'), 'The header counts all projects.');
+        $this->assertTrue($page1->contains('Page 1 of 2'));
+        $this->assertTrue($page1->contains('page=projects-v2&amp;p=2'), 'The pagination links stay on the v2 page.');
+
+        $page2 = $admin->get('/?page=projects-v2&p=2');
+        $this->assertTrue($page2->contains('listproj01'), 'The oldest project lands on page 2 (updated desc).');
+    }
+
+    public function test_projects_v2_keeps_the_bulk_actions_and_delete_forms(): void
+    {
+        $admin = $this->adminSession();
+        $this->createProject($admin, 'Deletable project');
+
+        $page = $admin->get('/?page=projects-v2');
+        $this->assertTrue($page->contains('value="bulk_delete_projects"'), 'The bulk delete action renders.');
+        $this->assertTrue($page->contains('id="delete-project-'), 'The per-row delete form renders.');
+        $this->assertTrue($page->contains("e.target.id==='check-all-projects'"), 'Select-all must be delegated so it survives swaps.');
+        // No realtime region on this list, so the swap re-sync listener is
+        // deliberately absent (the no-refresh contract stays intact).
+        $this->assertFalse($page->contains('tb-list-region:swapped'), 'The projects list carries no region, so no swap listener.');
+
+        // The Projects list stays reachable for non-admins, who see no delete
+        // controls (the same access model as the classic page).
+        $this->createUser($admin, 'viewer');
+        $viewer = new AppSession('viewer', 'viewerPass12345');
+        $view = $viewer->get('/?page=projects-v2');
+        $this->assertSame(200, $view->status);
+        $this->assertTrue($view->contains('Chrome project') || $view->contains('Deletable project'), 'The list renders for a plain user.');
+        // No per-row delete forms for a plain user; the bulk button renders
+        // exactly like on the classic page (the handler skips what they may
+        // not delete).
+        $this->assertFalse($view->contains('id="delete-project-'), 'A plain user sees no per-row delete forms.');
+    }
+
+    public function test_projects_v2_page_matches_the_projects_page(): void
+    {
+        $admin = $this->adminSession();
+        $this->createProject($admin, 'Parity project');
+
+        // The one intended difference: the v2 headers speak the shared
+        // sort_header() a11y dialect, so the header row is excluded from the
+        // byte comparison and pinned separately (see the chrome test).
+        $cutThead = fn(string $body): string => (string)preg_replace('/<thead>.*<\/thead>/s', '', $this->pageChrome($body));
+
+        $old = $cutThead($admin->get('/?page=projects')->body);
+        $new = $cutThead($admin->get('/?page=projects-v2')->body);
+        // The navbar link points at the v2 page on both fetches, so both
+        // bodies get the same page-name rewrite before the comparison.
+        $old = str_replace('projects-v2', 'projects', $old);
+        $new = str_replace('projects-v2', 'projects', $new);
+        $this->assertSame($old, $new, 'The v2 projects list must render the identical chrome to ?page=projects.');
+    }
 }

@@ -33,7 +33,7 @@ final class NavbarTest extends E2eTestCase
         // The whole menu lives inside the collapsible container.
         $this->assertTrue($page->contains('<div class="collapse navbar-collapse" id="tb-navbar">'));
         $this->assertTrue($page->contains('href="?page=tasks-v2">Tasks</a>'));  // #57 v2: the menu entry opens the new canonical task list page.
-        $this->assertTrue($page->contains('href="?page=projects">Projects</a>'));
+        $this->assertTrue($page->contains('href="?page=projects-v2">Projects</a>'));  // #81: the menu entry opens the new canonical projects page.
         $this->assertTrue($page->contains('href="?page=templates">Templates</a>'));
 
         // From lg up the bar must keep its always-expanded behaviour.

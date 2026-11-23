@@ -843,7 +843,7 @@ function render_header(string $title, array $config, string $error = ''): void {
     <link rel="icon" type="image/svg+xml" href="?page=favicon&amp;type=svg"><link rel="icon" href="?page=favicon" sizes="48x48 32x32 16x16">
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
     <style>body{background:#f5f6f8}.card{border:0;box-shadow:0 1px 5px #0000000d}.muted{color:#687386}.prewrap{white-space:pre-wrap}.navbar-brand{font-weight:700}.tb-activity-dot{display:inline-block;width:.55em;height:.55em;border-radius:50%;margin-right:.3em}.tb-activity-green{background:#198754}.tb-activity-yellow{background:#ffc107}.tb-activity-red{background:#dc3545}.tb-activity-grey{background:#6c757d}.tb-activity-char{font-weight:700;margin-right:.3em}html[data-bs-theme="dark"] body{background:#14181f}html[data-bs-theme="dark"] .card{box-shadow:0 1px 6px #00000059}html[data-bs-theme="dark"] .muted{color:#8b96a5}</style></head><body>
-    <nav class="navbar navbar-expand-lg navbar-dark bg-dark"><div class="container"><a class="navbar-brand" href="?"><?=h($config['app_name'])?></a><?php if(user()): ?><button class="navbar-toggler ms-auto" type="button" data-bs-toggle="collapse" data-bs-target="#tb-navbar" aria-controls="tb-navbar" aria-expanded="false" aria-label="Toggle navigation"><span class="navbar-toggler-icon"></span></button><div class="collapse navbar-collapse" id="tb-navbar"><div class="navbar-nav ms-auto align-items-center"><a class="nav-link" href="?page=tasks-v2">Tasks</a><a class="nav-link" href="?page=kanban">Kanban</a><a class="nav-link" href="?page=waterflow">Waterflow</a><a class="nav-link" href="?page=projects">Projects</a><a class="nav-link" href="?page=templates">Templates</a><a class="nav-link" href="?page=documents-v2">Know-hows</a><a class="nav-link" href="?page=messages">Messages<?php global $pdo; $tbUnread=array_key_exists('TB_UNREAD_BADGE',$GLOBALS)?(int)$GLOBALS['TB_UNREAD_BADGE']:tb_unread_message_count($pdo,(int)user()['id']); if($tbUnread): ?> <span class="badge text-bg-danger" title="New messages"><?=$tbUnread?></span><?php endif; unset($GLOBALS['TB_UNREAD_BADGE']); ?></a><a class="nav-link" href="?page=notifications">Notifications<?php global $pdo; $tbSeen=array_key_exists('TB_NOTIFICATION_BADGE',$GLOBALS)?(int)$GLOBALS['TB_NOTIFICATION_BADGE']:tb_unseen_notification_count($pdo,(int)user()['id']); if($tbSeen && tb_notification_flag_enabled($pdo,(int)user()['id'])): ?> <span class="badge text-bg-danger" title="New notifications"><?=$tbSeen?></span><?php endif; unset($GLOBALS['TB_NOTIFICATION_BADGE']); ?></a><a class="nav-link" href="?page=settings">Settings</a><?php if(is_admin()): ?><a class="nav-link" href="?page=admin">Administration</a><a class="nav-link" href="?page=activity_settings">Activity periods</a><a class="nav-link" href="?page=updates">Software updates</a><?php endif; ?><form method="post" class="d-flex align-items-center mx-2"><?=csrf_field()?><input type="hidden" name="action" value="save_theme"><select name="theme" class="form-select form-select-sm bg-dark text-light border-secondary" aria-label="Theme" title="Theme" onchange="this.form.submit()"><option value="light" <?=$theme==='light'?'selected':''?>>Light</option><option value="dark" <?=$theme==='dark'?'selected':''?>>Dark</option></select><noscript><button class="btn btn-sm btn-outline-light ms-1">Save</button></noscript></form><span class="navbar-text mx-2"><?=tb_user_with_activity($_SESSION['user'])?></span><form method="post" action="?page=logout" class="d-inline m-0"><?=csrf_field()?><button type="submit" class="btn btn-link nav-link p-0 text-white text-decoration-none">Sign out</button></form></div></div><?php endif; ?></div></nav><main class="container py-4">
+    <nav class="navbar navbar-expand-lg navbar-dark bg-dark"><div class="container"><a class="navbar-brand" href="?"><?=h($config['app_name'])?></a><?php if(user()): ?><button class="navbar-toggler ms-auto" type="button" data-bs-toggle="collapse" data-bs-target="#tb-navbar" aria-controls="tb-navbar" aria-expanded="false" aria-label="Toggle navigation"><span class="navbar-toggler-icon"></span></button><div class="collapse navbar-collapse" id="tb-navbar"><div class="navbar-nav ms-auto align-items-center"><a class="nav-link" href="?page=tasks-v2">Tasks</a><a class="nav-link" href="?page=kanban">Kanban</a><a class="nav-link" href="?page=waterflow">Waterflow</a><a class="nav-link" href="?page=projects-v2">Projects</a><a class="nav-link" href="?page=templates">Templates</a><a class="nav-link" href="?page=documents-v2">Know-hows</a><a class="nav-link" href="?page=messages">Messages<?php global $pdo; $tbUnread=array_key_exists('TB_UNREAD_BADGE',$GLOBALS)?(int)$GLOBALS['TB_UNREAD_BADGE']:tb_unread_message_count($pdo,(int)user()['id']); if($tbUnread): ?> <span class="badge text-bg-danger" title="New messages"><?=$tbUnread?></span><?php endif; unset($GLOBALS['TB_UNREAD_BADGE']); ?></a><a class="nav-link" href="?page=notifications">Notifications<?php global $pdo; $tbSeen=array_key_exists('TB_NOTIFICATION_BADGE',$GLOBALS)?(int)$GLOBALS['TB_NOTIFICATION_BADGE']:tb_unseen_notification_count($pdo,(int)user()['id']); if($tbSeen && tb_notification_flag_enabled($pdo,(int)user()['id'])): ?> <span class="badge text-bg-danger" title="New notifications"><?=$tbSeen?></span><?php endif; unset($GLOBALS['TB_NOTIFICATION_BADGE']); ?></a><a class="nav-link" href="?page=settings">Settings</a><?php if(is_admin()): ?><a class="nav-link" href="?page=admin">Administration</a><a class="nav-link" href="?page=activity_settings">Activity periods</a><a class="nav-link" href="?page=updates">Software updates</a><?php endif; ?><form method="post" class="d-flex align-items-center mx-2"><?=csrf_field()?><input type="hidden" name="action" value="save_theme"><select name="theme" class="form-select form-select-sm bg-dark text-light border-secondary" aria-label="Theme" title="Theme" onchange="this.form.submit()"><option value="light" <?=$theme==='light'?'selected':''?>>Light</option><option value="dark" <?=$theme==='dark'?'selected':''?>>Dark</option></select><noscript><button class="btn btn-sm btn-outline-light ms-1">Save</button></noscript></form><span class="navbar-text mx-2"><?=tb_user_with_activity($_SESSION['user'])?></span><form method="post" action="?page=logout" class="d-inline m-0"><?=csrf_field()?><button type="submit" class="btn btn-link nav-link p-0 text-white text-decoration-none">Sign out</button></form></div></div><?php endif; ?></div></nav><main class="container py-4">
     <?php if (!empty($_SESSION['flash'])): ?><div class="alert alert-success"><?=h($_SESSION['flash'])?></div><?php unset($_SESSION['flash']); endif; ?>
     <?php if($error): ?><div class="alert alert-danger"><?=h($error)?></div><?php endif;
 }
@@ -1843,11 +1843,14 @@ if ($page==='project') {
 // The projects list rebuilt on the shared CRUD list engine (src/crud.php):
 // the count/page/fetch query, the URL builder, the sortable table skeleton,
 // the pagination window and the bulk-select wiring come from the abstraction.
-// The list stays unfiltered exactly like today (no search card yet - the
-// parity tests pin the same feature set), and the shared sort_header() takes
+// The list stays unfiltered exactly like before (no search card yet - the
+// parity tests pin the same feature set), and the shared sort_header() took
 // over from the page's private header copy, so the a11y markup matches the
 // other lists from now on.
-if ($page==='projects-v2') {
+if (in_array($page, ['projects', 'projects-v2'], true)) {
+    // Generated links keep the requested page name, so both the classic and
+    // the -v2 URL stay fully functional (the classic name is the alias).
+    $projectsPage = $page === 'projects-v2' ? 'projects-v2' : 'projects';
     $list=tb_crud_list([
         'pdo'=>$pdo,
         'table'=>'projects pr JOIN statuses s ON s.id=pr.status_id',
@@ -1865,7 +1868,6 @@ if ($page==='projects-v2') {
         'orderBySuffix'=>'pr.id {dir}',
     ]);
     $projects=$list['rows'];$projectSort=$list['sort'];$totalProjects=$list['total'];$totalPages=$list['pages'];$projectPage=$list['page'];
-    $projectsPage='projects-v2';
     $projectsUrl=tb_crud_url_builder($projectsPage,['sort','dir']);
     $projectAssignees=project_assignees_by_project($pdo, array_column($projects,'id'));
     $projectColumns=[
@@ -1897,62 +1899,6 @@ if ($page==='projects-v2') {
     <?php render_footer(); exit;
 }
 
-if ($page==='projects') {
-    // Sorting for the projects list. Same conventions as the sortable task
-    // list (?sort=/?dir= query parameters, allowlist mapping, {dir}
-    // placeholders) but deliberately standalone here: this page works with
-    // or without the shared sort helpers from the order-by change.
-    $projectSortColumns=[
-        'name'=>'pr.name {dir}',
-        'status'=>'s.sort_order {dir}, s.name {dir}',
-        'tasks'=>'task_count {dir}',
-        'updated'=>'pr.updated_at {dir}',
-    ];
-    $projectSortKey=(string)($_GET['sort']??'');
-    if (!array_key_exists($projectSortKey,$projectSortColumns)) $projectSortKey='updated';
-    $projectDir=strtolower(trim((string)($_GET['dir']??'')));
-    if (!in_array($projectDir,['asc','desc'],true)) $projectDir='desc';
-    $projectOrder=str_replace('{dir}',strtoupper($projectDir),$projectSortColumns[$projectSortKey]).', pr.id '.strtoupper($projectDir);
-    $perPage=20;
-    $projectPage=max(1,(int)($_GET['p']??1));
-    $totalProjects=(int)$pdo->query('SELECT COUNT(*) FROM projects')->fetchColumn();
-    $totalPages=max(1,(int)ceil($totalProjects/$perPage));
-    $projectPage=min($projectPage,$totalPages);
-    $projects=$pdo->query('SELECT pr.id,pr.name,pr.updated_at,pr.created_by,s.name status_name,s.color status_color,(SELECT COUNT(*) FROM tasks t WHERE t.project_id=pr.id) task_count FROM projects pr JOIN statuses s ON s.id=pr.status_id ORDER BY '.$projectOrder.' LIMIT '.$perPage.' OFFSET '.(($projectPage-1)*$perPage))->fetchAll();
-    $projectsUrl=function(array $override=[]): string {
-        $qs=['page'=>'projects'];
-        foreach (['sort','dir'] as $fk) {if (isset($_GET[$fk]) && $_GET[$fk]!=='' && $_GET[$fk]!==null) $qs[$fk]=(string)$_GET[$fk];}
-        return '?' . http_build_query(array_merge($qs,$override));
-    };
-    $projectSort=['key'=>$projectSortKey,'dir'=>$projectDir];
-    $projectToggle=function(string $key,array $sort): array {return ['sort'=>$key,'dir'=>($sort['key']===$key && $sort['dir']==='asc')?'desc':'asc'];};
-    $projectHeader=function(string $label,string $key,array $sort,string $url): string {
-        $isActive=$sort['key']===$key;
-        $aria=$isActive?' aria-sort="'.($sort['dir']==='asc'?'ascending':'descending').'"':'';
-        $arrow=$isActive?'<span aria-hidden="true"> '.($sort['dir']==='asc'?'&#9650;':'&#9660;').'</span>':'';
-        return '<th'.$aria.'><a class="text-decoration-none" href="'.h($url).'" title="Order by '.h($label).'" aria-label="Order by '.h($label).'">'.h($label).$arrow.'</a></th>';
-    };
-    $projectAssignees=project_assignees_by_project($pdo, array_column($projects,'id'));
-    render_header('Projects',$config,$error); ?>
-    <div class="d-flex justify-content-between align-items-center mb-3"><div><h1 class="h3 mb-0">Projects</h1><div class="muted"><?=$totalProjects?> project<?=$totalProjects===1?'':'s'?></div></div><a class="btn btn-primary" href="?page=project_new">+ New project</a></div>
-    <form method="post" id="bulk-projects-form" onsubmit="return confirm('Delete all selected projects permanently?')"><?=csrf_field()?><input type="hidden" name="action" value="bulk_delete_projects"><input type="hidden" name="return" value="<?=h($projectsUrl(['p'=>$projectPage]))?>"><?php foreach (['sort','dir'] as $fk): if(($_GET[$fk]??'')!==''): ?><input type="hidden" name="<?=$fk?>" value="<?=h($_GET[$fk])?>"><?php endif; endforeach; ?>
-    <div class="card"><div class="table-responsive"><table class="table table-hover align-middle mb-0"><thead><tr><th class="ps-3" style="width:36px"><input type="checkbox" class="form-check-input" id="check-all-projects" aria-label="Select all projects on this page"></th><?=$projectHeader('Project','name',$projectSort,$projectsUrl($projectToggle('name',$projectSort)))?><?=$projectHeader('Status','status',$projectSort,$projectsUrl($projectToggle('status',$projectSort)))?><th>Assignees</th><?=$projectHeader('Tasks','tasks',$projectSort,$projectsUrl($projectToggle('tasks',$projectSort)))?><?=$projectHeader('Updated','updated',$projectSort,$projectsUrl($projectToggle('updated',$projectSort)))?><th>Actions</th></tr></thead><tbody><?php foreach($projects as $pr): $canDelete=is_admin()||(int)$pr['created_by']===(int)user()['id']; ?><tr><td class="ps-3"><input type="checkbox" class="form-check-input project-row-check" name="project_ids[]" value="<?=$pr['id']?>" aria-label="Select project #<?=$pr['id']?>"></td><td><a class="fw-semibold text-decoration-none" href="?page=project&id=<?=$pr['id']?>">#<?=$pr['id']?> · <?=h($pr['name'])?></a></td><td><?=tb_status_badge((string)$pr['status_name'], $pr['status_color'] ?? null)?></td><td><?php $puHtml=[];foreach($projectAssignees[(int)$pr['id']]??[] as $pu){$puHtml[]=tb_user_with_activity($pu);}echo implode(', ',$puHtml)?:'—'; ?></td><td class="text-nowrap"><span class="me-2"><?=$pr['task_count']?> task<?=$pr['task_count']===1?'':'s'?></span><a class="btn btn-sm btn-outline-primary" href="?page=tasks-v2&project=<?=$pr['id']?>">Tasks…</a></td><td class="small muted"><?=h($pr['updated_at'])?></td><td class="text-nowrap"><a class="btn btn-sm btn-outline-secondary" href="?page=project_edit&id=<?=$pr['id']?>">Edit</a><?php if($canDelete): ?> <button type="submit" class="btn btn-sm btn-outline-danger" form="delete-project-<?=$pr['id']?>">Delete</button><?php endif; ?></td></tr><?php endforeach; if(!$projects): ?><tr><td colspan="7" class="text-center muted py-4">No projects yet.</td></tr><?php endif; ?></tbody></table></div></div>
-    <div class="d-flex justify-content-between align-items-center mt-3 gap-2 flex-wrap"><?php if($totalPages>1): ?><nav aria-label="Project list pages"><ul class="pagination mb-0"><li class="page-item <?=$projectPage<=1?'disabled':''?>"><a class="page-link" href="<?=h($projectsUrl(['p'=>max(1,$projectPage-1)]))?>">&laquo;</a></li><?php $pWinStart=max(1,$projectPage-2);$pWinEnd=min($totalPages,$pWinStart+4);if($pWinEnd-$pWinStart<4)$pWinStart=max(1,$pWinEnd-4);if($pWinStart>1): ?><li class="page-item"><a class="page-link" href="<?=h($projectsUrl(['p'=>1]))?>">1</a></li><?php if($pWinStart>2): ?><li class="page-item disabled"><span class="page-link">&hellip;</span></li><?php endif; endif; for($i=$pWinStart;$i<=$pWinEnd;$i++): ?><li class="page-item <?=$i===$projectPage?'active':''?>"><a class="page-link" href="<?=h($projectsUrl(['p'=>$i]))?>"><?=$i?></a></li><?php endfor; if($pWinEnd<$totalPages): ?><?php if($pWinEnd<$totalPages-1): ?><li class="page-item disabled"><span class="page-link">&hellip;</span></li><?php endif; ?><li class="page-item"><a class="page-link" href="<?=h($projectsUrl(['p'=>$totalPages]))?>"><?=$totalPages?></a></li><?php endif; ?><li class="page-item <?=$projectPage>=$totalPages?'disabled':''?>"><a class="page-link" href="<?=h($projectsUrl(['p'=>min($totalPages,$projectPage+1)]))?>">&raquo;</a></li></ul></nav><span class="small muted">Page <?=$projectPage?> of <?=$totalPages?></span><?php endif; ?><button type="submit" class="btn btn-outline-danger" id="bulk-projects-btn" disabled>Delete selected (<span id="bulk-projects-count">0</span>)</button></div>
-    </form>
-    <?php foreach($projects as $pr): if(is_admin()||(int)$pr['created_by']===(int)user()['id']): ?><form method="post" id="delete-project-<?=$pr['id']?>" class="d-none" onsubmit="return confirm('Delete project #<?=$pr['id']?> permanently?')"><?=csrf_field()?><input type="hidden" name="action" value="delete_project"><input type="hidden" name="id" value="<?=$pr['id']?>"><input type="hidden" name="return" value="<?=h($projectsUrl(['p'=>$projectPage]))?>"></form><?php endif; endforeach; ?>
-    <script>
-    (function(){
-    var all=document.getElementById('check-all-projects');
-    var btn=document.getElementById('bulk-projects-btn');
-    function rows(){return Array.prototype.slice.call(document.querySelectorAll('.project-row-check'));}
-    function sync(){var bs=rows();var n=bs.filter(function(b){return b.checked;}).length;if(btn)btn.disabled=n===0;if(all){all.checked=n>0&&n===bs.length;all.indeterminate=n>0&&n<bs.length;}var lbl=document.getElementById('bulk-projects-count');if(lbl)lbl.textContent=String(n);}
-    if(all)all.addEventListener('change',function(){var v=all.checked;rows().forEach(function(b){b.checked=v;});sync();});
-    document.addEventListener('change',function(e){if(e.target&&e.target.classList&&e.target.classList.contains('project-row-check'))sync();});
-    sync();
-    })();
-    </script>
-    <?php render_footer(); exit;
-}
 
 if ($page==='templates') {
     // Multi-select filter (#25): the type dropdown submits type[] as an array,

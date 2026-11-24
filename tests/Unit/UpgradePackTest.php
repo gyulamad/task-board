@@ -178,6 +178,29 @@ final class UpgradePackTest extends TestCase
         tb_pack_read('this is not a zip file at all');
     }
 
+    public function test_pack_read_rejects_a_symbolic_link_entry_and_names_it(): void
+    {
+        // Task #116: the symlink refusal must name the offending entry, the
+        // same contract the branch-install validator gained for the tracked
+        // `vendor` symlink that shipped on develop in the round-11 rebase.
+        $zip = new ZipArchive();
+        $zipPath = tempnam(sys_get_temp_dir(), 'tb-packzip-');
+        $this->assertTrue($zip->open($zipPath, ZipArchive::CREATE | ZipArchive::OVERWRITE) === true);
+        $zip->addFromString('pack.json', $this->packJson());
+        $zip->addFromString('files/linked.php', 'lives elsewhere');
+        $zip->setExternalAttributesName('files/linked.php', ZipArchive::OPSYS_UNIX, 0120000 << 16);
+        $zip->close();
+        try {
+            tb_pack_read((string)file_get_contents($zipPath));
+            $this->fail('A pack carrying a symbolic link entry must be refused.');
+        } catch (RuntimeException $e) {
+            $this->assertStringContainsString('The upgrade pack contains a symbolic link', $e->getMessage());
+            $this->assertStringContainsString('files/linked.php', $e->getMessage(), 'the refusal must name the offending entry');
+        } finally {
+            unlink($zipPath);
+        }
+    }
+
     public function test_pack_apply_writes_deletes_migrates_and_records_the_version(): void
     {
         file_put_contents($this->appDir . '/existing.php', 'old body');

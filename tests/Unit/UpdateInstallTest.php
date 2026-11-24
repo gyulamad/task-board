@@ -155,6 +155,45 @@ final class UpdateInstallTest extends TestCase
         }
     }
 
+    /** Builds a codeload-layout archive whose `$linkName` entry is a symlink. */
+    private function buildArchiveWithSymlinkEntry(string $linkName): string
+    {
+        $zip = new ZipArchive();
+        $path = tempnam(sys_get_temp_dir(), 'tb-update-test-') . '.zip';
+        $this->assertTrue($zip->open($path, ZipArchive::CREATE | ZipArchive::OVERWRITE) === true);
+        $zip->addFromString('task-board-abc123/index.php', '<?php echo "new";');
+        $zip->addFromString('task-board-abc123/updater.php', $this->updaterSource(['index.php', 'updater.php']));
+        $zip->addFromString('task-board-abc123/' . $linkName, 'somewhere/else');
+        $zip->setExternalAttributesName('task-board-abc123/' . $linkName, ZipArchive::OPSYS_UNIX, 0120000 << 16);
+        $zip->close();
+        return (string)file_get_contents($path);
+    }
+
+    public function test_extraction_refuses_a_symbolic_link_entry_and_names_it(): void
+    {
+        // Task #116: develop shipped with an accidental tracked `vendor`
+        // symlink (added by the round-11 rebase, slipped past the `vendor/`
+        // ignore rule because that only matches directories). The install
+        // refused the whole archive with a message that did not name the
+        // entry, so the failure needed a board ticket to debug. The refusal
+        // stays fail-fast (the #103 discipline) but now names the path.
+        try {
+            tb_update_archive_files($this->buildArchiveWithSymlinkEntry('vendor'));
+            $this->fail('An archive carrying a symbolic link entry must be refused.');
+        } catch (RuntimeException $e) {
+            $this->assertStringContainsString('The archive contains a symbolic link', $e->getMessage());
+            $this->assertStringContainsString('vendor', $e->getMessage(), 'the refusal must name the offending entry');
+        }
+        // The same guard covers a link nested deeper in the tree.
+        try {
+            tb_update_archive_files($this->buildArchiveWithSymlinkEntry('src/helpers.php'));
+            $this->fail('A nested symbolic link entry must be refused too.');
+        } catch (RuntimeException $e) {
+            $this->assertStringContainsString('symbolic link', $e->getMessage());
+            $this->assertStringContainsString('src/helpers.php', $e->getMessage());
+        }
+    }
+
     public function test_the_incident_install_ends_with_the_new_boot_required_file_present(): void
     {
         // The exact 2026-11-24 shape: a running updater whose allowlist is

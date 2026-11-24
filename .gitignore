@@ -5,6 +5,10 @@ config.php
 # Test suite artifacts
 .phpunit.cache/
 build/
-vendor/
+# `vendor` without the slash also matches a symlink (the #116 incident: a
+# tracked `vendor -> ../tb/vendor` link slipped past `vendor/`, which only
+# matches directories, and the updater refuses any archive that carries a
+# symlink entry).
+vendor
 server.log
 coverage-summary.txt

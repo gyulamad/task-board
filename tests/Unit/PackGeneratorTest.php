@@ -102,6 +102,29 @@ final class PackGeneratorTest extends TestCase
         $this->assertSame(['index.php' => 'base index', 'src/helpers.php' => 'base helpers'], $tree);
     }
 
+    public function test_base_tree_refuses_a_symbolic_link_entry_and_names_it(): void
+    {
+        // Task #116: the exact incident shape - a base archive (develop)
+        // carrying an accidental tracked `vendor` symlink. The generator must
+        // refuse it fail-fast and name the entry that caused the refusal.
+        $zip = new ZipArchive();
+        $zipPath = tempnam(sys_get_temp_dir(), 'tb-genbase-');
+        $this->assertTrue($zip->open($zipPath, ZipArchive::CREATE | ZipArchive::OVERWRITE) === true);
+        $zip->addFromString('task-board-abc12/index.php', 'base index');
+        $zip->addFromString('task-board-abc12/vendor', 'lives elsewhere');
+        $zip->setExternalAttributesName('task-board-abc12/vendor', ZipArchive::OPSYS_UNIX, 0120000 << 16);
+        $zip->close();
+        try {
+            tb_pack_generator_base_tree((string)file_get_contents($zipPath));
+            $this->fail('A base archive carrying a symbolic link entry must be refused.');
+        } catch (RuntimeException $e) {
+            $this->assertStringContainsString('The base version archive contains a symbolic link', $e->getMessage());
+            $this->assertStringContainsString('vendor', $e->getMessage(), 'the refusal must name the offending entry');
+        } finally {
+            unlink($zipPath);
+        }
+    }
+
     public function test_generator_source_accepts_sha_and_tag(): void
     {
         $this->assertSame(str_repeat('a', 40), tb_pack_generator_source(str_repeat('a', 40))['sha'], 'a 40-hex ref pins a commit');

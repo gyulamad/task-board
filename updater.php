@@ -114,7 +114,7 @@ function tb_update_archive_files(string $archiveData): array {
             $opsys = 0; $attributes = 0;
             if ($zip->getExternalAttributesIndex($i, $opsys, $attributes) && $opsys === ZipArchive::OPSYS_UNIX) {
                 $mode = ($attributes >> 16) & 0170000;
-                if ($mode === 0120000) throw new RuntimeException('The archive contains a symbolic link.');
+                if ($mode === 0120000) throw new RuntimeException('The archive contains a symbolic link (' . $name . ').');
             }
             if ((int)$stat['size'] > 5 * 1024 * 1024) throw new RuntimeException('An update file exceeds the 5 MB safety limit.');
             $stream = $zip->getStream($stat['name']);
@@ -674,7 +674,7 @@ function tb_pack_read(string $zipData): array {
             $opsys = 0; $attributes = 0;
             if ($zip->getExternalAttributesIndex($i, $opsys, $attributes) && $opsys === ZipArchive::OPSYS_UNIX) {
                 $mode = ($attributes >> 16) & 0170000;
-                if ($mode === 0120000) throw new RuntimeException('The upgrade pack contains a symbolic link.');
+                if ($mode === 0120000) throw new RuntimeException('The upgrade pack contains a symbolic link (' . $name . ').');
             }
             if ((int)$stat['size'] > 5 * 1024 * 1024) throw new RuntimeException('An upgrade pack file exceeds the 5 MB safety limit.');
             $stream = $zip->getStream($stat['name']);
@@ -980,7 +980,7 @@ function tb_pack_generator_base_tree(string $archiveData): array {
             $opsys = 0; $attributes = 0;
             if ($zip->getExternalAttributesIndex($i, $opsys, $attributes) && $opsys === ZipArchive::OPSYS_UNIX) {
                 $mode = ($attributes >> 16) & 0170000;
-                if ($mode === 0120000) throw new RuntimeException('The base version archive contains a symbolic link.');
+                if ($mode === 0120000) throw new RuntimeException('The base version archive contains a symbolic link (' . $name . ').');
             }
             if ((int)$stat['size'] > 5 * 1024 * 1024) throw new RuntimeException('A base version file exceeds the safety limit.');
             $stream = $zip->getStream($stat['name']);

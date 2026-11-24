@@ -1248,6 +1248,80 @@ if (in_array($page, ['archive', 'archive-v2'], true)) {
 // user by the pair WHERE clauses, so a foreign ?u= yields an empty page and
 // an unknown one a 404; nothing outside a visitor's own conversations can
 // leave this endpoint.
+// ---- Messages live feed (#114) ----------------------------------------------
+// The JSON poll endpoint that makes the messenger page behave like a chat
+// app between full loads: it returns the bubbles newer than ?after= for the
+// open conversation, the people rows (unread badges, activity indicators,
+// open-conversation highlight) exactly as a fresh load would render them,
+// and the viewer's unread count for the page badge. Viewing semantics stay
+// the board's own: the bubbles this feed hands over are on screen now, so
+// exactly the open conversation's incoming messages flip to read here - a
+// message from anybody else keeps its red badge until their conversation is
+// opened. The poll cadence and the hidden-tab rules mirror the shared list
+// refresh script (#51).
+if ($page==='messages_live') {
+    // The poll is navigation-invisible (#114 x #113 interplay, disclosed):
+    // tb_list_view_boot() already stamped this request into the session's
+    // last-page marker, but the visitor is in fact still sitting on the
+    // messenger page - restoring the marker keeps the "consecutive requests
+    // of the same list page never replay" guarantee intact while the tab
+    // polls away.
+    if (($_SESSION['tb_last_page'] ?? null) === 'messages_live') {
+        $_SESSION['tb_last_page'] = 'messages';
+    }
+    $me=(int)user()['id'];
+    $u=isset($_GET['u'])?(int)$_GET['u']:-1;
+    $after=max(0,(int)($_GET['after'] ?? 0));
+    // The people rows carry the chat page name in their links; only the two
+    // real names are accepted (a crafted value cannot inject a URL).
+    $chatPage=($_GET['cp'] ?? '')==='messages-v2'?'messages-v2':'messages';
+    if ($u!==0 && $u<=0) { http_response_code(404); header('Content-Type: application/json; charset=utf-8'); exit(json_encode(['error'=>'Unknown conversation.'])); }
+    if ($u>0) {
+        $s=$pdo->prepare('SELECT 1 FROM users WHERE id=?'); $s->execute([$u]);
+        if(!$s->fetchColumn()){ http_response_code(404); header('Content-Type: application/json; charset=utf-8'); exit(json_encode(['error'=>'Unknown conversation.'])); }
+    }
+    // The new bubbles of the open thread, oldest first - the append order of
+    // a chat log. A cap keeps one poll bounded; the cursor advances over the
+    // rows actually returned, so the next poll drains the rest.
+    if ($u===0) {
+        $t=$pdo->prepare('SELECT * FROM messages WHERE ((recipient_id=? AND sender_id IS NULL) OR (sender_id=? AND recipient_id IS NULL)) AND id>? ORDER BY id ASC LIMIT 50');
+        $t->execute([$me,$me,$after]);
+    } else {
+        $t=$pdo->prepare('SELECT * FROM messages WHERE ((sender_id=? AND recipient_id=?) OR (sender_id=? AND recipient_id=?)) AND id>? ORDER BY id ASC LIMIT 50');
+        $t->execute([$me,$u,$u,$me,$after]);
+    }
+    $rows=$t->fetchAll();
+    if ($rows && $u>0) {
+        $pdo->prepare('UPDATE messages SET is_read=1 WHERE recipient_id=? AND is_read=0 AND sender_id=?')->execute([$me,$u]);
+    }
+    $html='';
+    $lastId=$after;
+    $feedAttachments=tb_message_attachments($pdo,array_map(function($m){return (int)$m['id'];},$rows));
+    foreach ($rows as $m) {
+        $mine=$m['sender_id']!==null&&(int)$m['sender_id']===$me;
+        $html.=tb_message_bubble($m,$mine,$feedAttachments[(int)$m['id']]??[]);
+        $lastId=(int)$m['id'];
+    }
+    $people=tb_chat_people_model($pdo,$me);
+    $feedPeer=null;
+    if ($u>0) {
+        $fp=$pdo->prepare('SELECT id, display_name, last_seen_at, logged_out FROM users WHERE id=?');
+        $fp->execute([$u]);
+        $row=$fp->fetchAll();
+        $feedPeer=$row?['id'=>(int)$row[0]['id'],'display_name'=>(string)$row[0]['display_name'],'last_seen_at'=>$row[0]['last_seen_at'] ?? null,'logged_out'=>(int)($row[0]['logged_out'] ?? 0)]:null;
+    } elseif ($u===0) {
+        $feedPeer=['id'=>0,'display_name'=>'Deleted user','last_seen_at'=>null,'logged_out'=>0];
+    }
+    header('Content-Type: application/json; charset=utf-8');
+    header('Cache-Control: no-store');
+    exit(json_encode([
+        'html'=>$html,
+        'lastId'=>$lastId,
+        'peopleHtml'=>tb_chat_people_rows($people['entries'],$people['unreadBySender'],$people['orphanUnread'],$feedPeer,$chatPage),
+        'newCount'=>tb_unread_message_count($pdo,$me),
+    ], JSON_UNESCAPED_UNICODE));
+}
+
 if ($page==='messages_more') {
     $me=(int)user()['id'];
     $u=isset($_GET['u'])?(int)$_GET['u']:-1;
@@ -1332,66 +1406,16 @@ if (in_array($page, ['messages', 'messages-v2'], true)) {
     // The navbar badge renders after the mark-read below, so it reuses this
     // pre-mark-read count instead of querying a self-consumed zero.
     $GLOBALS['TB_UNREAD_BADGE']=$newCount;
-    // Per-person unread counts and the orphaned count are read before the
-    // mark-read below, so the left list shows what is new on this very load.
-    $unreadBySender=[];
-    $ub=$pdo->prepare('SELECT sender_id, COUNT(*) c FROM messages WHERE recipient_id=? AND is_read=0 AND sender_id IS NOT NULL GROUP BY sender_id');
-    $ub->execute([$me]);
-    foreach ($ub->fetchAll() as $ubRow) $unreadBySender[(int)$ubRow['sender_id']]=(int)$ubRow['c'];
-    $orphansUnread=$pdo->prepare('SELECT COUNT(*) FROM messages WHERE recipient_id=? AND is_read=0 AND sender_id IS NULL');
-    $orphansUnread->execute([$me]);
-    $orphanUnread=(int)$orphansUnread->fetchAll(PDO::FETCH_COLUMN)[0];
-    $orphansTotal=$pdo->prepare('SELECT COUNT(*) FROM messages WHERE (recipient_id=? AND sender_id IS NULL) OR (sender_id=? AND recipient_id IS NULL)');
-    $orphansTotal->execute([$me,$me]);
-    $orphanTotal=(int)$orphansTotal->fetchAll(PDO::FETCH_COLUMN)[0];
-    // The "Deleted user" orphan cursor is read before the people list: the
-    // engine query below unions the orphan entry into the same ordered set,
-    // so COUNT, the search and the pagination run over both halves and the
-    // orphan keeps taking exactly its activity-ordered slot.
-    $orphanLastId=0;
-    if ($orphanTotal) {
-        $ol=$pdo->prepare('SELECT MAX(id) FROM messages WHERE (recipient_id=? AND sender_id IS NULL) OR (sender_id=? AND recipient_id IS NULL)');
-        $ol->execute([$me,$me]);
-        $orphanLastId=(int)($ol->fetchAll(PDO::FETCH_COLUMN)[0] ?? 0);
-    }
-    // People ordering (#94 point 7): latest conversation first. The order is
-    // stored in the messages themselves - MAX(m.id) per conversation is the
-    // activity cursor (ids are monotonic, so it has no clock-tie ambiguity) -
-    // so it survives sign-outs and devices without extra state to keep in
-    // sync, and a new message moves its conversation to the top on the very
-    // next load. People never written to sort after everyone, by name, and
-    // the "Deleted user" entry takes its place in the same order. The #57-E
-    // port keeps that exact order as the fixed default of the engine's sort
-    // allowlist (a crafted ?sort= falls back to it; the chat sidebar keeps no
-    // sort UI) and gains the search/pagination mechanics of the other lists.
-    $peopleConds=[];
-    $peopleParams=[];
+    // The left-pane read model (#114) is shared with the messages_live feed:
+    // per-person unread counts, the orphan counters and the people rows in
+    // the #94 activity order. The unread maps are read before the mark-read
+    // below, so the left list shows what is new on this very load.
     $pq = trim((string)($_GET['q'] ?? ''));
-    if ($pq !== '') {
-        // The same |, %, _ escaping the task search uses, so a search for a
-        // literal % or _ cannot turn into a wildcard scan.
-        $term = str_replace(['|','%','_'],['||','|%','|_'],$pq);
-        $peopleConds[] = "display_name LIKE ? ESCAPE '|'";
-        $peopleParams[] = '%'.$term.'%';
-    }
-    $peopleUnion = 'SELECT u.id, u.display_name, u.last_seen_at, u.logged_out, MAX(m.id) last_id FROM users u LEFT JOIN messages m ON (m.sender_id=u.id AND m.recipient_id=?) OR (m.recipient_id=u.id AND m.sender_id=?) WHERE u.id<>? GROUP BY u.id, u.display_name, u.last_seen_at';
-    if ($orphanTotal) $peopleUnion .= ' UNION ALL SELECT 0, \'Deleted user\', NULL, 0, ' . $orphanLastId;
-    $peopleList=tb_crud_list([
-        'pdo'=>$pdo,
-        'table'=>'(' . $peopleUnion . ') ppl',
-        'select'=>'id, display_name, last_seen_at, logged_out, last_id',
-        'where'=>$peopleConds,
-        // The union carries its own peer pair (twice) plus the self-exclusion
-        // before the outer WHERE, so its parameters come first.
-        'params'=>array_merge([$me,$me,$me],$peopleParams),
-        'sortColumns'=>[
-            'activity'=>'(last_id IS NULL) ASC, last_id {dir}, (CASE WHEN id = 0 THEN 0 ELSE 1 END) ASC, display_name ASC, id ASC',
-            'name'=>'display_name {dir}, (last_id IS NULL) ASC, last_id DESC, (CASE WHEN id = 0 THEN 0 ELSE 1 END) ASC, id ASC',
-        ],
-        'defaultSort'=>'activity',
-        'defaultDir'=>'desc',
-    ]);
-    $chatEntries=$peopleList['rows'];
+    $chatPeopleModel=tb_chat_people_model($pdo,$me,$pq);
+    $unreadBySender=$chatPeopleModel['unreadBySender'];
+    $orphanUnread=$chatPeopleModel['orphanUnread'];
+    $chatEntries=$chatPeopleModel['entries'];
+    $peopleList=['page'=>$chatPeopleModel['page'],'pages'=>$chatPeopleModel['pages']];
     $peopleUrl=tb_crud_url_builder($chatPage,['q','u']);
     // Viewing the board is what marks the messages read - the badge on the
     // page and in the navbar always means "new since the last visit".
@@ -1463,6 +1487,8 @@ if (in_array($page, ['messages', 'messages-v2'], true)) {
     if ($hasMore) $threadRows=array_slice($threadRows,0,20);
     $thread=array_reverse($threadRows);
     $oldestId=count($thread)?(int)$thread[0]['id']:null;
+    // #114: the live feed cursor - the newest message id the page rendered.
+    $newestId=count($thread)?(int)$thread[count($thread)-1]['id']:0;
     $threadAttachments=tb_message_attachments($pdo,array_map(function($m){return (int)$m['id'];},$thread));
     render_header('Messages',$config,$error); ?>
     <style>
@@ -1487,18 +1513,17 @@ if (in_array($page, ['messages', 'messages-v2'], true)) {
       .tb-chat-bubble{max-width:88%!important}
     }
     </style>
-    <div class="d-flex justify-content-between align-items-center mb-3"><div><h1 class="h3 mb-0">Messages</h1><div class="muted">A messenger-style board: pick a person on the left, chat in bubbles on the right - every message shows when it was sent and whether it was seen.</div></div><span class="badge text-bg-danger fs-6"><?=$newCount?> new message<?=$newCount===1?'':'s'?></span></div>
-    <div class="row g-4 tb-chat<?=$hasPeer?' has-peer':''?>" data-tb-chat>
+    <div class="d-flex justify-content-between align-items-center mb-3"><div><h1 class="h3 mb-0">Messages</h1><div class="muted">A messenger-style board: pick a person on the left, chat in bubbles on the right - every message shows when it was sent and whether it was seen.</div></div><span class="badge text-bg-danger fs-6" data-tb-chat-newcount><?=$newCount?> new message<?=$newCount===1?'':'s'?></span></div>
+    <div class="row g-4 tb-chat<?=$hasPeer?' has-peer':''?>" data-tb-chat data-tb-chat-live-url="<?=h('?page=messages_live&u='.$peerId.'&cp='.urlencode($chatPage))?>">
         <div class="col-lg-4 tb-chat-people"><div class="card p-3 tb-chat-people-card"><h2 class="h5">People</h2>
             <form method="get" class="d-flex gap-2 mb-2"><input type="hidden" name="page" value="<?=$chatPage?>"><?php if($peerExplicit): ?><input type="hidden" name="u" value="<?=$peerId?>"><?php endif; ?><input class="form-control form-control-sm" type="search" name="q" value="<?=h($pq)?>" placeholder="Search people..." aria-label="Search people"><button class="btn btn-sm btn-outline-secondary">Search</button><?php if($pq!==''): ?><a class="btn btn-link btn-sm" href="<?=h($peerExplicit?'?page='.$chatPage.'&u='.$peerId:'?page='.$chatPage)?>&amp;clear_search=1">Clear</a><?php endif; ?></form>
-            <?php foreach ($chatEntries as $p): $pid=(int)$p['id']; $isOrphan=$pid===0; ?>
-            <a class="d-flex justify-content-between align-items-center border-bottom py-2 text-decoration-none<?=$peer!==null&&$pid===(int)$peer['id']?' bg-primary-subtle fw-semibold':''?>" href="?page=<?=$chatPage?>&u=<?=$pid?>"><span><?php if($isOrphan): ?>Deleted user<?php else: ?><?=tb_user_with_activity($p)?><?php endif; ?></span><?php if($isOrphan ? $orphanUnread : ($unreadBySender[$pid] ?? 0)): ?><span class="badge text-bg-danger"><?=$isOrphan?$orphanUnread:$unreadBySender[$pid]?></span><?php endif; ?></a>
-            <?php endforeach; if(!$chatEntries): ?><div class="small muted"><?=$pq!==''?'No people match the search.':'Nobody to talk to yet.'?></div><?php endif; ?>
+            <div data-tb-chat-people-rows<?php if($pq===''): ?> data-tb-chat-live-people="1"<?php endif; ?>><?=tb_chat_people_rows($chatEntries,$unreadBySender,$orphanUnread,$peer,$chatPage)?></div>
+            <?php if(!$chatEntries): ?><div class="small muted"><?=$pq!==''?'No people match the search.':'Nobody to talk to yet.'?></div><?php endif; ?>
             <?=tb_crud_pagination(['ariaLabel'=>'People list pages','page'=>$peopleList['page'],'pages'=>$peopleList['pages'],'url'=>$peopleUrl])?>
         </div></div>
         <div class="col-lg-8 tb-chat-thread"><div class="card p-3">
             <div class="tb-chat-head d-flex align-items-center gap-2"><a class="btn btn-sm btn-outline-secondary tb-chat-back" href="?page=<?=$chatPage?>" aria-label="Back to the people list" title="Back to the people list">&larr;</a><h2 class="h5"><?=h($peer!==null?'Conversation with '.$peer['display_name']:'Deleted user')?></h2></div>
-            <div class="tb-chat-scroll" data-tb-chat-scroll data-tb-more="<?=h('?page=messages_more&u='.$peerId.($oldestId!==null?'&before='.(int)$oldestId:''))?>" data-tb-has-more="<?=$hasMore?'1':'0'?>">
+            <div class="tb-chat-scroll" data-tb-chat-scroll data-tb-more="<?=h('?page=messages_more&u='.$peerId.($oldestId!==null?'&before='.(int)$oldestId:''))?>" data-tb-has-more="<?=$hasMore?'1':'0'?>" data-tb-after="<?=$newestId?>">
             <?php foreach ($thread as $m): $mine=$m['sender_id']!==null&&(int)$m['sender_id']===$me; echo tb_message_bubble($m,$mine,$threadAttachments[(int)$m['id']]??[]); endforeach; if(!$thread): ?><div class="text-center muted small py-4">No messages here yet - say hi below.</div><?php endif; ?>
             </div>
             <?php if ($peerId!==0): ?><form method="post" class="tb-chat-composer mt-2" enctype="multipart/form-data" data-tb-chat-send><?=csrf_field()?><input type="hidden" name="action" value="send_message"><input type="hidden" name="recipient_id" value="<?=$peerId?>"><input type="hidden" name="send_token" value="<?=h(tb_message_send_token())?>"><div class="input-group"><button class="btn btn-outline-secondary tb-chat-attach" type="button" aria-label="Attach a file" title="Attach a file">&#128206;</button><input type="file" class="d-none" name="attachment" aria-label="Attachment file" data-tb-chat-file><textarea class="form-control" id="message-body" name="body" rows="2" placeholder="Write a message..." aria-label="Message" data-tb-chat-body></textarea><button class="btn btn-primary" type="submit">Send</button></div><div class="small muted mt-1 d-none" data-tb-chat-file-name></div><div class="small muted mt-1">Enter sends &middot; Shift+Enter or Ctrl+Enter adds a new line &middot; max <?=round($config['max_upload_bytes']/1024/1024)?> MB per attachment.</div></form>
@@ -1593,6 +1618,47 @@ if (in_array($page, ['messages', 'messages-v2'], true)) {
                     else{form.submit();}
                 }
             });
+        }
+        // Live updates (#114): a poll on the messages_live feed appends the
+        // bubbles that arrived for the open conversation, swaps the people
+        // rows (unread badges, activity indicators, highlight) for a fresh
+        // full-load picture and keeps the page badge in sync - without ever
+        // touching the composer draft. Same cadence and hidden-tab rules as
+        // the shared list refresh (#51); a bubble only scrolls the thread
+        // when the reader already sits at the bottom, so reading history is
+        // never yanked away.
+        var liveUrl=root.getAttribute('data-tb-chat-live-url')||'';
+        if(liveUrl){
+            var lastId=parseInt(scroll?scroll.getAttribute('data-tb-after')||'0':'0',10);
+            if(!(lastId>=0)) lastId=0;
+            var liveBusy=false;
+            var poll=function(){
+                if(liveBusy||document.hidden) return;
+                liveBusy=true;
+                fetch(liveUrl+'&after='+lastId,{credentials:'same-origin',headers:{'Accept':'application/json'}})
+                    .then(function(r){return r.ok?r.json():null;})
+                    .then(function(d){
+                        if(!d) return;
+                        if(d.html&&scroll){
+                            var nearBottom=scroll.scrollHeight-scroll.scrollTop-scroll.clientHeight<60;
+                            scroll.insertAdjacentHTML('beforeend',d.html);
+                            if(nearBottom) scroll.scrollTop=scroll.scrollHeight;
+                        }
+                        if(typeof d.lastId==='number'&&d.lastId>lastId) lastId=d.lastId;
+                        if(typeof d.newCount==='number'){
+                            var badge=document.querySelector('[data-tb-chat-newcount]');
+                            if(badge) badge.textContent=d.newCount+' new message'+(d.newCount===1?'':'s');
+                        }
+                        if(typeof d.peopleHtml==='string'&&d.peopleHtml!==''){
+                            var rowsEl=document.querySelector('[data-tb-chat-live-people]');
+                            if(rowsEl&&rowsEl.innerHTML!==d.peopleHtml) rowsEl.innerHTML=d.peopleHtml;
+                        }
+                    })
+                    .catch(function(){})
+                    .then(function(){liveBusy=false;});
+            };
+            setInterval(poll,10000);
+            document.addEventListener('visibilitychange',function(){if(!document.hidden)poll();});
         }
     })();
     </script>

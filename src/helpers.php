@@ -74,6 +74,98 @@ function tb_message_attachments(PDO $pdo, array $messageIds): array {
     }
     return $grouped;
 }
+
+/**
+ * The shared read model of the messenger's left pane (#114): the per-person
+ * unread counts, the "Deleted user" orphan counters and the people rows in
+ * the #94 activity order (newest conversation first, people never written to
+ * last). The messages page renders its list from this model, and the
+ * messages_live feed re-reads it on every poll, so a live refresh swaps in
+ * exactly the picture a fresh page load would have drawn. $searchTerm
+ * filters the people rows with the same literal-% discipline as everywhere
+ * else (an empty term keeps the full list, which is what the feed wants).
+ */
+function tb_chat_people_model(PDO $pdo, int $me, string $searchTerm = ''): array {
+    $unreadBySender = [];
+    $ub = $pdo->prepare('SELECT sender_id, COUNT(*) c FROM messages WHERE recipient_id=? AND is_read=0 AND sender_id IS NOT NULL GROUP BY sender_id');
+    $ub->execute([$me]);
+    foreach ($ub->fetchAll() as $ubRow) $unreadBySender[(int)$ubRow['sender_id']] = (int)$ubRow['c'];
+    $orphansUnread = $pdo->prepare('SELECT COUNT(*) FROM messages WHERE recipient_id=? AND is_read=0 AND sender_id IS NULL');
+    $orphansUnread->execute([$me]);
+    $orphanUnread = (int)$orphansUnread->fetchAll(PDO::FETCH_COLUMN)[0];
+    $orphansTotal = $pdo->prepare('SELECT COUNT(*) FROM messages WHERE (recipient_id=? AND sender_id IS NULL) OR (sender_id=? AND recipient_id IS NULL)');
+    $orphansTotal->execute([$me, $me]);
+    $orphanTotal = (int)$orphansTotal->fetchAll(PDO::FETCH_COLUMN)[0];
+    $orphanLastId = 0;
+    if ($orphanTotal) {
+        $ol = $pdo->prepare('SELECT MAX(id) FROM messages WHERE (recipient_id=? AND sender_id IS NULL) OR (sender_id=? AND recipient_id IS NULL)');
+        $ol->execute([$me, $me]);
+        $orphanLastId = (int)($ol->fetchAll(PDO::FETCH_COLUMN)[0] ?? 0);
+    }
+    $peopleConds = [];
+    $peopleParams = [];
+    $pq = trim($searchTerm);
+    if ($pq !== '') {
+        // The same |, %, _ escaping the task search uses, so a search for a
+        // literal % or _ cannot turn into a wildcard scan.
+        $term = str_replace(['|', '%', '_'], ['||', '|%', '|_'], $pq);
+        $peopleConds[] = "display_name LIKE ? ESCAPE '|'";
+        $peopleParams[] = '%' . $term . '%';
+    }
+    $peopleUnion = 'SELECT u.id, u.display_name, u.last_seen_at, u.logged_out, MAX(m.id) last_id FROM users u LEFT JOIN messages m ON (m.sender_id=u.id AND m.recipient_id=?) OR (m.recipient_id=u.id AND m.sender_id=?) WHERE u.id<>? GROUP BY u.id, u.display_name, u.last_seen_at';
+    if ($orphanTotal) $peopleUnion .= ' UNION ALL SELECT 0, \'Deleted user\', NULL, 0, ' . $orphanLastId;
+    $peopleList = tb_crud_list([
+        'pdo' => $pdo,
+        'table' => '(' . $peopleUnion . ') ppl',
+        'select' => 'id, display_name, last_seen_at, logged_out, last_id',
+        'where' => $peopleConds,
+        // The union carries its own peer pair (twice) plus the self-exclusion
+        // before the outer WHERE, so its parameters come first.
+        'params' => array_merge([$me, $me, $me], $peopleParams),
+        'sortColumns' => [
+            'activity' => '(last_id IS NULL) ASC, last_id {dir}, (CASE WHEN id = 0 THEN 0 ELSE 1 END) ASC, display_name ASC, id ASC',
+            'name' => 'display_name {dir}, (last_id IS NULL) ASC, last_id DESC, (CASE WHEN id = 0 THEN 0 ELSE 1 END) ASC, id ASC',
+        ],
+        'defaultSort' => 'activity',
+        'defaultDir' => 'desc',
+    ]);
+    return [
+        'unreadBySender' => $unreadBySender,
+        'orphanUnread' => $orphanUnread,
+        'orphanTotal' => $orphanTotal,
+        'entries' => $peopleList['rows'],
+        'page' => $peopleList['page'],
+        'pages' => $peopleList['pages'],
+    ];
+}
+
+/**
+ * Renders the messenger people-list rows (#94 layout): one row per person -
+ * or the "Deleted user" entry - carrying the activity indicator and the
+ * unread badge, with the open conversation highlighted. Shared verbatim by
+ * the messages page and the messages_live feed (#114), so a live refresh
+ * swaps in exactly the markup a full page load would have rendered.
+ */
+function tb_chat_people_rows(array $entries, array $unreadBySender, int $orphanUnread, ?array $peer, string $chatPage): string {
+    $html = '';
+    foreach ($entries as $p) {
+        $pid = (int)$p['id'];
+        $isOrphan = $pid === 0;
+        $html .= '<a class="d-flex justify-content-between align-items-center border-bottom py-2 text-decoration-none' . ($peer !== null && $pid === (int)$peer['id'] ? ' bg-primary-subtle fw-semibold' : '') . '" href="?page=' . $chatPage . '&u=' . $pid . '"><span>';
+        if ($isOrphan) {
+            $html .= 'Deleted user';
+        } else {
+            $html .= tb_user_with_activity($p);
+        }
+        $html .= '</span>';
+        if ($isOrphan ? $orphanUnread : ($unreadBySender[$pid] ?? 0)) {
+            $html .= '<span class="badge text-bg-danger">' . ($isOrphan ? $orphanUnread : $unreadBySender[$pid]) . '</span>';
+        }
+        $html .= '</a>';
+    }
+    return $html;
+}
+
 function history(PDO $pdo, int $taskId, string $event, string $details = ''): void {
     $s = $pdo->prepare('INSERT INTO task_history(task_id,user_id,event,details,created_at) VALUES(?,?,?,?,?)');
     $s->execute([$taskId, user()['id'], $event, $details, time()]);

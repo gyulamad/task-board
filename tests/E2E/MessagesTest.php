@@ -134,13 +134,13 @@ final class MessagesTest extends E2eTestCase
         $this->sendMessageFrom($admin, $carlId, 'Second note.');
 
         $page = $carl->get('/?page=messages');
-        $this->assertTrue($page->contains('<span class="badge text-bg-danger fs-6">2 new messages</span>'), 'The red notification shows the new message count.');
+        $this->assertTrue($page->contains('<span class="badge text-bg-danger fs-6" data-tb-chat-newcount>2 new messages</span>'), 'The red notification shows the new message count.');
         $this->assertTrue($page->contains('badge text-bg-danger" title="New messages">2</span>'), 'The navbar badge shows the same count.');
         $this->assertTrue($page->contains('<span class="badge text-bg-danger">2</span>'), 'The people list counts the unread messages per person.');
 
         // Viewing the board marks them read: the badge resets, the thread stays.
         $again = $carl->get('/?page=messages');
-        $this->assertTrue($again->contains('<span class="badge text-bg-danger fs-6">0 new messages</span>'));
+        $this->assertTrue($again->contains('<span class="badge text-bg-danger fs-6" data-tb-chat-newcount>0 new messages</span>'));
         $this->assertTrue($again->contains('First note.'), 'The messages themselves stay in the thread.');
         $this->assertFalse($again->contains('badge text-bg-danger" title="New messages"'), 'The navbar badge disappears when nothing is new.');
         $this->assertSame('2', (string)TestServer::pdo()->query('SELECT COUNT(*) FROM messages WHERE recipient_id=' . $carlId . ' AND is_read=1')->fetchColumn());

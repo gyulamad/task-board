@@ -161,9 +161,10 @@ final class CrudAbstractionTest extends E2eTestCase
 
         $page = $admin->get('/?page=users-v2');
         // One Message link per other user, none on the admin's own row: the
-        // messenger has no self-conversation.
-        $this->assertSame(2, substr_count($page->body, 'href="?page=messages&u='), 'Every row but the admin\'s own carries the Message shortcut.');
-        $this->assertTrue($page->contains('href="?page=messages&u=' . $userId . '">Message</a>'), 'The Message button links to the messenger with the user preselected.');
+        // messenger has no self-conversation. The shortcut deep-links the
+        // canonical v2 messenger since the #85 step-5 switch.
+        $this->assertSame(2, substr_count($page->body, 'href="?page=messages-v2&u='), 'Every row but the admin\'s own carries the Message shortcut.');
+        $this->assertTrue($page->contains('href="?page=messages-v2&u=' . $userId . '">Message</a>'), 'The Message button links to the messenger with the user preselected.');
         $this->assertGreaterThan(
             strpos($page->body, '>Edit</a>'),
             strpos($page->body, '>Message</a>'),
@@ -171,14 +172,15 @@ final class CrudAbstractionTest extends E2eTestCase
         );
 
         // The shortcut lands on the messenger with the conversation selected
-        // instantly (?u=<id>, the messages page's own selection parameter).
+        // instantly (?u=<id>, the messenger's own selection parameter) - the
+        // classic URL stays a working alias of the v2 page.
         $thread = $admin->get('/?page=messages&u=' . $userId);
         $this->assertSame(200, $thread->status);
         $this->assertTrue($thread->contains('Conversation with Writable Name'), 'The preselected conversation renders immediately.');
 
         // The alias serves the same shortcut.
         $alias = $admin->get('/?page=users');
-        $this->assertSame(2, substr_count($alias->body, 'href="?page=messages&u='));
+        $this->assertSame(2, substr_count($alias->body, 'href="?page=messages-v2&u='));
     }
 
     // --- tasks-v2: the task list feature set --------------------------------
@@ -1015,6 +1017,7 @@ final class CrudAbstractionTest extends E2eTestCase
         $this->assertSame(200, $unknown->status);
         $this->assertFalse($unknown->contains('Conversation with Deleted user'), 'An unknown id does not open the orphan thread.');
     }
+
     public function test_messages_v2_self_deep_link_falls_back_like_the_classic_page(): void
     {
         $admin = $this->adminSession();
@@ -1029,7 +1032,6 @@ final class CrudAbstractionTest extends E2eTestCase
         $this->assertFalse($page->contains('Conversation with Administrator'), 'No self-conversation opens.');
         $this->assertTrue($page->contains('Conversation with Selflinkpeer Name'), 'The auto-selected first person opens instead.');
     }
-
 
     public function test_messages_v2_page_matches_the_messages_page(): void
     {

@@ -94,7 +94,7 @@ final class NotificationFlagToggleTest extends E2eTestCase
         // action must land the user right back there (#100 flow).
         $response = $nora->post('/?page=notifications', ['action' => 'toggle_notification_flag']);
         $this->assertSame(302, $response->status);
-        $this->assertStringContainsString('page=notifications', (string)$response->header('location'), 'The toggle returns to the notifications page.');
+        $this->assertStringContainsString('page=notifications', (string)$response->header('location'), 'The toggle returns to the page the switch was used on (either URL renders the stream since #85).');
 
         // Unseen rows still exist - only the top-menu flag is switched off.
         $this->assertSame(1, (int)TestServer::pdo()->query('SELECT COUNT(*) FROM notifications WHERE user_id=' . $this->userId('nadia') . ' AND is_seen=0')->fetchColumn());

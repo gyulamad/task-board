@@ -103,6 +103,11 @@ final class BadgeFeedTest extends E2eTestCase
         $this->assertTrue($page->contains('setInterval(tick,10000)'), 'The poller runs on the same 10s cadence as the list refresh.');
         $this->assertTrue($page->contains('bootstrap.bundle.min.js'), 'The bootstrap bundle still loads after the poller.');
 
+        // The poller swaps the badges into the navbar entries it looks up by
+        // href - the canonical v2 entries since the #85 step-5 switch, so the
+        // feed keeps moving the badges the navbar actually renders.
+        $this->assertTrue($page->contains("apply('messages-v2','New messages',d.messages|0);apply('notifications-v2','New notifications',d.notifications|0)"), 'The poller targets the canonical navbar entries.');
+
         // Anonymous visitors get the standard login guard, no counters leak.
         $response = $this->session->get('/?page=badges');
         $this->assertSame(302, $response->status);

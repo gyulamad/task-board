@@ -486,7 +486,7 @@ if (user()) {
                 // really written (a validation error keeps it usable).
                 if (!hash_equals(tb_message_send_token(), (string)($_POST['send_token'] ?? ''))) {
                     flash('This submit was dropped: the send form was already used (double click or another tab). Nothing was duplicated.');
-                    redirect('?page=messages&u='.$recipientId);
+                    redirect('?page=messages-v2&u='.$recipientId);
                 }
                 // The file moves into uploads/ only after every check passed,
                 // right before the rows are written; a move failure aborts
@@ -508,7 +508,7 @@ if (user()) {
                 flash('Message sent.');
                 // Back to the conversation the send belongs to, so the mobile
                 // single-pane view (#94) also lands inside the thread.
-                redirect('?page=messages&u='.$recipientId);
+                redirect('?page=messages-v2&u='.$recipientId);
             }
             if ($action === 'mark_all_seen') {
                 // Seen all notification (#79): one click clears the whole
@@ -517,7 +517,7 @@ if (user()) {
                 // stays for reading one by one; this is the bulk shortcut.
                 $pdo->prepare('UPDATE notifications SET is_seen=1 WHERE user_id=? AND is_seen=0')->execute([(int)user()['id']]);
                 flash('All notifications marked as seen.');
-                redirect('?page=notifications');
+                redirect('?page=notifications-v2');
             }
             if ($action === 'link_task') {
                 $id=(int)$_POST['task_id']; $other=(int)$_POST['related_task_id']; $type=$_POST['link_type'] ?? '';
@@ -890,7 +890,7 @@ function render_header(string $title, array $config, string $error = ''): void {
     <link rel="icon" type="image/svg+xml" href="?page=favicon&amp;type=svg"><link rel="icon" href="?page=favicon" sizes="48x48 32x32 16x16">
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
     <style>body{background:#f5f6f8}.card{border:0;box-shadow:0 1px 5px #0000000d}.muted{color:#687386}.prewrap{white-space:pre-wrap}.navbar-brand{font-weight:700}.tb-activity-dot{display:inline-block;width:.55em;height:.55em;border-radius:50%;margin-right:.3em}.tb-activity-green{background:#198754}.tb-activity-yellow{background:#ffc107}.tb-activity-red{background:#dc3545}.tb-activity-grey{background:#6c757d}.tb-activity-char{font-weight:700;margin-right:.3em}.tb-activity-empty{font-weight:400;margin-right:.3em;color:#6c757d}html[data-bs-theme="dark"] body{background:#14181f}html[data-bs-theme="dark"] .card{box-shadow:0 1px 6px #00000059}html[data-bs-theme="dark"] .muted{color:#8b96a5}</style></head><body>
-    <nav class="navbar navbar-expand-lg navbar-dark bg-dark"><div class="container"><a class="navbar-brand" href="?"><?=h($config['app_name'])?></a><?php if(user()): ?><button class="navbar-toggler ms-auto" type="button" data-bs-toggle="collapse" data-bs-target="#tb-navbar" aria-controls="tb-navbar" aria-expanded="false" aria-label="Toggle navigation"><span class="navbar-toggler-icon"></span></button><div class="collapse navbar-collapse" id="tb-navbar"><div class="navbar-nav ms-auto align-items-center"><a class="nav-link" href="?page=tasks-v2">Tasks</a><a class="nav-link" href="?page=kanban">Kanban</a><a class="nav-link" href="?page=waterflow">Waterflow</a><a class="nav-link" href="?page=projects-v2">Projects</a><a class="nav-link" href="?page=templates-v2">Templates</a><a class="nav-link" href="?page=documents-v2">Know-hows</a><a class="nav-link" href="?page=messages">Messages<?php global $pdo; $tbUnread=array_key_exists('TB_UNREAD_BADGE',$GLOBALS)?(int)$GLOBALS['TB_UNREAD_BADGE']:tb_unread_message_count($pdo,(int)user()['id']); if($tbUnread): ?> <span class="badge text-bg-danger" title="New messages"><?=$tbUnread?></span><?php endif; unset($GLOBALS['TB_UNREAD_BADGE']); ?></a><a class="nav-link" href="?page=notifications">Notifications<?php global $pdo; $tbSeen=array_key_exists('TB_NOTIFICATION_BADGE',$GLOBALS)?(int)$GLOBALS['TB_NOTIFICATION_BADGE']:tb_unseen_notification_count($pdo,(int)user()['id']); if($tbSeen && tb_notification_flag_enabled($pdo,(int)user()['id'])): ?> <span class="badge text-bg-danger" title="New notifications"><?=$tbSeen?></span><?php endif; unset($GLOBALS['TB_NOTIFICATION_BADGE']); ?></a><a class="nav-link" href="?page=settings">Settings</a><?php if(is_admin()): ?><a class="nav-link" href="?page=admin">Administration</a><a class="nav-link" href="?page=activity_settings">Activity periods</a><a class="nav-link" href="?page=updates">Software updates</a><?php endif; ?><form method="post" class="d-flex align-items-center mx-2"><?=csrf_field()?><input type="hidden" name="action" value="save_theme"><select name="theme" class="form-select form-select-sm bg-dark text-light border-secondary" aria-label="Theme" title="Theme" onchange="this.form.submit()"><option value="light" <?=$theme==='light'?'selected':''?>>Light</option><option value="dark" <?=$theme==='dark'?'selected':''?>>Dark</option></select><noscript><button class="btn btn-sm btn-outline-light ms-1">Save</button></noscript></form><span class="navbar-text mx-2"><?=tb_user_with_activity($_SESSION['user'])?></span><form method="post" action="?page=logout" class="d-inline m-0"><?=csrf_field()?><button type="submit" class="btn btn-link nav-link p-0 text-white text-decoration-none">Sign out</button></form></div></div><?php endif; ?></div></nav><main class="container py-4">
+    <nav class="navbar navbar-expand-lg navbar-dark bg-dark"><div class="container"><a class="navbar-brand" href="?"><?=h($config['app_name'])?></a><?php if(user()): ?><button class="navbar-toggler ms-auto" type="button" data-bs-toggle="collapse" data-bs-target="#tb-navbar" aria-controls="tb-navbar" aria-expanded="false" aria-label="Toggle navigation"><span class="navbar-toggler-icon"></span></button><div class="collapse navbar-collapse" id="tb-navbar"><div class="navbar-nav ms-auto align-items-center"><a class="nav-link" href="?page=tasks-v2">Tasks</a><a class="nav-link" href="?page=kanban">Kanban</a><a class="nav-link" href="?page=waterflow">Waterflow</a><a class="nav-link" href="?page=projects-v2">Projects</a><a class="nav-link" href="?page=templates-v2">Templates</a><a class="nav-link" href="?page=documents-v2">Know-hows</a><a class="nav-link" href="?page=messages-v2">Messages<?php global $pdo; $tbUnread=array_key_exists('TB_UNREAD_BADGE',$GLOBALS)?(int)$GLOBALS['TB_UNREAD_BADGE']:tb_unread_message_count($pdo,(int)user()['id']); if($tbUnread): ?> <span class="badge text-bg-danger" title="New messages"><?=$tbUnread?></span><?php endif; unset($GLOBALS['TB_UNREAD_BADGE']); ?></a><a class="nav-link" href="?page=notifications-v2">Notifications<?php global $pdo; $tbSeen=array_key_exists('TB_NOTIFICATION_BADGE',$GLOBALS)?(int)$GLOBALS['TB_NOTIFICATION_BADGE']:tb_unseen_notification_count($pdo,(int)user()['id']); if($tbSeen && tb_notification_flag_enabled($pdo,(int)user()['id'])): ?> <span class="badge text-bg-danger" title="New notifications"><?=$tbSeen?></span><?php endif; unset($GLOBALS['TB_NOTIFICATION_BADGE']); ?></a><a class="nav-link" href="?page=settings">Settings</a><?php if(is_admin()): ?><a class="nav-link" href="?page=admin">Administration</a><a class="nav-link" href="?page=activity_settings">Activity periods</a><a class="nav-link" href="?page=updates">Software updates</a><?php endif; ?><form method="post" class="d-flex align-items-center mx-2"><?=csrf_field()?><input type="hidden" name="action" value="save_theme"><select name="theme" class="form-select form-select-sm bg-dark text-light border-secondary" aria-label="Theme" title="Theme" onchange="this.form.submit()"><option value="light" <?=$theme==='light'?'selected':''?>>Light</option><option value="dark" <?=$theme==='dark'?'selected':''?>>Dark</option></select><noscript><button class="btn btn-sm btn-outline-light ms-1">Save</button></noscript></form><span class="navbar-text mx-2"><?=tb_user_with_activity($_SESSION['user'])?></span><form method="post" action="?page=logout" class="d-inline m-0"><?=csrf_field()?><button type="submit" class="btn btn-link nav-link p-0 text-white text-decoration-none">Sign out</button></form></div></div><?php endif; ?></div></nav><main class="container py-4">
     <?php if (!empty($_SESSION['flash'])): ?><div class="alert alert-success"><?=h($_SESSION['flash'])?></div><?php unset($_SESSION['flash']); endif; ?>
     <?php if($error): ?><div class="alert alert-danger"><?=h($error)?></div><?php endif;
 }
@@ -916,7 +916,7 @@ function tick(){
     busy=true;
     fetch('?page=badges',{credentials:'same-origin'})
         .then(function(r){return r.ok?r.json():null;})
-        .then(function(d){if(d){apply('messages','New messages',d.messages|0);apply('notifications','New notifications',d.notifications|0);}})
+        .then(function(d){if(d){apply('messages-v2','New messages',d.messages|0);apply('notifications-v2','New notifications',d.notifications|0);}})
         .catch(function(){})
         .then(function(){busy=false;});
 }
@@ -1655,7 +1655,7 @@ if ($page==='notification_seen') {
         $pdo->prepare('UPDATE notifications SET is_seen=1 WHERE id=? AND user_id=?')->execute([$id,$me]);
         redirect('?page=task&id='.(int)$row['task_id']);
     }
-    redirect('?page=notifications');
+    redirect('?page=notifications-v2');
 }
 
 // ---- Change details, full audit (#54) ---------------------------------------
@@ -1770,7 +1770,7 @@ if (in_array($page, ['users', 'users-v2'], true) && is_admin()) {
             // The message shortcut (#98): jumps to the messenger with this
             // user's conversation already selected (?u=<id>). The own row
             // offers none - the messenger has no self-conversation.
-            $message = (int)$u['id'] === (int)user()['id'] ? '' : ' <a class="btn btn-sm btn-outline-primary" href="?page=messages&u='.$u['id'].'">Message</a>';
+            $message = (int)$u['id'] === (int)user()['id'] ? '' : ' <a class="btn btn-sm btn-outline-primary" href="?page=messages-v2&u='.$u['id'].'">Message</a>';
             return '<td class="text-nowrap"><a class="btn btn-sm btn-outline-secondary" href="?page=user&id='.$u['id'].'">Edit</a>'.$message.' <form method="post" class="d-inline" onsubmit="return confirm(\'Delete this user permanently? Their tasks, comments and attachments will be kept.\')">'.csrf_field().'<input type="hidden" name="action" value="delete_user"><input type="hidden" name="id" value="'.$u['id'].'"><button class="btn btn-sm btn-outline-danger">Delete</button></form></td>';
         }],
     ];

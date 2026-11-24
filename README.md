@@ -434,6 +434,45 @@ The create-user form stays outside the swapped region, and the realtime
 refresh (#51) keeps re-rendering the list every 10 seconds with the active
 search and filter state preserved.
 
+## The shared CRUD list engine (src/crud.php, #57)
+Every list on the board — tasks, users, projects, templates, know-hows,
+archive, the messages people list and the notifications stream — renders
+through one engine. New lists should use it the same way instead of growing
+private copies of the mechanics:
+
+1. **Build the query with `tb_crud_list()`** (`src/crud.php`): pass the
+   `table` (a FROM clause — a derived table when the list aggregates, e.g.
+   the messages people union), the `select` column list, the optional `where`
+   conditions with bound `params`, a `sortColumns` allowlist and the
+   `defaultSort`/`defaultDir`. It returns the page's rows, the validated sort
+   state, the total row count and the pagination math (20 rows per page).
+   Crafted `?sort=`/`?dir=` values fall back to the default — unknown keys
+   never reach the SQL.
+2. **Keep aggregates inside a derived table.** When the list aggregates
+   (`GROUP BY`/`MAX()`), wrap it as the `table` subquery and reference the
+   computed columns from the outer query. MariaDB refuses an aggregate alias
+   referenced inside an ORDER BY expression of the same query level ("the
+   #102 messages outage"); a plain column of a derived table is safe on every
+   supported dialect. The `SqlAliasGuardTest` tokenizer pins this discipline
+   over every deployed SQL literal.
+3. **Render with the shared partials**: `tb_crud_table()` for the row table
+   (columns carry labels, sort state and per-row `cell` closures),
+   `tb_crud_pagination()` for the page bar (it accepts trailing bulk controls),
+   and `tb_crud_bulk_select_script()` when the list has bulk actions. Build
+   stateful URLs with `tb_crud_url_builder()` so search/filter/sort/page travel
+   through header and page links.
+4. **Ship the page as a v1/v2 pair during a migration**: build the new
+   `?page=<name>-v2` page on the engine, keep the classic URL as an alias
+   rendering the same body under its own name (the generated links carry the
+   requested page name), pin both with byte-parity tests in
+   `tests/E2E/CrudAbstractionTest.php`, switch the entry links to the v2 URL,
+   and retire the replaced markup. Once every list is migrated (the #57-F
+   sweep), new lists land directly on the engine and the pair recipe only
+   applies when an existing page is rebuilt.
+5. **Realtime lists** (#51) wrap the engine output in the
+   `data-tb-refresh` region and emit the swap event so checkbox selections
+   survive the 10-second re-render; the users/tasks pages show the pattern.
+
 ## Requirements
 - PHP 8.2+ recommended
 - PDO MySQL extension

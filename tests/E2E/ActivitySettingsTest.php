@@ -98,7 +98,7 @@ final class ActivitySettingsTest extends E2eTestCase
         // the settings page now shows the generated wording and the legend marks
         $page = $admin->get('/?page=activity_settings');
         $this->assertStringContainsString('Seen within the last 30 minutes', $page->body);
-        $this->assertStringContainsString('tb-activity-grey', $page->body);
+        $this->assertStringContainsString('tb-activity-empty', $page->body, '#106: the grey period renders the empty circle glyph, so the legend carries the empty class, not the retired grey disc class.');
 
         // the admin's own request keeps their dot fresh (tb_touch_last_seen),
         // so the aged periods are asserted on another user: the worker below,
@@ -110,7 +110,7 @@ final class ActivitySettingsTest extends E2eTestCase
         $this->assertStringContainsString('tb-activity-red', $usersPage->body);
         $this->backdateMinutes('worker', 2 * 1440);
         $usersPage = $admin->get('/?page=users');
-        $this->assertStringContainsString('tb-activity-grey', $usersPage->body);
+        $this->assertStringContainsString('tb-activity-empty', $usersPage->body, '#106: the aged grey dot renders the empty circle glyph (the grey disc class was retired with the #57-F sweep).');
     }
 
     public function test_a_character_period_renders_its_glyph_on_the_board(): void

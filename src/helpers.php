@@ -9,7 +9,6 @@ declare(strict_types=1);
 function h(?string $value): string { return htmlspecialchars((string)$value, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8'); }
 function user(): ?array { return $_SESSION['user'] ?? null; }
 function is_admin(): bool { return user() && user()['role'] === 'admin'; }
-function require_login(): void { if (!user()) { header('Location: ?page=login'); exit; } }
 function csrf_field(): string { return '<input type="hidden" name="csrf" value="' . h($_SESSION['csrf'] ?? '') . '">'; }
 function verify_csrf(): void {
     if ($_SERVER['REQUEST_METHOD'] === 'POST' && !hash_equals($_SESSION['csrf'] ?? '', $_POST['csrf'] ?? '')) {

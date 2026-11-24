@@ -1,3 +1,57 @@
+<?php
+declare(strict_types=1);
+
+namespace TaskBoard\Tests\E2E;
+
+use TaskBoard\Tests\Support\AppSession;
+use TaskBoard\Tests\Support\TestServer;
+
+/**
+ * Task #66: the per-status kanban collapse toggle - every column header
+ * carries a +/- button that collapses/expands that one status column, and
+ * the state is a per-user preference (user_preferences, key
+ * 'kanban_collapsed_statuses') that survives reloads, the list auto-refresh
+ * and new sign-ins, separate per user.
+ *
+ * Note: the file reached develop truncated (the 66v2 merge shipped the test
+ * methods without the class wrapper, so PHPUnit could not find the class and
+ * every SQLite CI run exited 1 on the runner warning); this version restores
+ * the wrapper and the helpers the three tests call.
+ */
+final class KanbanToggleTest extends E2eTestCase
+{
+    private function createRegularUser(AppSession $admin, string $username): AppSession
+    {
+        $admin->post('/?page=users', [
+            'action' => 'add_user',
+            'username' => $username,
+            'display_name' => ucfirst($username),
+            'password' => $username . 'Pass12345',
+            'role' => 'user',
+        ]);
+        return new AppSession($username, $username . 'Pass12345');
+    }
+
+    private function userIdFromName(string $username): int
+    {
+        $s = TestServer::pdo()->prepare('SELECT id FROM users WHERE username=?');
+        $s->execute([$username]);
+        $rows = $s->fetchAll(\PDO::FETCH_COLUMN);
+        $s->closeCursor();
+        $this->assertNotEmpty($rows, 'User ' . $username . ' does not exist.');
+        return (int)$rows[0];
+    }
+
+    /** The stored kanban_collapsed_statuses preference of a user, '' if none. */
+    private function collapsedValue(int $userId): string
+    {
+        $s = TestServer::pdo()->prepare("SELECT pref_value FROM user_preferences WHERE user_id=? AND pref_key='kanban_collapsed_statuses'");
+        $s->execute([$userId]);
+        $rows = $s->fetchAll(\PDO::FETCH_COLUMN);
+        $s->closeCursor();
+        return (string)($rows[0] ?? '');
+    }
+
     public function test_toggling_a_column_collapses_it_and_persists(): void
     {
         $admin = $this->adminSession();
@@ -69,14 +123,4 @@
         $this->assertSame(302, $admin->post('/?page=kanban', ['action' => 'toggle_kanban_column', 'status_id' => '1'])->status);
         $this->assertSame('1', $this->collapsedValue($this->userIdFromName('admin')), 'The toggle persists into the recreated table.');
     }
-
-    private function userIdFromName(string $username): int
-    {
-        $s = TestServer::pdo()->prepare('SELECT id FROM users WHERE username=?');
-        $s->execute([$username]);
-        $rows = $s->fetchAll(\PDO::FETCH_COLUMN);
-        $s->closeCursor();
-        $this->assertNotEmpty($rows, 'User ' . $username . ' does not exist.');
-        return (int)$rows[0];
-    }
-
+}

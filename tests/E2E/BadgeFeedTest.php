@@ -38,6 +38,20 @@ final class BadgeFeedTest extends E2eTestCase
         return (int)$id;
     }
 
+    /** Sends a message the way the composer does (#87): renders the thread
+     * form, extracts its one-time send token and posts with it. */
+    private function sendMessageFrom(AppSession $sender, int $recipientId, string $body): void
+    {
+        $composer = $sender->get('/?page=messages&u=' . $recipientId);
+        $this->assertSame(1, preg_match('/name="send_token" value="([^"]+)"/', $composer->body, $m), 'The composer renders the one-time send token (#87).');
+        $sender->post('/?page=messages&u=' . $recipientId, [
+            'action' => 'send_message',
+            'recipient_id' => (string)$recipientId,
+            'body' => $body,
+            'send_token' => $m[1],
+        ]);
+    }
+
     public function test_the_badge_feed_reports_the_current_counters(): void
     {
         $admin = $this->adminSession();
@@ -52,11 +66,7 @@ final class BadgeFeedTest extends E2eTestCase
         $this->assertSame(0, $data['messages'], 'No message was sent yet.');
         $this->assertSame(1, $data['notifications'], 'The task creation notified the assignee (#58).');
 
-        $admin->post('/?page=messages', [
-            'action' => 'send_message',
-            'recipient_id' => (string)$this->userId('nora'),
-            'body' => 'Live ping',
-        ]);
+        $this->sendMessageFrom($admin, $this->userId('nora'), 'Live ping');
 
         $data = json_decode($nora->get('/?page=badges')->body, true);
         $this->assertSame(1, $data['messages'], 'The unread message shows up in the feed.');
@@ -68,11 +78,7 @@ final class BadgeFeedTest extends E2eTestCase
         $admin = $this->adminSession();
         $nadine = $this->createRegularUser($admin, 'nadine');
         $admin->createTask('Consume task', ['assignees' => [$this->userId('nadine')]]);
-        $admin->post('/?page=messages', [
-            'action' => 'send_message',
-            'recipient_id' => (string)$this->userId('nadine'),
-            'body' => 'Read me',
-        ]);
+        $this->sendMessageFrom($admin, $this->userId('nadine'), 'Read me');
 
         // Opening the inbox consumes the message counter the same way a page
         // load has always done.

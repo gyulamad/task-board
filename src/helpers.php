@@ -18,6 +18,25 @@ function verify_csrf(): void {
 }
 function flash(string $message): void { $_SESSION['flash'] = $message; }
 function redirect(string $url = '?'): never { header('Location: ' . $url); exit; }
+
+/** The one-time token of the messenger send form (#87): the composer embeds
+ * it as a hidden field and the send_message action consumes it on the first
+ * accepted send, so an accidental double click on the chat send button
+ * cannot insert the same text twice. Created on first render, rotated after
+ * every accepted send. */
+function tb_message_send_token(): string {
+    if (!isset($_SESSION['message_send_token']) || !is_string($_SESSION['message_send_token']) || $_SESSION['message_send_token'] === '') {
+        $_SESSION['message_send_token'] = bin2hex(random_bytes(16));
+    }
+    return $_SESSION['message_send_token'];
+}
+
+/** Rotate the messenger send token (#87): called right after a message was
+ * accepted, so a replayed submit - the second click of a double send - no
+ * longer matches and is dropped instead of inserting a duplicate. */
+function tb_message_send_token_rotate(): void {
+    $_SESSION['message_send_token'] = bin2hex(random_bytes(16));
+}
 function history(PDO $pdo, int $taskId, string $event, string $details = ''): void {
     $s = $pdo->prepare('INSERT INTO task_history(task_id,user_id,event,details) VALUES(?,?,?,?)');
     $s->execute([$taskId, user()['id'], $event, $details]);

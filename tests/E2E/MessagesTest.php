@@ -4,6 +4,7 @@ declare(strict_types=1);
 namespace TaskBoard\Tests\E2E;
 
 use TaskBoard\Tests\Support\AppSession;
+use TaskBoard\Tests\Support\HttpResponse;
 use TaskBoard\Tests\Support\TestServer;
 
 /**
@@ -42,6 +43,20 @@ final class MessagesTest extends E2eTestCase
         return (int)$rows[0];
     }
 
+    /** Sends a message the way the composer does (#87): renders the thread
+     * form, extracts its one-time send token and posts with it. */
+    private function sendMessageFrom(AppSession $sender, int $recipientId, string $body): HttpResponse
+    {
+        $composer = $sender->get('/?page=messages&u=' . $recipientId);
+        $this->assertSame(1, preg_match('/name="send_token" value="([^"]+)"/', $composer->body, $m), 'The composer renders the one-time send token (#87).');
+        return $sender->post('/?page=messages&u=' . $recipientId, [
+            'action' => 'send_message',
+            'recipient_id' => (string)$recipientId,
+            'body' => $body,
+            'send_token' => $m[1],
+        ]);
+    }
+
     public function test_the_messenger_round_trips_a_message_with_seen_status(): void
     {
         $admin = $this->adminSession();
@@ -56,11 +71,7 @@ final class MessagesTest extends E2eTestCase
         $this->assertTrue($compose->contains('Bobby'), 'The people list shows the other users.');
         $this->assertTrue($compose->contains('name="recipient_id" value="' . $bobId . '"'), 'The thread form is bound to the selected person.');
 
-        $this->assertSame(302, $admin->post('/?page=messages', [
-            'action' => 'send_message',
-            'recipient_id' => $bobId,
-            'body' => 'Welcome to the board, Bobby!',
-        ])->status);
+        $this->assertSame(302, $this->sendMessageFrom($admin, $bobId, 'Welcome to the board, Bobby!')->status);
 
         // The recipient's default thread is the newest unread sender's: the
         // message shows as their bubble with the sending time.
@@ -76,6 +87,42 @@ final class MessagesTest extends E2eTestCase
         $this->assertTrue($sent->contains('justify-content-end'), 'Own messages sit on the right like chat bubbles.');
     }
 
+    public function test_a_double_submitted_send_form_cannot_insert_the_message_twice(): void
+    {
+        $admin = $this->adminSession();
+        $erna = $this->createRegularUser($admin, 'erna');
+        $ernaId = $this->userId('erna');
+
+        // The composer embeds a one-time send token (#87); the first accepted
+        // send consumes it, so an accidental second click on the chat send
+        // button cannot insert the same text twice.
+        $composer = $admin->get('/?page=messages&u=' . $ernaId);
+        $this->assertSame(1, preg_match('/name="send_token" value="([^"]+)"/', $composer->body, $m), 'The composer embeds the one-time send token.');
+        $token = $m[1];
+
+        $fields = ['action' => 'send_message', 'recipient_id' => (string)$ernaId, 'body' => 'Once only.', 'send_token' => $token];
+        $this->assertSame(302, $admin->post('/?page=messages&u=' . $ernaId, $fields)->status, 'The first submit sends.');
+
+        // The replayed submit (the same form, the already consumed token) is
+        // dropped and answered with a redirect back to the thread, not an
+        // error page - and it inserts no second row.
+        $this->assertSame(302, $admin->post('/?page=messages&u=' . $ernaId, $fields)->status, 'The replay is answered with a redirect, not a duplicate.');
+        $s = TestServer::pdo()->prepare('SELECT COUNT(*) FROM messages WHERE recipient_id=?');
+        $s->execute([$ernaId]);
+        $this->assertSame(1, (int)$s->fetchColumn(), 'The double submit inserted exactly one message.');
+        $s->closeCursor();
+
+        // A fresh composer issues a fresh token and the next real message
+        // goes through normally.
+        $composer = $admin->get('/?page=messages&u=' . $ernaId);
+        $this->assertSame(1, preg_match('/name="send_token" value="([^"]+)"/', $composer->body, $m2));
+        $this->assertNotSame($token, $m2[1], 'The consumed token was rotated.');
+        $this->assertSame(302, $admin->post('/?page=messages&u=' . $ernaId, [
+            'action' => 'send_message', 'recipient_id' => (string)$ernaId, 'body' => 'Second message.', 'send_token' => $m2[1],
+        ])->status, 'The next real message still sends.');
+        $this->assertSame(2, (int)TestServer::pdo()->query('SELECT COUNT(*) FROM messages WHERE recipient_id=' . $ernaId)->fetchColumn(), 'Both real messages are in the thread.');
+    }
+
     public function test_the_red_notification_counts_new_messages_until_seen(): void
     {
         $admin = $this->adminSession();
@@ -83,8 +130,8 @@ final class MessagesTest extends E2eTestCase
         $carlId = $this->userId('carl');
 
         // Two unread messages: the red badge says 2 on the page and in the navbar.
-        $admin->post('/?page=messages', ['action' => 'send_message', 'recipient_id' => (string)$carlId, 'body' => 'First note.']);
-        $admin->post('/?page=messages', ['action' => 'send_message', 'recipient_id' => (string)$carlId, 'body' => 'Second note.']);
+        $this->sendMessageFrom($admin, $carlId, 'First note.');
+        $this->sendMessageFrom($admin, $carlId, 'Second note.');
 
         $page = $carl->get('/?page=messages');
         $this->assertTrue($page->contains('<span class="badge text-bg-danger fs-6">2 new messages</span>'), 'The red notification shows the new message count.');
@@ -104,7 +151,7 @@ final class MessagesTest extends E2eTestCase
         $admin = $this->adminSession();
         $helga = $this->createRegularUser($admin, 'helga');
         $ingrid = $this->createRegularUser($admin, 'ingrid');
-        $admin->post('/?page=messages', ['action' => 'send_message', 'recipient_id' => (string)$this->userId('helga'), 'body' => 'For Helga.']);
+        $this->sendMessageFrom($admin, $this->userId('helga'), 'For Helga.');
 
         // The newest unread sender wins the default thread, even though
         // Helga sorts before Ingrid... and Ingrid before nobody. Helga opens
@@ -122,7 +169,7 @@ final class MessagesTest extends E2eTestCase
     {
         $admin = $this->adminSession();
         $dora = $this->createRegularUser($admin, 'dora');
-        $admin->post('/?page=messages', ['action' => 'send_message', 'recipient_id' => (string)$this->userId('dora'), 'body' => 'For Dora only.']);
+        $this->sendMessageFrom($admin, $this->userId('dora'), 'For Dora only.');
 
         // The sender viewing their own board must not consume the recipient's
         // unread count.
@@ -153,7 +200,7 @@ final class MessagesTest extends E2eTestCase
         $admin = $this->adminSession();
         $erin = $this->createRegularUser($admin, 'erin');
         $erinId = $this->userId('erin');
-        $admin->post('/?page=messages', ['action' => 'send_message', 'recipient_id' => (string)$erinId, 'body' => 'Erin, please archive the old notes.']);
+        $this->sendMessageFrom($admin, $erinId, 'Erin, please archive the old notes.');
         // Erin never opens the board: viewing it consumes her unread messages
         // (the page-view mark-seen), which would legitimately flip the bubble
         // to Seen before the deletion. The Sent-forever pin below is only

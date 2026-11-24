@@ -269,7 +269,11 @@ final class SchemaSelfHealTest extends E2eTestCase
 
         $admin->post('/?page=users', ['action' => 'add_user', 'username' => 'healed', 'display_name' => 'Healed', 'password' => 'HealedPass12345', 'role' => 'user']);
         $recipientId = (int)$pdo->query("SELECT id FROM users WHERE username='healed'")->fetchColumn();
-        $this->assertSame(302, $admin->post('/?page=messages', ['action' => 'send_message', 'recipient_id' => (string)$recipientId, 'body' => 'Sent right after the schema self-heal.'])->status, 'Message sending must work on the recreated table.');
+        // The composer way (#87): render the thread form first, then post with
+        // its one-time send token.
+        $composer = $admin->get('/?page=messages&u=' . $recipientId);
+        $this->assertSame(1, preg_match('/name="send_token" value="([^"]+)"/', $composer->body, $m), 'The composer renders the one-time send token on the self-healed schema.');
+        $this->assertSame(302, $admin->post('/?page=messages&u=' . $recipientId, ['action' => 'send_message', 'recipient_id' => (string)$recipientId, 'body' => 'Sent right after the schema self-heal.', 'send_token' => $m[1]])->status, 'Message sending must work on the recreated table.');
         $this->assertSame('1', (string)$pdo->query('SELECT COUNT(*) FROM messages')->fetchColumn());
     }
 }

@@ -421,7 +421,19 @@ if (user()) {
                 if ($recipientId === (int)user()['id']) throw new RuntimeException('Pick another user to message.');
                 if (!user_exists($pdo, $recipientId)) throw new RuntimeException('Pick a recipient.');
                 if ($msgBody === '') throw new RuntimeException('The message cannot be empty.');
+                // Double send (#87): the composer carries a one-time token that
+                // the first accepted send consumes. A replayed submit - the
+                // accidental second click on the send button - no longer
+                // matches, so the same text cannot be inserted twice; the
+                // visitor goes back to the thread with a note instead of a
+                // duplicate, and the token is only consumed when a message is
+                // really written (a validation error keeps it usable).
+                if (!hash_equals(tb_message_send_token(), (string)($_POST['send_token'] ?? ''))) {
+                    flash('This submit was dropped: the send form was already used (double click or another tab). Nothing was duplicated.');
+                    redirect('?page=messages&u='.$recipientId);
+                }
                 $pdo->prepare('INSERT INTO messages(sender_id,recipient_id,body) VALUES(?,?,?)')->execute([(int)user()['id'],$recipientId,$msgBody]);
+                tb_message_send_token_rotate();
                 flash('Message sent.'); redirect('?page=messages');
             }
             if ($action === 'mark_all_seen') {
@@ -1133,7 +1145,7 @@ if ($page==='messages') {
             <?php else: ?><div class="d-flex justify-content-start mb-2"><div class="border rounded-3 px-3 py-2" style="max-width:75%"><div class="prewrap"><?=h($m['body'])?></div><div class="small muted mt-1"><?=h($m['created_at'])?></div></div></div><?php endif; ?>
             <?php endforeach; if(!$thread): ?><div class="text-center muted small py-4">No messages here yet - say hi below.</div><?php endif; ?>
             </div>
-            <?php if ($peerId!==0): ?><form method="post" class="mt-2"><?=csrf_field()?><input type="hidden" name="action" value="send_message"><input type="hidden" name="recipient_id" value="<?=$peerId?>"><div class="input-group"><textarea class="form-control" id="message-body" name="body" rows="2" placeholder="Write a message..." required></textarea><button class="btn btn-primary">Send</button></div></form>
+            <?php if ($peerId!==0): ?><form method="post" class="mt-2"><?=csrf_field()?><input type="hidden" name="action" value="send_message"><input type="hidden" name="recipient_id" value="<?=$peerId?>"><input type="hidden" name="send_token" value="<?=h(tb_message_send_token())?>"><div class="input-group"><textarea class="form-control" id="message-body" name="body" rows="2" placeholder="Write a message..." required></textarea><button class="btn btn-primary">Send</button></div></form>
             <?php else: ?><div class="small muted mt-2">This account was deleted - the conversation stays readable, but new messages cannot be delivered.</div><?php endif; ?>
         </div></div></div>
     <?php render_footer(); exit;

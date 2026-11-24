@@ -225,6 +225,23 @@ CREATE TABLE messages (
     FOREIGN KEY (recipient_id) REFERENCES users(id) ON DELETE SET NULL
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
+-- Message attachments (#94): every chat message can carry one file. The row
+-- mirrors the task/document attachment convention (random stored_name inside
+-- uploads/, real name and MIME kept for the download); it cascades away with
+-- its message and survives a user deletion through the SET NULL uploader.
+CREATE TABLE message_attachments (
+    id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+    message_id INT UNSIGNED NOT NULL,
+    user_id INT UNSIGNED NULL,
+    stored_name VARCHAR(255) NOT NULL,
+    original_name VARCHAR(255) NOT NULL,
+    mime_type VARCHAR(120) NOT NULL,
+    file_size INT UNSIGNED NOT NULL,
+    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (message_id) REFERENCES messages(id) ON DELETE CASCADE,
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE SET NULL
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
 -- Version-marked SQL migrations (#59/#68): every migrations/<version>-<slug>.sql
 -- file that has not run yet is applied automatically on the first request that
 -- sees it (and by the Software updates page after an install), oldest version

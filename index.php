@@ -423,7 +423,25 @@ if (user()) {
                 $msgBody = trim((string)($_POST['body'] ?? ''));
                 if ($recipientId === (int)user()['id']) throw new RuntimeException('Pick another user to message.');
                 if (!user_exists($pdo, $recipientId)) throw new RuntimeException('Pick a recipient.');
-                if ($msgBody === '') throw new RuntimeException('The message cannot be empty.');
+                // Attachment (#94): the composer carries an optional file
+                // input next to the textarea, so a message can be text, a
+                // file, or both. The file checks mirror the task/document
+                // upload flow verbatim: same MIME allowlist, same configured
+                // size limit, same random stored name inside uploads/.
+                $hasFile = isset($_FILES['attachment'])
+                    && is_array($_FILES['attachment'])
+                    && ($_FILES['attachment']['error'] ?? UPLOAD_ERR_NO_FILE) !== UPLOAD_ERR_NO_FILE
+                    && ($_FILES['attachment']['tmp_name'] ?? '') !== '';
+                if ($msgBody === '' && !$hasFile) throw new RuntimeException('The message cannot be empty.');
+                $attachment = null;
+                if ($hasFile) {
+                    $file = $_FILES['attachment'];
+                    if ($file['error'] !== UPLOAD_ERR_OK || $file['size'] > (int)$config['max_upload_bytes']) throw new RuntimeException('Upload failed or file exceeds the configured size limit.');
+                    $finfo = new finfo(FILEINFO_MIME_TYPE);
+                    $mime = $finfo->file($file['tmp_name']);
+                    if (!in_array($mime, TASK_BOARD_UPLOAD_MIMES, true)) throw new RuntimeException('This file type is not allowed.');
+                    $attachment = ['name' => basename((string)$file['name']), 'mime' => $mime, 'size' => (int)$file['size']];
+                }
                 // Double send (#87): the composer carries a one-time token that
                 // the first accepted send consumes. A replayed submit - the
                 // accidental second click on the send button - no longer
@@ -435,9 +453,27 @@ if (user()) {
                     flash('This submit was dropped: the send form was already used (double click or another tab). Nothing was duplicated.');
                     redirect('?page=messages&u='.$recipientId);
                 }
+                // The file moves into uploads/ only after every check passed,
+                // right before the rows are written; a move failure aborts
+                // the send while the one-time token stays usable (the same
+                // contract a text validation error has).
+                $storedName = null;
+                if ($attachment !== null) {
+                    $dir = __DIR__ . '/uploads';
+                    if (!is_dir($dir)) mkdir($dir, 0750, true);
+                    $storedName = bin2hex(random_bytes(20));
+                    if (!move_uploaded_file($_FILES['attachment']['tmp_name'], $dir . '/' . $storedName)) throw new RuntimeException('Could not save uploaded file.');
+                }
                 $pdo->prepare('INSERT INTO messages(sender_id,recipient_id,body) VALUES(?,?,?)')->execute([(int)user()['id'],$recipientId,$msgBody]);
+                if ($storedName !== null) {
+                    $pdo->prepare('INSERT INTO message_attachments(message_id,user_id,stored_name,original_name,mime_type,file_size) VALUES(?,?,?,?,?,?)')
+                        ->execute([(int)$pdo->lastInsertId(),(int)user()['id'],$storedName,$attachment['name'],$attachment['mime'],$attachment['size']]);
+                }
                 tb_message_send_token_rotate();
-                flash('Message sent.'); redirect('?page=messages');
+                flash('Message sent.');
+                // Back to the conversation the send belongs to, so the mobile
+                // single-pane view (#94) also lands inside the thread.
+                redirect('?page=messages&u='.$recipientId);
             }
             if ($action === 'mark_all_seen') {
                 // Seen all notification (#79): one click clears the whole
@@ -1063,13 +1099,86 @@ if ($page==='archive') {
     <?php render_footer(); exit;
 }
 
-// ---- Message board (#56, messenger redesign #65) ---------------------------
+// ---- Messages older-page feed (#94) ----------------------------------------
+// The JSON endpoint behind the chat's infinity scroll: given a conversation
+// (?u=peer id, or u=0 for the deleted-user thread) and the id of the oldest
+// message already rendered (?before=), it returns the next older page of up
+// to 20 bubbles as ready-made HTML - the exact markup tb_message_bubble()
+// renders on the page itself, so pulling history changes nothing visually
+// and the escaping stays server-side. Every row is scoped to the signed-in
+// user by the pair WHERE clauses, so a foreign ?u= yields an empty page and
+// an unknown one a 404; nothing outside a visitor's own conversations can
+// leave this endpoint.
+if ($page==='messages_more') {
+    $me=(int)user()['id'];
+    $u=isset($_GET['u'])?(int)$_GET['u']:-1;
+    $before=(int)($_GET['before'] ?? 0);
+    if ($u!==0 && $u<=0) { http_response_code(404); exit('Unknown conversation.'); }
+    if ($u>0) {
+        $s=$pdo->prepare('SELECT 1 FROM users WHERE id=?'); $s->execute([$u]);
+        if(!$s->fetchColumn()){ http_response_code(404); exit('Unknown conversation.'); }
+    }
+    if ($u===0) {
+        $t=$pdo->prepare('SELECT * FROM messages WHERE ((recipient_id=? AND sender_id IS NULL) OR (sender_id=? AND recipient_id IS NULL))'.($before>0?' AND id<?':'').' ORDER BY id DESC LIMIT 21');
+        $t->execute($before>0?[$me,$me,$before]:[$me,$me]);
+    } else {
+        $t=$pdo->prepare('SELECT * FROM messages WHERE ((sender_id=? AND recipient_id=?) OR (sender_id=? AND recipient_id=?))'.($before>0?' AND id<?':'').' ORDER BY id DESC LIMIT 21');
+        $t->execute($before>0?[$me,$u,$u,$me,$before]:[$me,$u,$u,$me]);
+    }
+    $rows=$t->fetchAll();
+    $feedHasMore=count($rows)>20;
+    if ($feedHasMore) $rows=array_slice($rows,0,20);
+    $rows=array_reverse($rows);
+    $feedAttachments=tb_message_attachments($pdo,array_map(function($m){return (int)$m['id'];},$rows));
+    $html='';
+    foreach ($rows as $m) {
+        $mine=$m['sender_id']!==null&&(int)$m['sender_id']===$me;
+        $html.=tb_message_bubble($m,$mine,$feedAttachments[(int)$m['id']]??[]);
+    }
+    header('Content-Type: application/json; charset=utf-8');
+    header('Cache-Control: no-store');
+    exit(json_encode([
+        'hasMore'=>$feedHasMore,
+        'oldestId'=>count($rows)?(int)$rows[0]['id']:null,
+        'html'=>$html,
+    ], JSON_UNESCAPED_UNICODE));
+}
+
+// ---- Message attachment download (#94) -------------------------------------
+// Serves one chat attachment to the participants of its conversation only:
+// the sender or the recipient of the parent message (either side may be the
+// deleted user; a NULL user id never matches a viewer, so a stranger's
+// request stops at the participant check with a 403 before the filesystem
+// is ever touched). File output mirrors the task/document download routes.
+if ($page==='message_download') {
+    $id=(int)($_GET['id']??0);
+    $s=$pdo->prepare('SELECT a.*, m.sender_id sender_user, m.recipient_id recipient_user FROM message_attachments a JOIN messages m ON m.id=a.message_id WHERE a.id=?');
+    $s->execute([$id]);
+    $a=$s->fetch();
+    if(!$a) { http_response_code(404); exit('File not found.'); }
+    $me=(int)user()['id'];
+    if (!((int)$a['sender_user']===$me || (int)$a['recipient_user']===$me)) { http_response_code(403); exit('Forbidden.'); }
+    if (!is_file(tb_attachment_path((string)$a['stored_name']))) { http_response_code(404); exit('File not found.'); }
+    header('Content-Type: '.$a['mime_type']); header('Content-Length: '.$a['file_size']);
+    $tbName = preg_replace('/[\x00-\x1f\x7f"]+/', '', (string)$a['original_name']) ?? '';
+    if ($tbName === '') $tbName = 'attachment';
+    header('Content-Disposition: attachment; filename="'.$tbName.'"');
+    readfile(tb_attachment_path((string)$a['stored_name'])); exit;
+}
+
+// ---- Message board (#56, messenger redesign #65, chat UX #94) ---------------
 // A messenger-style board: every other user on the left with their unread
 // count, the thread with the selected person as chat bubbles on the right
 // (mine carry the sending time and the Seen/Sent status), and the sender
 // form under the thread. Viewing the board marks the messages read - the
 // badge on the page and in the navbar always means "new since the last
 // visit". The navbar carries the same count as a badge.
+// Chat UX (#94): the thread fills the page height and scrolls (1), opens on
+// the last 20 messages with the composer pinned to the bottom (2, 4) and
+// pulls older pages on demand while scrolling up (3), Enter sends while
+// Shift+Enter / Ctrl+Enter make a newline (5), the composer carries an
+// attachment button (6), the people list orders by latest conversation (7)
+// and on mobile only one pane shows at a time (8-10).
 if ($page==='messages') {
     $me=(int)user()['id'];
     $newCount=tb_unread_message_count($pdo,$me);
@@ -1088,9 +1197,34 @@ if ($page==='messages') {
     $orphansTotal=$pdo->prepare('SELECT COUNT(*) FROM messages WHERE (recipient_id=? AND sender_id IS NULL) OR (sender_id=? AND recipient_id IS NULL)');
     $orphansTotal->execute([$me,$me]);
     $orphanTotal=(int)$orphansTotal->fetchAll(PDO::FETCH_COLUMN)[0];
-    $people=$pdo->prepare('SELECT id,display_name,last_seen_at FROM users WHERE id<>? ORDER BY display_name');
-    $people->execute([$me]);
+    // People ordering (#94 point 7): latest conversation first. The order is
+    // stored in the messages themselves - MAX(m.id) per conversation is the
+    // activity cursor (ids are monotonic, so it has no clock-tie ambiguity) -
+    // so it survives sign-outs and devices without extra state to keep in
+    // sync, and a new message moves its conversation to the top on the very
+    // next load. People never written to sort after everyone, by name.
+    $people=$pdo->prepare('SELECT u.id, u.display_name, u.last_seen_at, MAX(m.id) last_id FROM users u LEFT JOIN messages m ON (m.sender_id=u.id AND m.recipient_id=?) OR (m.recipient_id=u.id AND m.sender_id=?) WHERE u.id<>? GROUP BY u.id, u.display_name, u.last_seen_at ORDER BY last_id IS NULL, last_id DESC, u.display_name, u.id');
+    $people->execute([$me,$me,$me]);
     $peopleRows=$people->fetchAll();
+    // The "Deleted user" entry takes its place in the same latest-activity
+    // order, right after the newest conversation that is older than the last
+    // orphan message.
+    $orphanLastId=0;
+    if ($orphanTotal) {
+        $ol=$pdo->prepare('SELECT MAX(id) FROM messages WHERE (recipient_id=? AND sender_id IS NULL) OR (sender_id=? AND recipient_id IS NULL)');
+        $ol->execute([$me,$me]);
+        $orphanLastId=(int)($ol->fetchAll(PDO::FETCH_COLUMN)[0] ?? 0);
+    }
+    $chatEntries=[];
+    $orphanPlaced=!$orphanTotal;
+    foreach ($peopleRows as $p) {
+        if (!$orphanPlaced && ((int)$p['last_id']===0 || $orphanLastId >= (int)$p['last_id'])) {
+            $chatEntries[]=['id'=>0,'display_name'=>'Deleted user','last_seen_at'=>null,'last_id'=>$orphanLastId];
+            $orphanPlaced=true;
+        }
+        $chatEntries[]=$p;
+    }
+    if (!$orphanPlaced) $chatEntries[]=['id'=>0,'display_name'=>'Deleted user','last_seen_at'=>null,'last_id'=>$orphanLastId];
     // Viewing the board is what marks the messages read - the badge on the
     // page and in the navbar always means "new since the last visit".
     $pdo->prepare('UPDATE messages SET is_read=1 WHERE recipient_id=? AND is_read=0')->execute([$me]);
@@ -1099,58 +1233,185 @@ if ($page==='messages') {
     // Without a valid selection the newest unread sender wins, else the
     // conversation with the most recent activity, else the first person
     // alphabetically.
+    $explicitPeer=isset($_GET['u']);
     $peerId=isset($_GET['u'])?(int)$_GET['u']:-1;
     $peer=null;
+    $peerExplicit=false;
     if ($peerId>0) {
-        foreach ($peopleRows as $p) { if ((int)$p['id']===$peerId) { $peer=$p; break; } }
+        foreach ($chatEntries as $p) { if ((int)$p['id']===$peerId) { $peer=$p; $peerExplicit=true; break; } }
     }
+    if ($peerId===0 && $explicitPeer) $peerExplicit=true;
     if ($peer===null && $peerId!==0) {
         if ($unreadBySender) {
             $newest=$pdo->prepare('SELECT sender_id FROM messages WHERE recipient_id=? AND is_read=0 AND sender_id IS NOT NULL ORDER BY id DESC LIMIT 1');
             $newest->execute([$me]);
             $newestId=(int)($newest->fetchAll(PDO::FETCH_COLUMN)[0] ?? 0);
-            foreach ($peopleRows as $p) { if ((int)$p['id']===$newestId) { $peer=$p; break; } }
+            foreach ($chatEntries as $p) { if ((int)$p['id']===$newestId) { $peer=$p; break; } }
         }
         if ($peer===null) {
             $recent=$pdo->prepare('SELECT CASE WHEN sender_id=? THEN recipient_id ELSE sender_id END other_id FROM messages WHERE sender_id=? OR recipient_id=? ORDER BY id DESC LIMIT 1');
             $recent->execute([$me,$me,$me]);
             $otherId=(int)($recent->fetchAll(PDO::FETCH_COLUMN)[0] ?? 0);
-            if ($otherId>0) foreach ($peopleRows as $p) { if ((int)$p['id']===$otherId) { $peer=$p; break; } }
+            if ($otherId>0) foreach ($chatEntries as $p) { if ((int)$p['id']===$otherId) { $peer=$p; break; } }
         }
-        if ($peer===null && $peopleRows) $peer=$peopleRows[0];
+        if ($peer===null && $chatEntries) { foreach ($chatEntries as $p) { if ((int)$p['id']!==0) { $peer=$p; break; } } }
         $peerId=$peer===null?0:(int)$peer['id'];
     }
+    // Single-pane mobile view (#94 points 8-10): the chat row only carries
+    // the peer class when the visitor explicitly opened a conversation
+    // (?u=...), so the mobile default stays the people list; on desktop the
+    // class is inert - the CSS only acts on it inside the mobile breakpoint.
+    $hasPeer=$peerExplicit;
     // The thread with the selected person, oldest first like a chat log. For
-    // u=0 the thread holds the messages whose other end was deleted.
-    $thread=[];
+    // u=0 the thread holds the messages whose other end was deleted. The
+    // newest page of up to 20 messages renders on load (#94 point 2); older
+    // pages load on demand through the messages_more feed (#94 point 3),
+    // fetched by the cursor the scroll container carries.
+    $threadRows=[];
     if ($peerId===0) {
-        $t=$pdo->prepare('SELECT * FROM messages WHERE (recipient_id=? AND sender_id IS NULL) OR (sender_id=? AND recipient_id IS NULL) ORDER BY id ASC');
+        $t=$pdo->prepare('SELECT * FROM messages WHERE (recipient_id=? AND sender_id IS NULL) OR (sender_id=? AND recipient_id IS NULL) ORDER BY id DESC LIMIT 21');
         $t->execute([$me,$me]);
-        $thread=$t->fetchAll();
+        $threadRows=$t->fetchAll();
     } elseif ($peer!==null) {
-        $t=$pdo->prepare('SELECT * FROM messages WHERE (sender_id=? AND recipient_id=?) OR (sender_id=? AND recipient_id=?) ORDER BY id ASC');
+        $t=$pdo->prepare('SELECT * FROM messages WHERE (sender_id=? AND recipient_id=?) OR (sender_id=? AND recipient_id=?) ORDER BY id DESC LIMIT 21');
         $t->execute([$me,$peerId,$peerId,$me]);
-        $thread=$t->fetchAll();
+        $threadRows=$t->fetchAll();
     }
+    $hasMore=count($threadRows)>20;
+    if ($hasMore) $threadRows=array_slice($threadRows,0,20);
+    $thread=array_reverse($threadRows);
+    $oldestId=count($thread)?(int)$thread[0]['id']:null;
+    $threadAttachments=tb_message_attachments($pdo,array_map(function($m){return (int)$m['id'];},$thread));
     render_header('Messages',$config,$error); ?>
+    <style>
+    .tb-chat{height:calc(100vh - 195px);height:calc(100dvh - 195px);min-height:420px;align-items:stretch}
+    /* The chat JS re-sizes the row to the exact space under the page header,
+       so the composer stays inside the viewport no matter how the header
+       wraps (the calc above is only the no-JS fallback). */
+    .tb-chat>.col-lg-4,.tb-chat>.col-lg-8{display:flex;min-height:0;height:100%}
+    .tb-chat .card{display:flex;flex-direction:column;flex:1 1 auto;width:100%;min-height:0}
+    .tb-chat-people-card{overflow-y:auto}
+    .tb-chat-head{flex:0 0 auto}
+    .tb-chat-head h2{margin-bottom:0}
+    .tb-chat-scroll{flex:1 1 auto;overflow-y:auto;min-height:0;padding:6px 2px}
+    .tb-chat-composer{flex:0 0 auto}
+    .tb-chat-back{display:none}
+    @media (max-width: 991.98px){
+      .tb-chat>.col-lg-4,.tb-chat>.col-lg-8{flex:0 0 100%;max-width:100%;height:100%}
+      .tb-chat>.col-lg-8{display:none}
+      .tb-chat.has-peer>.col-lg-8{display:flex}
+      .tb-chat.has-peer>.col-lg-4{display:none}
+      .tb-chat.has-peer .tb-chat-back{display:inline-block}
+      .tb-chat-bubble{max-width:88%!important}
+    }
+    </style>
     <div class="d-flex justify-content-between align-items-center mb-3"><div><h1 class="h3 mb-0">Messages</h1><div class="muted">A messenger-style board: pick a person on the left, chat in bubbles on the right - every message shows when it was sent and whether it was seen.</div></div><span class="badge text-bg-danger fs-6"><?=$newCount?> new message<?=$newCount===1?'':'s'?></span></div>
-    <div class="row g-4">
-        <div class="col-lg-4"><div class="card p-3"><h2 class="h5">People</h2>
-            <?php foreach ($peopleRows as $p): $pid=(int)$p['id']; ?><a class="d-flex justify-content-between align-items-center border-bottom py-2 text-decoration-none<?=$peer!==null&&$pid===(int)$peer['id']?' bg-primary-subtle fw-semibold':''?>" href="?page=messages&u=<?=$pid?>"><span><?=tb_user_with_activity($p)?></span><?php if ($unreadBySender[$pid] ?? 0): ?><span class="badge text-bg-danger"><?=$unreadBySender[$pid]?></span><?php endif; ?></a><?php endforeach; if(!$peopleRows): ?><div class="small muted">No other users yet.</div><?php endif; ?>
-            <?php if ($orphanTotal): ?><a class="d-flex justify-content-between align-items-center border-bottom py-2 text-decoration-none<?=$peerId===0?' bg-primary-subtle fw-semibold':''?>" href="?page=messages&u=0"><span>Deleted user</span><?php if ($orphanUnread): ?><span class="badge text-bg-danger"><?=$orphanUnread?></span><?php endif; ?></a><?php endif; ?>
-            <?php if (!$peopleRows && !$orphanTotal): ?><div class="small muted">Nobody to talk to yet.</div><?php endif; ?>
+    <div class="row g-4 tb-chat<?=$hasPeer?' has-peer':''?>" data-tb-chat>
+        <div class="col-lg-4 tb-chat-people"><div class="card p-3 tb-chat-people-card"><h2 class="h5">People</h2>
+            <?php foreach ($chatEntries as $p): $pid=(int)$p['id']; $isOrphan=$pid===0; ?>
+            <a class="d-flex justify-content-between align-items-center border-bottom py-2 text-decoration-none<?=$peer!==null&&$pid===(int)$peer['id']?' bg-primary-subtle fw-semibold':''?>" href="?page=messages&u=<?=$pid?>"><span><?php if($isOrphan): ?>Deleted user<?php else: ?><?=tb_user_with_activity($p)?><?php endif; ?></span><?php if($isOrphan ? $orphanUnread : ($unreadBySender[$pid] ?? 0)): ?><span class="badge text-bg-danger"><?=$isOrphan?$orphanUnread:$unreadBySender[$pid]?></span><?php endif; ?></a>
+            <?php endforeach; if(!$chatEntries): ?><div class="small muted">Nobody to talk to yet.</div><?php endif; ?>
         </div></div>
-        <div class="col-lg-8"><div class="card p-3">
-            <h2 class="h5"><?=h($peer!==null?'Conversation with '.$peer['display_name']:'Deleted user')?></h2>
-            <div class="py-2">
-            <?php foreach ($thread as $m): $mine=$m['sender_id']!==null&&(int)$m['sender_id']===$me; ?>
-            <?php if ($mine): ?><div class="d-flex justify-content-end mb-2"><div class="bg-primary text-white rounded-3 px-3 py-2" style="max-width:75%"><div class="prewrap"><?=h($m['body'])?></div><div class="small mt-1" style="opacity:.75"><?=h($m['created_at'])?> · <?=$m['is_read']?'Seen':'Sent'?></div></div></div>
-            <?php else: ?><div class="d-flex justify-content-start mb-2"><div class="border rounded-3 px-3 py-2" style="max-width:75%"><div class="prewrap"><?=h($m['body'])?></div><div class="small muted mt-1"><?=h($m['created_at'])?></div></div></div><?php endif; ?>
-            <?php endforeach; if(!$thread): ?><div class="text-center muted small py-4">No messages here yet - say hi below.</div><?php endif; ?>
+        <div class="col-lg-8 tb-chat-thread"><div class="card p-3">
+            <div class="tb-chat-head d-flex align-items-center gap-2"><a class="btn btn-sm btn-outline-secondary tb-chat-back" href="?page=messages" aria-label="Back to the people list" title="Back to the people list">&larr;</a><h2 class="h5"><?=h($peer!==null?'Conversation with '.$peer['display_name']:'Deleted user')?></h2></div>
+            <div class="tb-chat-scroll" data-tb-chat-scroll data-tb-more="<?=h('?page=messages_more&u='.$peerId.($oldestId!==null?'&before='.(int)$oldestId:''))?>" data-tb-has-more="<?=$hasMore?'1':'0'?>">
+            <?php foreach ($thread as $m): $mine=$m['sender_id']!==null&&(int)$m['sender_id']===$me; echo tb_message_bubble($m,$mine,$threadAttachments[(int)$m['id']]??[]); endforeach; if(!$thread): ?><div class="text-center muted small py-4">No messages here yet - say hi below.</div><?php endif; ?>
             </div>
-            <?php if ($peerId!==0): ?><form method="post" class="mt-2"><?=csrf_field()?><input type="hidden" name="action" value="send_message"><input type="hidden" name="recipient_id" value="<?=$peerId?>"><input type="hidden" name="send_token" value="<?=h(tb_message_send_token())?>"><div class="input-group"><textarea class="form-control" id="message-body" name="body" rows="2" placeholder="Write a message..." required></textarea><button class="btn btn-primary">Send</button></div></form>
+            <?php if ($peerId!==0): ?><form method="post" class="tb-chat-composer mt-2" enctype="multipart/form-data" data-tb-chat-send><?=csrf_field()?><input type="hidden" name="action" value="send_message"><input type="hidden" name="recipient_id" value="<?=$peerId?>"><input type="hidden" name="send_token" value="<?=h(tb_message_send_token())?>"><div class="input-group"><button class="btn btn-outline-secondary tb-chat-attach" type="button" aria-label="Attach a file" title="Attach a file">&#128206;</button><input type="file" class="d-none" name="attachment" aria-label="Attachment file" data-tb-chat-file><textarea class="form-control" id="message-body" name="body" rows="2" placeholder="Write a message..." aria-label="Message" data-tb-chat-body></textarea><button class="btn btn-primary" type="submit">Send</button></div><div class="small muted mt-1 d-none" data-tb-chat-file-name></div><div class="small muted mt-1">Enter sends &middot; Shift+Enter or Ctrl+Enter adds a new line &middot; max <?=round($config['max_upload_bytes']/1024/1024)?> MB per attachment.</div></form>
             <?php else: ?><div class="small muted mt-2">This account was deleted - the conversation stays readable, but new messages cannot be delivered.</div><?php endif; ?>
         </div></div></div>
+    <script>
+    (function(){
+        var root=document.querySelector('[data-tb-chat]');
+        if(!root) return;
+        // Pin the chat to the exact viewport space under the page header (1):
+        // the composer always sits at the bottom of the first screen, on
+        // desktop and on the wrapped mobile header alike.
+        var size=function(){
+            var h=window.innerHeight-root.getBoundingClientRect().top-14;
+            root.style.height=Math.max(h,320)+'px';
+        };
+        size();
+        window.addEventListener('resize',size);
+        var scroll=root.querySelector('[data-tb-chat-scroll]');
+        if(scroll){
+            // Open at the bottom - the newest page of the conversation (2).
+            scroll.scrollTop=scroll.scrollHeight;
+            var moreUrl=scroll.getAttribute('data-tb-more')||'';
+            var hasMore=scroll.getAttribute('data-tb-has-more')==='1';
+            var cursor=null,m=moreUrl.match(/before=(\d+)/);
+            if(m) cursor=parseInt(m[1],10);
+            var busy=false;
+            // Infinity scroll (3): near the top, pull the next older page and
+            // prepend it while keeping the viewport on the same messages.
+            var loadOlder=function(){
+                if(busy||!hasMore||cursor===null) return;
+                busy=true;
+                fetch(moreUrl,{credentials:'same-origin',headers:{'Accept':'application/json'}})
+                    .then(function(r){return r.ok?r.json():null;})
+                    .then(function(d){
+                        if(d&&typeof d.html==='string'&&d.html!==''){
+                            var before=scroll.scrollHeight;
+                            scroll.insertAdjacentHTML('afterbegin',d.html);
+                            scroll.scrollTop=scroll.scrollHeight-before;
+                            if(d.hasMore&&d.oldestId){
+                                cursor=parseInt(d.oldestId,10);
+                                moreUrl=moreUrl.replace(/before=\d+/,'before='+cursor);
+                            } else {
+                                hasMore=false;
+                            }
+                        } else {
+                            hasMore=false;
+                        }
+                    })
+                    .catch(function(){})
+                    .then(function(){busy=false;fill();});
+            };
+            // A short conversation never overflows, so no scroll-up could
+            // ever reach the older pages: keep pulling one page after
+            // another until the thread scrolls or history is exhausted.
+            var fill=function(){
+                if(hasMore&&scroll.scrollHeight<=scroll.clientHeight) loadOlder();
+            };
+            scroll.addEventListener('scroll',function(){
+                if(scroll.scrollTop<40) loadOlder();
+            });
+            fill();
+        }
+        var attach=root.querySelector('.tb-chat-attach');
+        var file=root.querySelector('[data-tb-chat-file]');
+        var fileName=root.querySelector('[data-tb-chat-file-name]');
+        if(attach&&file){
+            // The paperclip button (6) drives the real file input.
+            attach.addEventListener('click',function(){file.click();});
+            file.addEventListener('change',function(){
+                if(!fileName) return;
+                if(file.files&&file.files.length){
+                    fileName.textContent='Attached: '+file.files[0].name;
+                    fileName.classList.remove('d-none');
+                } else {
+                    fileName.textContent='';
+                    fileName.classList.add('d-none');
+                }
+            });
+        }
+        var form=root.querySelector('[data-tb-chat-send]');
+        var body=root.querySelector('[data-tb-chat-body]');
+        if(form&&body){
+            // Enter sends (5); Shift+Enter and Ctrl+Enter fall through and
+            // let the textarea add the newline itself.
+            body.addEventListener('keydown',function(e){
+                if(e.key==='Enter'&&!e.shiftKey&&!e.ctrlKey&&!e.metaKey){
+                    e.preventDefault();
+                    var hasFile=file&&file.files&&file.files.length>0;
+                    if(body.value.trim()===''&&!hasFile) return;
+                    if(typeof form.requestSubmit==='function'){form.requestSubmit();}
+                    else{form.submit();}
+                }
+            });
+        }
+    })();
+    </script>
     <?php render_footer(); exit;
 }
 

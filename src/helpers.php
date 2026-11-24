@@ -37,6 +37,44 @@ function tb_message_send_token(): string {
 function tb_message_send_token_rotate(): void {
     $_SESSION['message_send_token'] = bin2hex(random_bytes(16));
 }
+
+/** One chat bubble of the messenger thread (#94): the messages page and the
+ * messages_more JSON feed render the exact same markup through this helper,
+ * so an older page of the conversation looks identical to the initial one
+ * and the HTML escaping stays on the server. Attachments (#94) render as
+ * download links inside the bubble; the viewer is only ever served files of
+ * a conversation they take part in (message_download checks it). */
+function tb_message_bubble(array $m, bool $mine, array $attachments = []): string {
+    $inner = '';
+    if ((string)($m['body'] ?? '') !== '') {
+        $inner .= '<div class="prewrap">' . h((string)$m['body']) . '</div>';
+    }
+    foreach ($attachments as $a) {
+        $inner .= '<div class="mt-1"><a class="badge text-bg-light border text-decoration-none tb-chat-attachment" href="?page=message_download&amp;id=' . (int)$a['id'] . '" download title="Download attachment">' . h((string)$a['original_name']) . ' <span class="fw-normal">(' . number_format((int)$a['file_size'] / 1024, 1) . ' KB)</span></a></div>';
+    }
+    if ($mine) {
+        return '<div class="d-flex justify-content-end mb-2"><div class="bg-primary text-white rounded-3 px-3 py-2 tb-chat-bubble" style="max-width:75%">' . $inner
+            . '<div class="small mt-1" style="opacity:.75">' . h((string)$m['created_at']) . ' · ' . ((int)$m['is_read'] ? 'Seen' : 'Sent') . '</div></div></div>';
+    }
+    return '<div class="d-flex justify-content-start mb-2"><div class="border rounded-3 px-3 py-2 tb-chat-bubble" style="max-width:75%">' . $inner
+        . '<div class="small muted mt-1">' . h((string)$m['created_at']) . '</div></div></div>';
+}
+
+/** The attachments of a set of chat messages (#94), grouped by message id:
+ * the messages page and the messages_more feed fetch them with one query
+ * for exactly the messages they are about to render. */
+function tb_message_attachments(PDO $pdo, array $messageIds): array {
+    $grouped = [];
+    $ids = array_values(array_unique(array_filter(array_map('intval', $messageIds))));
+    if (!$ids) return $grouped;
+    $in = implode(',', array_fill(0, count($ids), '?'));
+    $s = $pdo->prepare('SELECT * FROM message_attachments WHERE message_id IN (' . $in . ') ORDER BY id');
+    $s->execute($ids);
+    foreach ($s->fetchAll() as $a) {
+        $grouped[(int)$a['message_id']][] = $a;
+    }
+    return $grouped;
+}
 function history(PDO $pdo, int $taskId, string $event, string $details = ''): void {
     $s = $pdo->prepare('INSERT INTO task_history(task_id,user_id,event,details) VALUES(?,?,?,?)');
     $s->execute([$taskId, user()['id'], $event, $details]);
@@ -1145,6 +1183,46 @@ function tb_migrate_schema(PDO $pdo): void {
                 created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
                 updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
                 CONSTRAINT fk_saved_search_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+            )");
+        }
+    }
+
+    // Message attachments (#94): the chat composer can attach one file per
+    // message, so a deployment that lands without the upgrade adds the table
+    // on the first request instead of fataling the sender. Fresh installs get
+    // it from schema.sql. The DDL is dialect-branched here (this table needs
+    // an auto-increment id like the task/document attachments, and plain SQL
+    // migration files must stay dialect-neutral - see migrations/README.md),
+    // which is why it travels through this self-heal and not migrations/.
+    $hasMessageAttachments = $isMysql
+        ? (bool)$pdo->query("SHOW TABLES LIKE 'message_attachments'")->fetchColumn()
+        : (bool)$pdo->query("SELECT 1 FROM sqlite_master WHERE type='table' AND name='message_attachments'")->fetchColumn();
+    if (!$hasMessageAttachments) {
+        if ($isMysql) {
+            $pdo->exec("CREATE TABLE message_attachments (
+                id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+                message_id INT UNSIGNED NOT NULL,
+                user_id INT UNSIGNED NULL,
+                stored_name VARCHAR(255) NOT NULL,
+                original_name VARCHAR(255) NOT NULL,
+                mime_type VARCHAR(120) NOT NULL,
+                file_size INT UNSIGNED NOT NULL,
+                created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                CONSTRAINT fk_message_attachment_message FOREIGN KEY (message_id) REFERENCES messages(id) ON DELETE CASCADE,
+                CONSTRAINT fk_message_attachment_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE SET NULL
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4");
+        } else {
+            $pdo->exec("CREATE TABLE message_attachments (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                message_id INTEGER NOT NULL,
+                user_id INTEGER NULL,
+                stored_name TEXT NOT NULL,
+                original_name TEXT NOT NULL,
+                mime_type TEXT NOT NULL,
+                file_size INTEGER NOT NULL,
+                created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                CONSTRAINT fk_message_attachment_message FOREIGN KEY (message_id) REFERENCES messages(id) ON DELETE CASCADE,
+                CONSTRAINT fk_message_attachment_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE SET NULL
             )");
         }
     }

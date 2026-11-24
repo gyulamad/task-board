@@ -1748,6 +1748,17 @@ function tb_unseen_notification_count(PDO $pdo, int $userId): int {
     return (int)$s->fetchColumn();
 }
 
+/** Notification flag toggle (#100): whether the signed-in user wants the red
+ * "New notifications" badge in the top menu at all. A per-user preference
+ * stored with the #66 user-preference helpers; the default (no row yet) is
+ * ON, so the board behaves exactly like before the toggle existed. Both
+ * badge sources read this same flag - the server-rendered navbar badge and
+ * the ?page=badges JSON feed the footer poller swaps the badge with - so
+ * flipping the switch takes effect without waiting for a refresh. */
+function tb_notification_flag_enabled(PDO $pdo, int $userId): bool {
+    return tb_user_pref_get($pdo, $userId, 'notification_flag_enabled', '1') !== '0';
+}
+
 /** User preferences (#66): read one per-user key. Returns $default when the
  * user never stored the key. fetchAll() drains the cursor, so a SQLite test
  * connection never keeps a lock across the following HTTP request (the #61

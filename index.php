@@ -634,6 +634,26 @@ if (user()) {
                 if (is_string($uri) && $uri !== '' && $uri[0] === '/' && ($uri[1] ?? '') !== '/') $returnUrl = $uri;
                 redirect($returnUrl);
             }
+            if ($action === 'toggle_notification_flag') {
+                // Notification flag toggle (#100): show or hide the red "New
+                // notifications" badge in the top menu. The state is a
+                // per-user preference (user_preferences table, the #66
+                // discipline), so it survives reloads and new sign-ins and
+                // stays separate per user. Both badge sources read the same
+                // flag - the server-rendered navbar badge and the
+                // ?page=badges JSON feed the footer poller swaps the badge
+                // with - so the switch takes effect on the very next page
+                // load or poll, not only after a sign-out. Send the visitor
+                // back to the page the switch was used on; only same-site
+                // relative URLs are allowed, exactly like the theme switcher
+                // above.
+                $flagOn = tb_notification_flag_enabled($pdo, (int)user()['id']);
+                tb_user_pref_set($pdo, (int)user()['id'], 'notification_flag_enabled', $flagOn ? '0' : '1');
+                $returnUrl = '?';
+                $uri = $_SERVER['REQUEST_URI'] ?? '';
+                if (is_string($uri) && $uri !== '' && $uri[0] === '/' && ($uri[1] ?? '') !== '/') $returnUrl = $uri;
+                redirect($returnUrl);
+            }
             if ($action === 'bulk_move_tasks') {
                 // Bulk action (#23): move the selected tasks into one project.
                 $ids = array_values(array_unique(array_filter(array_map('intval', (array)($_POST['task_ids'] ?? [])), fn($v) => $v > 0)));
@@ -823,7 +843,7 @@ function render_header(string $title, array $config, string $error = ''): void {
     <link rel="icon" type="image/svg+xml" href="?page=favicon&amp;type=svg"><link rel="icon" href="?page=favicon" sizes="48x48 32x32 16x16">
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
     <style>body{background:#f5f6f8}.card{border:0;box-shadow:0 1px 5px #0000000d}.muted{color:#687386}.prewrap{white-space:pre-wrap}.navbar-brand{font-weight:700}.tb-activity-dot{display:inline-block;width:.55em;height:.55em;border-radius:50%;margin-right:.3em}.tb-activity-green{background:#198754}.tb-activity-yellow{background:#ffc107}.tb-activity-red{background:#dc3545}.tb-activity-grey{background:#6c757d}.tb-activity-char{font-weight:700;margin-right:.3em}html[data-bs-theme="dark"] body{background:#14181f}html[data-bs-theme="dark"] .card{box-shadow:0 1px 6px #00000059}html[data-bs-theme="dark"] .muted{color:#8b96a5}</style></head><body>
-    <nav class="navbar navbar-expand-lg navbar-dark bg-dark"><div class="container"><a class="navbar-brand" href="?"><?=h($config['app_name'])?></a><?php if(user()): ?><button class="navbar-toggler ms-auto" type="button" data-bs-toggle="collapse" data-bs-target="#tb-navbar" aria-controls="tb-navbar" aria-expanded="false" aria-label="Toggle navigation"><span class="navbar-toggler-icon"></span></button><div class="collapse navbar-collapse" id="tb-navbar"><div class="navbar-nav ms-auto align-items-center"><a class="nav-link" href="?page=tasks-v2">Tasks</a><a class="nav-link" href="?page=kanban">Kanban</a><a class="nav-link" href="?page=waterflow">Waterflow</a><a class="nav-link" href="?page=projects">Projects</a><a class="nav-link" href="?page=templates">Templates</a><a class="nav-link" href="?page=documents-v2">Know-hows</a><a class="nav-link" href="?page=messages">Messages<?php global $pdo; $tbUnread=array_key_exists('TB_UNREAD_BADGE',$GLOBALS)?(int)$GLOBALS['TB_UNREAD_BADGE']:tb_unread_message_count($pdo,(int)user()['id']); if($tbUnread): ?> <span class="badge text-bg-danger" title="New messages"><?=$tbUnread?></span><?php endif; unset($GLOBALS['TB_UNREAD_BADGE']); ?></a><a class="nav-link" href="?page=notifications">Notifications<?php global $pdo; $tbSeen=array_key_exists('TB_NOTIFICATION_BADGE',$GLOBALS)?(int)$GLOBALS['TB_NOTIFICATION_BADGE']:tb_unseen_notification_count($pdo,(int)user()['id']); if($tbSeen): ?> <span class="badge text-bg-danger" title="New notifications"><?=$tbSeen?></span><?php endif; unset($GLOBALS['TB_NOTIFICATION_BADGE']); ?></a><a class="nav-link" href="?page=settings">Settings</a><?php if(is_admin()): ?><a class="nav-link" href="?page=admin">Administration</a><a class="nav-link" href="?page=activity_settings">Activity periods</a><a class="nav-link" href="?page=updates">Software updates</a><?php endif; ?><form method="post" class="d-flex align-items-center mx-2"><?=csrf_field()?><input type="hidden" name="action" value="save_theme"><select name="theme" class="form-select form-select-sm bg-dark text-light border-secondary" aria-label="Theme" title="Theme" onchange="this.form.submit()"><option value="light" <?=$theme==='light'?'selected':''?>>Light</option><option value="dark" <?=$theme==='dark'?'selected':''?>>Dark</option></select><noscript><button class="btn btn-sm btn-outline-light ms-1">Save</button></noscript></form><span class="navbar-text mx-2"><?=tb_user_with_activity($_SESSION['user'])?></span><form method="post" action="?page=logout" class="d-inline m-0"><?=csrf_field()?><button type="submit" class="btn btn-link nav-link p-0 text-white text-decoration-none">Sign out</button></form></div></div><?php endif; ?></div></nav><main class="container py-4">
+    <nav class="navbar navbar-expand-lg navbar-dark bg-dark"><div class="container"><a class="navbar-brand" href="?"><?=h($config['app_name'])?></a><?php if(user()): ?><button class="navbar-toggler ms-auto" type="button" data-bs-toggle="collapse" data-bs-target="#tb-navbar" aria-controls="tb-navbar" aria-expanded="false" aria-label="Toggle navigation"><span class="navbar-toggler-icon"></span></button><div class="collapse navbar-collapse" id="tb-navbar"><div class="navbar-nav ms-auto align-items-center"><a class="nav-link" href="?page=tasks-v2">Tasks</a><a class="nav-link" href="?page=kanban">Kanban</a><a class="nav-link" href="?page=waterflow">Waterflow</a><a class="nav-link" href="?page=projects">Projects</a><a class="nav-link" href="?page=templates">Templates</a><a class="nav-link" href="?page=documents-v2">Know-hows</a><a class="nav-link" href="?page=messages">Messages<?php global $pdo; $tbUnread=array_key_exists('TB_UNREAD_BADGE',$GLOBALS)?(int)$GLOBALS['TB_UNREAD_BADGE']:tb_unread_message_count($pdo,(int)user()['id']); if($tbUnread): ?> <span class="badge text-bg-danger" title="New messages"><?=$tbUnread?></span><?php endif; unset($GLOBALS['TB_UNREAD_BADGE']); ?></a><a class="nav-link" href="?page=notifications">Notifications<?php global $pdo; $tbSeen=array_key_exists('TB_NOTIFICATION_BADGE',$GLOBALS)?(int)$GLOBALS['TB_NOTIFICATION_BADGE']:tb_unseen_notification_count($pdo,(int)user()['id']); if($tbSeen && tb_notification_flag_enabled($pdo,(int)user()['id'])): ?> <span class="badge text-bg-danger" title="New notifications"><?=$tbSeen?></span><?php endif; unset($GLOBALS['TB_NOTIFICATION_BADGE']); ?></a><a class="nav-link" href="?page=settings">Settings</a><?php if(is_admin()): ?><a class="nav-link" href="?page=admin">Administration</a><a class="nav-link" href="?page=activity_settings">Activity periods</a><a class="nav-link" href="?page=updates">Software updates</a><?php endif; ?><form method="post" class="d-flex align-items-center mx-2"><?=csrf_field()?><input type="hidden" name="action" value="save_theme"><select name="theme" class="form-select form-select-sm bg-dark text-light border-secondary" aria-label="Theme" title="Theme" onchange="this.form.submit()"><option value="light" <?=$theme==='light'?'selected':''?>>Light</option><option value="dark" <?=$theme==='dark'?'selected':''?>>Dark</option></select><noscript><button class="btn btn-sm btn-outline-light ms-1">Save</button></noscript></form><span class="navbar-text mx-2"><?=tb_user_with_activity($_SESSION['user'])?></span><form method="post" action="?page=logout" class="d-inline m-0"><?=csrf_field()?><button type="submit" class="btn btn-link nav-link p-0 text-white text-decoration-none">Sign out</button></form></div></div><?php endif; ?></div></nav><main class="container py-4">
     <?php if (!empty($_SESSION['flash'])): ?><div class="alert alert-success"><?=h($_SESSION['flash'])?></div><?php unset($_SESSION['flash']); endif; ?>
     <?php if($error): ?><div class="alert alert-danger"><?=h($error)?></div><?php endif;
 }
@@ -1042,7 +1062,10 @@ if ($page==='badges') {
     header('Cache-Control: no-store');
     exit(json_encode([
         'messages' => tb_unread_message_count($pdo, (int)user()['id']),
-        'notifications' => tb_unseen_notification_count($pdo, (int)user()['id']),
+        // #100: the notification flag toggle hides the badge entirely, so the
+        // poller must report 0 for a user who switched it off - otherwise the
+        // 10-second feed would re-create the badge the server omitted.
+        'notifications' => tb_notification_flag_enabled($pdo, (int)user()['id']) ? tb_unseen_notification_count($pdo, (int)user()['id']) : 0,
     ]));
 }
 
@@ -1475,6 +1498,10 @@ if ($page==='messages') {
 if ($page==='notifications') {
     $me=(int)user()['id'];
     $newCount=tb_unseen_notification_count($pdo,$me);
+    // #100: the switch that shows or hides the red navbar badge for this
+    // user. Rendered next to the stream counter; the POST flips the
+    // per-user preference and lands back on this page.
+    $flagOn=tb_notification_flag_enabled($pdo,$me);
     $s=$pdo->prepare('SELECT n.*,t.title task_title FROM notifications n JOIN tasks t ON t.id=n.task_id WHERE n.user_id=? ORDER BY n.id DESC LIMIT 200');
     $s->execute([$me]);
     $items=$s->fetchAll();
@@ -1485,7 +1512,7 @@ if ($page==='notifications') {
     // Mark-all-as-seen button is the bulk shortcut in one POST.
     $pdo->prepare('UPDATE notifications SET is_seen=1 WHERE user_id=? AND is_seen=0')->execute([$me]);
     render_header('Notifications',$config,$error); ?>
-    <div class="d-flex justify-content-between align-items-center mb-3"><div><h1 class="h3 mb-0">Notifications</h1><div class="muted">Everything that happened on the tasks you are assigned to. Opening this page marks everything seen - the red flag disappears until new ones arrive; clicking a single one opens the task it came from, and the button clears them all in one click.</div></div><div class="d-flex gap-2 align-items-center"><span class="badge text-bg-danger fs-6"><?=$newCount?> new notification<?=$newCount===1?'':'s'?></span><?php if($newCount): ?><form method="post" class="d-inline"><?=csrf_field()?><input type="hidden" name="action" value="mark_all_seen"><button class="btn btn-outline-primary btn-sm" title="Mark every notification as seen">Mark all as seen</button></form><?php endif; ?></div></div>
+    <div class="d-flex justify-content-between align-items-center mb-3"><div><h1 class="h3 mb-0">Notifications</h1><div class="muted">Everything that happened on the tasks you are assigned to. Opening this page marks everything seen - the red flag disappears until new ones arrive; clicking a single one opens the task it came from, and the button clears them all in one click.</div></div><div class="d-flex gap-2 align-items-center"><form method="post" class="d-inline-flex align-items-center gap-1" title="Shows or hides the red notification counter in the top menu"><?=csrf_field()?><input type="hidden" name="action" value="toggle_notification_flag"><div class="form-check form-switch mb-0"><input class="form-check-input" type="checkbox" role="switch" id="notification-flag-toggle" aria-label="Red flag in the top menu"<?=$flagOn?' checked':''?> onchange="this.form.submit()"><label class="form-check-label small muted" for="notification-flag-toggle">Red flag in the top menu</label></div><noscript><button class="btn btn-sm btn-outline-secondary">Apply</button></noscript></form><span class="badge text-bg-danger fs-6"><?=$newCount?> new notification<?=$newCount===1?'':'s'?></span><?php if($newCount): ?><form method="post" class="d-inline"><?=csrf_field()?><input type="hidden" name="action" value="mark_all_seen"><button class="btn btn-outline-primary btn-sm" title="Mark every notification as seen">Mark all as seen</button></form><?php endif; ?></div></div>
     <div class="card p-4"><h2 class="h5">Stream</h2><?php foreach($items as $n): ?><div class="border-bottom py-2<?=$n['is_seen']?'':' fw-semibold'?>"><div><a class="fw-semibold text-decoration-none" href="?page=notification_seen&id=<?=$n['id']?>">#<?=$n['task_id']?> · <?=h($n['task_title'])?></a> <strong><?=h($n['event'])?></strong> <span class="small muted"><?=h($n['created_at'])?></span><?php if(!$n['is_seen']): ?> <span class="badge text-bg-danger">new</span><?php endif; ?></div></div><?php endforeach; if(!$items): ?><div class="small muted">No notifications yet. Assign yourself to a task and follow its history.</div><?php endif; ?></div>
     <?php render_footer(); exit;
 }

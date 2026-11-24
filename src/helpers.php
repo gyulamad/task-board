@@ -958,7 +958,10 @@ function tb_user_with_activity(?array $user, ?int $now = null): string {
     if ($user === null || !isset($user['display_name']) || $user['display_name'] === null || $user['display_name'] === '') {
         return h('Deleted user');
     }
-    return tb_activity_dot($user['last_seen_at'] ?? null, $now) . h($user['display_name']);
+    // The name sits in a no-wrap block with its activity dot (#63): a display
+    // name rendered anywhere on the board stays on one line, never broken
+    // across lines by the surrounding layout.
+    return '<span class="text-nowrap">' . tb_activity_dot($user['last_seen_at'] ?? null, $now) . h($user['display_name']) . '</span>';
 }
 
 /**

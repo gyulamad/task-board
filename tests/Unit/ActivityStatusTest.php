@@ -74,7 +74,9 @@ final class ActivityStatusTest extends TestCase
     public function test_the_standard_name_renderer_puts_the_dot_before_the_escaped_name(): void
     {
         $html = tb_user_with_activity(['display_name' => 'Jane <b>Doe</b>', 'last_seen_at' => $this->stamp(60)], self::NOW);
-        $this->assertSame('<span class="tb-activity-dot tb-activity-green" title="Active in the last 15 minutes"></span>Jane &lt;b&gt;Doe&lt;/b&gt;', $html);
+        // The dot and the name sit inside one no-wrap block (#63): the display
+        // name never breaks across lines, wherever it renders.
+        $this->assertSame('<span class="text-nowrap"><span class="tb-activity-dot tb-activity-green" title="Active in the last 15 minutes"></span>Jane &lt;b&gt;Doe&lt;/b&gt;</span>', $html);
     }
 
     public function test_a_deleted_user_renders_as_a_plain_name_without_a_dot(): void

@@ -225,10 +225,10 @@ final class TaskLifecycleTest extends E2eTestCase
         // never logged in (red), the admin session has just requested pages
         // (green).
         $this->assertTrue($list->contains(
-            '#' . $daves . ' · Daves task</a></td><td><span class="badge text-bg-light border">TODO</span></td><td><span class="tb-activity-dot tb-activity-red" title="Inactive for over an hour"></span>Dave Row</td>'
+            '#' . $daves . ' · Daves task</a></td><td><span class="badge text-bg-light border">TODO</span></td><td><span class="text-nowrap"><span class="tb-activity-dot tb-activity-red" title="Inactive for over an hour"></span>Dave Row</span></td>'
         ));
         $this->assertTrue($list->contains(
-            '#' . $admins . ' · Admins task</a></td><td><span class="badge text-bg-light border">TODO</span></td><td><span class="tb-activity-dot tb-activity-green" title="Active in the last 15 minutes"></span>Administrator</td>'
+            '#' . $admins . ' · Admins task</a></td><td><span class="badge text-bg-light border">TODO</span></td><td><span class="text-nowrap"><span class="tb-activity-dot tb-activity-green" title="Active in the last 15 minutes"></span>Administrator</span></td>'
         ));
         // A task without assignees keeps the em-dash placeholder cell.
         $this->assertTrue($list->contains(

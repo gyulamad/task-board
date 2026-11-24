@@ -267,7 +267,7 @@ final class ProjectsTest extends E2eTestCase
         // the renderer puts the activity dot before the name; the admin session
         // has just requested pages, so its dot is green.
         $this->assertTrue($list->contains(
-            '#' . $staffed . ' · Staffed project</a></td><td><span class="badge text-bg-light border">TODO</span></td><td><span class="tb-activity-dot tb-activity-green" title="Active in the last 15 minutes"></span>Administrator</td>'
+            '#' . $staffed . ' · Staffed project</a></td><td><span class="badge text-bg-light border">TODO</span></td><td><span class="text-nowrap"><span class="tb-activity-dot tb-activity-green" title="Active in the last 15 minutes"></span>Administrator</span></td>'
         ));
         $this->assertTrue($list->contains(
             '#' . $unstaffed . ' · Unstaffed project</a></td><td><span class="badge text-bg-light border">TODO</span></td><td>—</td>'

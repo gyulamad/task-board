@@ -149,7 +149,7 @@ final class UserActivityTest extends E2eTestCase
         $list = $admin->get('/?page=tasks');
         $this->assertSame(200, $list->status);
         $this->assertTrue(
-            $list->contains('navbar-text mx-2"><span class="tb-activity-dot tb-activity-green"'),
+            $list->contains('navbar-text mx-2"><span class="text-nowrap"><span class="tb-activity-dot tb-activity-green"'),
             'The signed-in user must carry a green dot in the navbar.'
         );
         // Task list: the assignee cell renders dot + name (jane is red, never seen).
@@ -168,7 +168,7 @@ final class UserActivityTest extends E2eTestCase
         $detail = $admin->taskPage($taskId);
         $this->assertSame(200, $detail->status);
         $this->assertTrue(
-            $detail->contains('Created by <span class="tb-activity-dot tb-activity-green"'),
+            $detail->contains('Created by <span class="text-nowrap"><span class="tb-activity-dot tb-activity-green"'),
             'The creator must carry the activity dot.'
         );
         $this->assertTrue(
@@ -176,7 +176,7 @@ final class UserActivityTest extends E2eTestCase
             'The assignee on the detail page must carry the dot.'
         );
         $this->assertTrue(
-            $detail->contains('<strong><span class="tb-activity-dot tb-activity-green"'),
+            $detail->contains('<strong><span class="text-nowrap"><span class="tb-activity-dot tb-activity-green"'),
             'The comment author must carry the dot.'
         );
 

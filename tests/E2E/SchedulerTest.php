@@ -302,7 +302,7 @@ final class SchedulerTest extends E2eTestCase
 
         // The task page states the targets, so the schedule is not opaque.
         $page = $admin->taskPage($id);
-        $this->assertTrue($page->contains('reopens to IN PROGRESS, assignees: Administrator'));
+        $this->assertTrue($page->contains('reopens to IN PROGRESS, assignees: <span class="text-nowrap">Administrator</span>'), 'the reopen targets render on one line per name (#63).');
 
         // Clearing the period clears the targets with the same save: one form.
         $clear = $admin->post('/?page=edit&id=' . $id, [

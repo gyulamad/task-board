@@ -6,7 +6,14 @@ CREATE TABLE users (
     role ENUM('admin','user') NOT NULL DEFAULT 'user',
     theme VARCHAR(20) NOT NULL DEFAULT 'light',
     created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    last_seen_at TIMESTAMP NULL DEFAULT NULL
+    last_seen_at TIMESTAMP NULL DEFAULT NULL,
+    -- Logged-out status (#106): 1 from the moment the user signs out through
+    -- the board's own sign-out button until their next successful sign-in.
+    -- The activity dot renders the configured logged-out indicator instead of
+    -- the last-seen periods while this is set; sessions that die silently
+    -- (cookie expiry, browser close) never set it, so only an explicit
+    -- sign-out changes what the dot shows.
+    logged_out TINYINT(1) NOT NULL DEFAULT 0
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 CREATE TABLE statuses (

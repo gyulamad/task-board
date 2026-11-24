@@ -156,8 +156,10 @@ function all_statuses(PDO $pdo): array {
 function user_options(PDO $pdo): array {
     // last_seen_at rides along (#30) so name renderings that can carry markup
     // (the assignee checkboxes on the edit pages) show the activity dot;
-    // <option>-based pickers keep using display_name only.
-    return $pdo->query('SELECT id,display_name,last_seen_at FROM users ORDER BY display_name')->fetchAll();
+    // logged_out rides along too (#106) so a signed-out user's checkbox label
+    // shows the logged-out indicator instead. <option>-based pickers keep
+    // using display_name only.
+    return $pdo->query('SELECT id,display_name,last_seen_at,logged_out FROM users ORDER BY display_name')->fetchAll();
 }
 
 /**
@@ -172,7 +174,7 @@ function task_assignees_by_task(PDO $pdo, array $taskIds): array {
     $ids = array_values(array_unique(array_filter(array_map('intval', $taskIds), fn($v) => $v > 0)));
     if (!$ids) return [];
     $placeholders = implode(',', array_fill(0, count($ids), '?'));
-    $s = $pdo->prepare('SELECT a.task_id, u.display_name, u.last_seen_at FROM task_assignees a JOIN users u ON u.id=a.user_id WHERE a.task_id IN (' . $placeholders . ')');
+    $s = $pdo->prepare('SELECT a.task_id, u.display_name, u.last_seen_at, u.logged_out FROM task_assignees a JOIN users u ON u.id=a.user_id WHERE a.task_id IN (' . $placeholders . ')');
     $s->execute($ids);
     $assignees = [];
     foreach ($s->fetchAll() as $row) {
@@ -191,7 +193,7 @@ function project_assignees_by_project(PDO $pdo, array $projectIds): array {
     $ids = array_values(array_unique(array_filter(array_map('intval', $projectIds), fn($v) => $v > 0)));
     if (!$ids) return [];
     $placeholders = implode(',', array_fill(0, count($ids), '?'));
-    $s = $pdo->prepare('SELECT pa.project_id, u.display_name, u.last_seen_at FROM project_assignees pa JOIN users u ON u.id=pa.user_id WHERE pa.project_id IN (' . $placeholders . ')');
+    $s = $pdo->prepare('SELECT pa.project_id, u.display_name, u.last_seen_at, u.logged_out FROM project_assignees pa JOIN users u ON u.id=pa.user_id WHERE pa.project_id IN (' . $placeholders . ')');
     $s->execute($ids);
     $assignees = [];
     foreach ($s->fetchAll() as $row) {
@@ -254,6 +256,7 @@ function tb_session_user(array $u): array {
         'role' => (string)$u['role'],
         'theme' => normalize_theme($u['theme'] ?? null),
         'last_seen_at' => $u['last_seen_at'] ?? null,
+        'logged_out' => (int)($u['logged_out'] ?? 0),
     ];
 }
 
@@ -983,6 +986,13 @@ function tb_activity_level_title(int $bucket, ?array $levels = null): string {
  * without fabricating stamps. A period with a colour renders as a coloured
  * disc; a character-only period renders its glyph. Both carry a title naming
  * the state, so the colour is never the only carrier of the meaning.
+ *
+ * The grey period renders as the EMPTY circle character ○ (#106): the picker
+ * has always labelled it "grey (empty)", but the CSS disc rendered filled, so
+ * the label lied. The glyph is the character the settings page documents for
+ * an empty circle (filled circle ●, empty circle ○) and is coloured grey by
+ * the .tb-activity-empty class, so an empty period looks empty at every text
+ * size instead of a filled disc that only claims to be one.
  */
 function tb_activity_dot_for_bucket(int $bucket, ?array $levels = null): string {
     $levels = tb_activity_levels_current($levels);
@@ -991,6 +1001,9 @@ function tb_activity_dot_for_bucket(int $bucket, ?array $levels = null): string 
     $level = is_array($levels[$bucket] ?? null) ? $levels[$bucket] : [];
     if (($level['character'] ?? null) !== null && ($level['color'] ?? null) === null) {
         return '<span class="tb-activity-char" title="' . h($title) . '">' . h((string)$level['character']) . '</span>';
+    }
+    if (($level['color'] ?? null) === 'grey') {
+        return '<span class="tb-activity-empty" title="' . h($title) . '">&#9675;</span>';
     }
     return '<span class="tb-activity-dot tb-activity-' . ($level['color'] ?? 'red') . '" title="' . h($title) . '"></span>';
 }
@@ -1004,21 +1017,160 @@ function tb_activity_dot(?string $lastSeenAt, ?int $now = null, ?array $levels =
     return tb_activity_dot_for_bucket(tb_activity_bucket($lastSeenAt, $now, $levels), $levels);
 }
 
+/** app_settings key (#106) under which the logged-out indicator is stored as JSON. */
+const TB_LOGGED_OUT_SETTINGS_KEY = 'logged_out_indicator';
+
+/**
+ * The built-in logged-out indicator (#106): the grey empty circle. A user who
+ * explicitly signed out shows this instead of their activity dot until they
+ * sign back in, so "signed off" reads differently from "idle for a while" at
+ * a glance. Administrators can replace it on the activity periods page with
+ * any of the period colours or a short character; the built-in shape matches
+ * the period shape (['color' => ?string, 'character' => ?string]) minus the
+ * minute bound a logged-out state does not have.
+ */
+function tb_logged_out_indicator_default(): array {
+    return ['color' => 'grey', 'character' => null];
+}
+
+/**
+ * Validates a logged-out indicator (#106). Returns null when usable, else the
+ * message for the settings form. It must pick exactly one of a known colour
+ * or a non-empty character of at most 3 characters - the same discipline as
+ * the period rows of #34, minus the minute bound.
+ */
+function tb_logged_out_indicator_validation_error(array $indicator): ?string {
+    $color = $indicator['color'] ?? null;
+    $character = $indicator['character'] ?? null;
+    if ($color !== null && $character !== null) return 'The logged-out indicator must pick one: a colour or a character.';
+    if ($color !== null) {
+        if (!in_array($color, TB_ACTIVITY_COLORS, true)) return 'The logged-out indicator uses an unknown colour.';
+    } elseif ($character !== null) {
+        if (trim((string)$character) === '') return 'The logged-out indicator cannot show an empty character.';
+        if (preg_match_all('/./us', (string)$character) > 3) return 'The logged-out indicator character is limited to 3 characters.';
+    } else {
+        return 'The logged-out indicator needs a colour or a character.';
+    }
+    return null;
+}
+
+/**
+ * Builds the indicator from the settings form (#106): posted['style'] is
+ * 'color:<name>', 'character' or '' (disable - signed-out users keep showing
+ * their plain activity dot); posted['character'] carries the glyph for the
+ * character style. Validate the result with
+ * tb_logged_out_indicator_validation_error() before storing it.
+ */
+function tb_logged_out_indicator_from_form(array $posted): ?array {
+    $style = (string)($posted['style'] ?? '');
+    $character = (string)($posted['character'] ?? '');
+    if ($style === '' || $style === 'none') return null;
+    if ($style === 'character') return ['color' => null, 'character' => $character];
+    if (str_starts_with($style, 'color:')) return ['color' => substr($style, 6), 'character' => null];
+    return ['color' => null, 'character' => null];
+}
+
+/**
+ * Loads the stored logged-out indicator (#106). No stored row means the
+ * built-in grey empty circle is in effect - the feature works out of the box
+ * and the settings page shows it as the current choice. A stored row that
+ * fails validation falls back to the built-in too, so a hand-edited row
+ * cannot break the dots. A stored row is null when the administrator picked
+ * the disable option: signed-out users then keep their plain activity dot.
+ */
+function tb_load_logged_out_indicator(PDO $pdo): ?array {
+    try {
+        $s = $pdo->prepare('SELECT value FROM app_settings WHERE name=?');
+        $s->execute([TB_LOGGED_OUT_SETTINGS_KEY]);
+        $raw = $s->fetchColumn();
+    } catch (Throwable $e) {
+        return tb_logged_out_indicator_default();   // the table is not there yet: default
+    }
+    if ($raw === false || $raw === null || $raw === '') return tb_logged_out_indicator_default();
+    $decoded = json_decode((string)$raw, true);
+    if (!is_array($decoded)) return tb_logged_out_indicator_default();
+    if (($decoded['disabled'] ?? null) === true) return null;
+    unset($decoded['disabled']);
+    if (tb_logged_out_indicator_validation_error($decoded) !== null) return tb_logged_out_indicator_default();
+    return $decoded;
+}
+
+/**
+ * Stores the logged-out indicator (#106). null stores the explicit disable
+ * marker; anything else is stored as JSON and re-validated on every read.
+ */
+function tb_save_logged_out_indicator(PDO $pdo, ?array $indicator): void {
+    $isMysql = $pdo->getAttribute(PDO::ATTR_DRIVER_NAME) === 'mysql';
+    $payload = $indicator === null ? '{"disabled":true}' : json_encode($indicator);
+    if ($payload === false) throw new RuntimeException('Could not encode the logged-out indicator.');
+    if ($isMysql) {
+        $pdo->prepare('INSERT INTO app_settings(name,value) VALUES(?,?) ON DUPLICATE KEY UPDATE value=VALUES(value)')->execute([TB_LOGGED_OUT_SETTINGS_KEY, $payload]);
+    } else {
+        $pdo->prepare('INSERT OR REPLACE INTO app_settings(name,value) VALUES(?,?)')->execute([TB_LOGGED_OUT_SETTINGS_KEY, $payload]);
+    }
+}
+
+/**
+ * The indicator a request renders for signed-out users (#106): an explicit
+ * argument wins, else the request-wide configuration index.php loaded from
+ * app_settings, else the built-in grey empty circle. null means the feature
+ * is switched off (the stored disable marker) and signed-out users keep
+ * their plain activity dot.
+ */
+function tb_logged_out_indicator_current(?array $indicator = null): ?array {
+    if ($indicator !== null) return $indicator;
+    if (!array_key_exists('TB_LOGGED_OUT_INDICATOR', $GLOBALS)) return tb_logged_out_indicator_default();
+    $global = $GLOBALS['TB_LOGGED_OUT_INDICATOR'];
+    if ($global === null) return null;   // the stored disable marker
+    return is_array($global) ? $global : tb_logged_out_indicator_default();
+}
+
+/**
+ * Renders the configured logged-out indicator (#106): a coloured disc, the
+ * grey empty circle ○, or an administrator-chosen character glyph - the same
+ * markup dialects as the period dots, with a title naming the state so the
+ * colour is never the only carrier of the meaning. Returns '' when the
+ * feature is disabled, so callers fall back to the plain activity dot.
+ */
+function tb_logged_out_dot(?array $indicator = null): string {
+    $configured = $indicator ?? tb_logged_out_indicator_current();
+    if ($configured === null) return '';
+    $title = 'Signed out';
+    if (($configured['character'] ?? null) !== null && ($configured['color'] ?? null) === null) {
+        return '<span class="tb-activity-char" title="' . h($title) . '">' . h((string)$configured['character']) . '</span>';
+    }
+    if (($configured['color'] ?? null) === 'grey') {
+        return '<span class="tb-activity-empty" title="' . h($title) . '">&#9675;</span>';
+    }
+    return '<span class="tb-activity-dot tb-activity-' . ($configured['color'] ?? 'grey') . '" title="' . h($title) . '"></span>';
+}
+
 /**
  * THE standard way to render a user name anywhere on the board (#30): the
  * activity dot followed by the escaped display name. Deleted users (a LEFT
  * JOIN miss or an empty name) render as "Deleted user" without a dot — there
  * is no account left whose activity could be measured. $user is any row or
  * array that carries display_name and (optionally) last_seen_at.
+ *
+ * A user who explicitly signed out (#106) shows the configured logged-out
+ * indicator instead of the activity periods - never both. The flag rides the
+ * same row as last_seen_at (the logged_out column, set by the sign-out and
+ * cleared by the next sign-in); rows that predate the column or synthetic
+ * arrays without it keep the plain activity rendering, so no caller has to
+ * know about the feature.
  */
 function tb_user_with_activity(?array $user, ?int $now = null): string {
     if ($user === null || !isset($user['display_name']) || $user['display_name'] === null || $user['display_name'] === '') {
         return h('Deleted user');
     }
+    $dot = ((int)($user['logged_out'] ?? 0) === 1) ? tb_logged_out_dot() : '';
+    if ($dot === '') {
+        $dot = tb_activity_dot($user['last_seen_at'] ?? null, $now);
+    }
     // The name sits in a no-wrap block with its activity dot (#63): a display
     // name rendered anywhere on the board stays on one line, never broken
     // across lines by the surrounding layout.
-    return '<span class="text-nowrap">' . tb_activity_dot($user['last_seen_at'] ?? null, $now) . h($user['display_name']) . '</span>';
+    return '<span class="text-nowrap">' . $dot . h($user['display_name']) . '</span>';
 }
 
 /**
@@ -1244,6 +1396,17 @@ function tb_migrate_schema(PDO $pdo): void {
             $pdo->exec($isMysql
                 ? 'ALTER TABLE users ADD COLUMN last_seen_at TIMESTAMP NULL DEFAULT NULL AFTER created_at'
                 : 'ALTER TABLE users ADD COLUMN last_seen_at TEXT NULL DEFAULT NULL');
+        }
+        // Logged-out status (#106): the dot renderer reads users.logged_out
+        // wherever a name renders with its dot, so a deployment that lands
+        // without the upgrade SQL adds the column on the first request.
+        // Existing users start at 0 (not signed out): nobody who has not
+        // explicitly signed out through the board suddenly shows the
+        // logged-out indicator.
+        if (!in_array('logged_out', $userColumns, true)) {
+            $pdo->exec($isMysql
+                ? 'ALTER TABLE users ADD COLUMN logged_out TINYINT(1) NOT NULL DEFAULT 0 AFTER last_seen_at'
+                : 'ALTER TABLE users ADD COLUMN logged_out INTEGER NOT NULL DEFAULT 0');
         }
     }
 

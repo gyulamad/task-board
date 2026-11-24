@@ -104,6 +104,23 @@ try {
     // this guard only keeps an unexpected storage failure from fataling.
 }
 
+// The logged-out indicator (#106): loaded once per request like the activity
+// periods, so every signed-out user's dot renders with the same configured
+// shape (grey empty circle by default, an administrator-chosen colour or
+// character, or the disabled state that keeps the plain activity dot). The
+// same not-there-yet tolerance applies: a board whose app_settings table is
+// not created yet runs on the built-in default.
+try {
+    $GLOBALS['TB_LOGGED_OUT_INDICATOR'] = tb_load_logged_out_indicator($pdo);
+} catch (Throwable $e) {
+    // tb_load_logged_out_indicator already falls back to the default
+    // internally; this guard only keeps an unexpected storage failure from
+    // fataling.
+    if (!array_key_exists('TB_LOGGED_OUT_INDICATOR', $GLOBALS)) {
+        $GLOBALS['TB_LOGGED_OUT_INDICATOR'] = tb_logged_out_indicator_default();
+    }
+}
+
 // Last-activity tracking (#30): every authenticated request refreshes the
 // user's last_seen_at (the write is throttled inside the helper), so the
 // admin page can tell active users from inactive ones. Runs after the schema
@@ -122,6 +139,19 @@ $error = '';
 // link or other cross-site GET request can no longer force users to log out.
 if ($page === 'logout') {
     if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+        // Logged-out status (#106): mark the explicit sign-out on the user row
+        // BEFORE the session dies, so every dot the board renders shows the
+        // configured logged-out indicator instead of the activity periods
+        // until the next successful sign-in clears it. A session that dies
+        // silently (cookie expiry, browser close) never runs this, so only a
+        // real sign-out changes what the dot shows. The write must not block
+        // the sign-out: a storage failure logs out anyway and the flag stays
+        // at its previous value.
+        try {
+            $pdo->prepare('UPDATE users SET logged_out=1 WHERE id=?')->execute([(int)user()['id']]);
+        } catch (Throwable $e) {
+            error_log('Task board: could not mark the sign-out: ' . $e->getMessage());
+        }
         tb_session_destroy();
         redirect('?page=login');
     }
@@ -154,6 +184,11 @@ if ($page === 'login' && $_SERVER['REQUEST_METHOD'] === 'POST') {
         if ($tbOk && is_array($u)) {
             tb_login_throttle_clear($tbIp);
             session_regenerate_id(true);
+            // Logged-out status (#106): a successful sign-in clears the
+            // logged-out marker the previous sign-out left, so the user's dot
+            // returns to the activity periods from this very request on.
+            $pdo->prepare('UPDATE users SET logged_out=0 WHERE id=?')->execute([(int)$u['id']]);
+            $u['logged_out'] = 0;
             $_SESSION['user'] = tb_session_user($u);
             redirect('?');
         }
@@ -725,6 +760,18 @@ if (user()) {
                 flash('Activity status periods reset to the built-in defaults.');
                 redirect('?page=activity_settings');
             }
+            if ($action === 'save_logged_out_indicator' && is_admin()) {
+                // The logged-out indicator (#106): the settings form's style +
+                // character are parsed into the storage shape, validated,
+                // stored (null stores the disable marker) and made effective
+                // for the rest of this request.
+                $indicator = tb_logged_out_indicator_from_form($_POST);
+                if ($indicator !== null && ($e = tb_logged_out_indicator_validation_error($indicator)) !== null) throw new RuntimeException($e);
+                tb_save_logged_out_indicator($pdo, $indicator);
+                $GLOBALS['TB_LOGGED_OUT_INDICATOR'] = $indicator;
+                flash($indicator === null ? 'Logged-out indicator disabled.' : 'Logged-out indicator saved.');
+                redirect('?page=activity_settings');
+            }
             if ($action === 'add_user' && is_admin()) {
                 $name=trim($_POST['username'] ?? ''); $display=trim($_POST['display_name'] ?? ''); $pass=$_POST['password'] ?? '';
                 if ($name==='' || $display==='' || strlen($pass)<10) throw new RuntimeException('Enter username, display name and a password of at least 10 characters.');
@@ -755,7 +802,7 @@ if (user()) {
                     // own account flipped dark mode back to light (#61). The preference
                     // itself is already stored id-based (users.theme on users.id) and
                     // was never lost in the database - only in the session.
-                    $s=$pdo->prepare('SELECT id,username,display_name,role,theme,last_seen_at FROM users WHERE id=?'); $s->execute([$id]);
+                    $s=$pdo->prepare('SELECT id,username,display_name,role,theme,last_seen_at,logged_out FROM users WHERE id=?'); $s->execute([$id]);
                     $fresh=$s->fetch();
                     if (is_array($fresh)) $_SESSION['user'] = tb_session_user($fresh);
                 }
@@ -842,7 +889,7 @@ function render_header(string $title, array $config, string $error = ''): void {
     ?><!doctype html><html lang="en" data-bs-theme="<?=h($theme)?>"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title><?=h($title)?> - <?=h($config['app_name'])?></title>
     <link rel="icon" type="image/svg+xml" href="?page=favicon&amp;type=svg"><link rel="icon" href="?page=favicon" sizes="48x48 32x32 16x16">
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
-    <style>body{background:#f5f6f8}.card{border:0;box-shadow:0 1px 5px #0000000d}.muted{color:#687386}.prewrap{white-space:pre-wrap}.navbar-brand{font-weight:700}.tb-activity-dot{display:inline-block;width:.55em;height:.55em;border-radius:50%;margin-right:.3em}.tb-activity-green{background:#198754}.tb-activity-yellow{background:#ffc107}.tb-activity-red{background:#dc3545}.tb-activity-grey{background:#6c757d}.tb-activity-char{font-weight:700;margin-right:.3em}html[data-bs-theme="dark"] body{background:#14181f}html[data-bs-theme="dark"] .card{box-shadow:0 1px 6px #00000059}html[data-bs-theme="dark"] .muted{color:#8b96a5}</style></head><body>
+    <style>body{background:#f5f6f8}.card{border:0;box-shadow:0 1px 5px #0000000d}.muted{color:#687386}.prewrap{white-space:pre-wrap}.navbar-brand{font-weight:700}.tb-activity-dot{display:inline-block;width:.55em;height:.55em;border-radius:50%;margin-right:.3em}.tb-activity-green{background:#198754}.tb-activity-yellow{background:#ffc107}.tb-activity-red{background:#dc3545}.tb-activity-grey{background:#6c757d}.tb-activity-char{font-weight:700;margin-right:.3em}.tb-activity-empty{font-weight:400;margin-right:.3em;color:#6c757d}html[data-bs-theme="dark"] body{background:#14181f}html[data-bs-theme="dark"] .card{box-shadow:0 1px 6px #00000059}html[data-bs-theme="dark"] .muted{color:#8b96a5}</style></head><body>
     <nav class="navbar navbar-expand-lg navbar-dark bg-dark"><div class="container"><a class="navbar-brand" href="?"><?=h($config['app_name'])?></a><?php if(user()): ?><button class="navbar-toggler ms-auto" type="button" data-bs-toggle="collapse" data-bs-target="#tb-navbar" aria-controls="tb-navbar" aria-expanded="false" aria-label="Toggle navigation"><span class="navbar-toggler-icon"></span></button><div class="collapse navbar-collapse" id="tb-navbar"><div class="navbar-nav ms-auto align-items-center"><a class="nav-link" href="?page=tasks-v2">Tasks</a><a class="nav-link" href="?page=kanban">Kanban</a><a class="nav-link" href="?page=waterflow">Waterflow</a><a class="nav-link" href="?page=projects-v2">Projects</a><a class="nav-link" href="?page=templates-v2">Templates</a><a class="nav-link" href="?page=documents-v2">Know-hows</a><a class="nav-link" href="?page=messages">Messages<?php global $pdo; $tbUnread=array_key_exists('TB_UNREAD_BADGE',$GLOBALS)?(int)$GLOBALS['TB_UNREAD_BADGE']:tb_unread_message_count($pdo,(int)user()['id']); if($tbUnread): ?> <span class="badge text-bg-danger" title="New messages"><?=$tbUnread?></span><?php endif; unset($GLOBALS['TB_UNREAD_BADGE']); ?></a><a class="nav-link" href="?page=notifications">Notifications<?php global $pdo; $tbSeen=array_key_exists('TB_NOTIFICATION_BADGE',$GLOBALS)?(int)$GLOBALS['TB_NOTIFICATION_BADGE']:tb_unseen_notification_count($pdo,(int)user()['id']); if($tbSeen && tb_notification_flag_enabled($pdo,(int)user()['id'])): ?> <span class="badge text-bg-danger" title="New notifications"><?=$tbSeen?></span><?php endif; unset($GLOBALS['TB_NOTIFICATION_BADGE']); ?></a><a class="nav-link" href="?page=settings">Settings</a><?php if(is_admin()): ?><a class="nav-link" href="?page=admin">Administration</a><a class="nav-link" href="?page=activity_settings">Activity periods</a><a class="nav-link" href="?page=updates">Software updates</a><?php endif; ?><form method="post" class="d-flex align-items-center mx-2"><?=csrf_field()?><input type="hidden" name="action" value="save_theme"><select name="theme" class="form-select form-select-sm bg-dark text-light border-secondary" aria-label="Theme" title="Theme" onchange="this.form.submit()"><option value="light" <?=$theme==='light'?'selected':''?>>Light</option><option value="dark" <?=$theme==='dark'?'selected':''?>>Dark</option></select><noscript><button class="btn btn-sm btn-outline-light ms-1">Save</button></noscript></form><span class="navbar-text mx-2"><?=tb_user_with_activity($_SESSION['user'])?></span><form method="post" action="?page=logout" class="d-inline m-0"><?=csrf_field()?><button type="submit" class="btn btn-link nav-link p-0 text-white text-decoration-none">Sign out</button></form></div></div><?php endif; ?></div></nav><main class="container py-4">
     <?php if (!empty($_SESSION['flash'])): ?><div class="alert alert-success"><?=h($_SESSION['flash'])?></div><?php unset($_SESSION['flash']); endif; ?>
     <?php if($error): ?><div class="alert alert-danger"><?=h($error)?></div><?php endif;
@@ -1281,7 +1328,7 @@ if ($page==='messages') {
     // not supported (reference to group function)", the 2026-11-24 messages
     // page outage), while the SQLite test suite accepts it. SqlAliasGuardTest
     // keeps this hazard from coming back.
-    $people=$pdo->prepare('SELECT u.id, u.display_name, u.last_seen_at, MAX(m.id) last_id FROM users u LEFT JOIN messages m ON (m.sender_id=u.id AND m.recipient_id=?) OR (m.recipient_id=u.id AND m.sender_id=?) WHERE u.id<>? GROUP BY u.id, u.display_name, u.last_seen_at ORDER BY MAX(m.id) IS NULL, MAX(m.id) DESC, u.display_name, u.id');
+    $people=$pdo->prepare('SELECT u.id, u.display_name, u.last_seen_at, u.logged_out, MAX(m.id) last_id FROM users u LEFT JOIN messages m ON (m.sender_id=u.id AND m.recipient_id=?) OR (m.recipient_id=u.id AND m.sender_id=?) WHERE u.id<>? GROUP BY u.id, u.display_name, u.last_seen_at ORDER BY MAX(m.id) IS NULL, MAX(m.id) DESC, u.display_name, u.id');
     $people->execute([$me,$me,$me]);
     $peopleRows=$people->fetchAll();
     // The "Deleted user" entry takes its place in the same latest-activity
@@ -1549,7 +1596,7 @@ if ($page==='notification_seen') {
 // on the task page links here.
 if ($page==='task_history') {
     $id=(int)($_GET['id'] ?? 0);
-    $s=$pdo->prepare('SELECT h.*, u.display_name actor, u.last_seen_at actor_last_seen, t.title task_title FROM task_history h LEFT JOIN users u ON u.id=h.user_id JOIN tasks t ON t.id=h.task_id WHERE h.id=?'); $s->execute([$id]); $entry=$s->fetch();
+    $s=$pdo->prepare('SELECT h.*, u.display_name actor, u.last_seen_at actor_last_seen, u.logged_out actor_logged_out, t.title task_title FROM task_history h LEFT JOIN users u ON u.id=h.user_id JOIN tasks t ON t.id=h.task_id WHERE h.id=?'); $s->execute([$id]); $entry=$s->fetch();
     if(!$entry){ http_response_code(404); exit('History entry not found.'); }
     render_header('Change details',$config,$error); ?>
     <div class="d-flex justify-content-between align-items-center mb-3"><div><h1 class="h3 mb-0">Change details</h1><div class="muted">On task <a class="fw-semibold text-decoration-none" href="?page=task&id=<?=$entry['task_id']?>">#<?=$entry['task_id']?> · <?=h($entry['task_title'])?></a></div></div><a class="btn btn-outline-secondary" href="?page=task&id=<?=$entry['task_id']?>">Back to the task</a></div>
@@ -1627,7 +1674,7 @@ if (in_array($page, ['users', 'users-v2'], true) && is_admin()) {
     $list=tb_crud_list([
         'pdo'=>$pdo,
         'table'=>'users u',
-        'select'=>'u.id,u.username,u.display_name,u.role,u.created_at,u.last_seen_at,CURRENT_TIMESTAMP AS db_now',
+        'select'=>'u.id,u.username,u.display_name,u.role,u.created_at,u.last_seen_at,u.logged_out,CURRENT_TIMESTAMP AS db_now',
         'where'=>$conds,
         'params'=>$params,
         'sortColumns'=>[
@@ -1692,6 +1739,7 @@ if ($page==='statuses' && is_admin()) {
 if ($page==='activity_settings') {
     if (!is_admin()) { http_response_code(403); exit('Forbidden.'); }
     $levels = tb_activity_levels_current();
+    $loggedOut = tb_logged_out_indicator_current();
     $styleOptions = [
         'color:green' => 'Dot - green',
         'color:yellow' => 'Dot - yellow',
@@ -1699,6 +1747,11 @@ if ($page==='activity_settings') {
         'color:grey' => 'Dot - grey (empty)',
         'character' => 'Custom character',
     ];
+    // The logged-out indicator shares the period styles plus the disable
+    // choice (#106): the built-in default is the grey empty circle, and the
+    // empty style switches the feature off (signed-out users keep showing
+    // their plain activity dot).
+    $loggedOutStyleValue = $loggedOut === null ? '' : (($loggedOut['character'] ?? null) !== null ? 'character' : 'color:' . ($loggedOut['color'] ?? 'grey'));
     render_header('Activity status periods',$config,$error); ?>
     <div class="d-flex justify-content-between align-items-center mb-3"><div><h1 class="h3 mb-0">Activity status periods</h1><div class="muted">Which time period next to user names renders as which colour or character</div></div><a class="btn btn-outline-secondary" href="?page=admin">Back to administration</a></div>
     <div class="card p-4 mb-4"><h2 class="h5">Current legend</h2><p class="small muted mb-2">These are the periods in effect right now, freshest on the left, longest gone on the right:</p><p class="mb-0"><?php foreach($levels as $i=>$lvl): ?><span class="me-3 text-nowrap"><?=tb_activity_dot_for_bucket((int)$i, $levels)?> <span class="small"><?=h(tb_activity_level_title((int)$i, $levels))?></span></span><?php endforeach; ?></p></div>
@@ -1709,6 +1762,12 @@ if ($page==='activity_settings') {
     </form>
     <form method="post" class="d-inline"><?=csrf_field()?><input type="hidden" name="action" value="reset_activity_levels"><button class="btn btn-outline-danger" onclick="return confirm('Reset the periods to the built-in defaults?')">Reset to defaults</button></form>
     <p class="small muted mt-3">Saved periods take effect immediately for every user of the board. Resetting removes the stored list and restores the built-in 15-minute / 60-minute traffic light.</p></div>
+    <div class="card p-4 mb-4"><h2 class="h5">Logged-out indicator</h2><p class="small muted mb-2">Users who signed out through the board&rsquo;s own sign-out button show this instead of their activity dot - never both - until they sign back in. A session that quietly expires does not count as a sign-out, so an idle user keeps ageing through the periods above.</p>
+    <p class="mb-3"><span class="me-2">Rendered now for a signed-out user:</span><?=$loggedOut === null ? '<span class="small muted">nothing - the feature is disabled</span>' : tb_logged_out_dot($loggedOut)?></p>
+    <form method="post"><?=csrf_field()?><input type="hidden" name="action" value="save_logged_out_indicator">
+    <div class="row align-items-end"><div class="col-md-4 mb-2"><label class="form-label" for="lo-style">Shows</label><select class="form-select" id="lo-style" name="style"><?php foreach($styleOptions as $sv=>$sl): ?><option value="<?=h($sv)?>" <?=$loggedOutStyleValue===$sv?'selected':''?>><?=h($sl)?></option><?php endforeach; ?><option value="" <?=$loggedOut===null?'selected':''?>>- disabled (always the activity dot) -</option></select></div><div class="col-md-4 mb-2"><label class="form-label" for="lo-character">Character (for &quot;Custom character&quot;)</label><input class="form-control" id="lo-character" name="character" maxlength="3" value="<?=h($loggedOut['character']??'')?>"></div><div class="col-md-4 mb-2"><button class="btn btn-primary">Save logged-out indicator</button></div></div>
+    <p class="small muted mb-0 mt-2">The grey choice renders as the empty circle &#9675;; a filled circle renders as &#9679;. Any 1-3 character glyph works too - pick &quot;Custom character&quot; and type it, e.g. &#9679; for a filled circle or &#9675; for an empty one. Saving without a colour or character (empty custom field) is rejected; the built-in default when nothing is stored is the grey empty circle.</p>
+    </form></div>
     <?php render_footer(); exit;
 }
 
@@ -1788,12 +1847,12 @@ sel.addEventListener('change',function(){
 }
 
 if ($page==='task') {
-    $id=(int)($_GET['id']??0);$s=$pdo->prepare('SELECT t.*,s.name status_name,s.color status_color,u.display_name creator,u.last_seen_at creator_last_seen,prj.name project_name FROM tasks t JOIN statuses s ON s.id=t.status_id LEFT JOIN users u ON u.id=t.created_by LEFT JOIN projects prj ON prj.id=t.project_id WHERE t.id=?');$s->execute([$id]);$t=$s->fetch();
+    $id=(int)($_GET['id']??0);$s=$pdo->prepare('SELECT t.*,s.name status_name,s.color status_color,u.display_name creator,u.last_seen_at creator_last_seen,u.logged_out creator_logged_out,prj.name project_name FROM tasks t JOIN statuses s ON s.id=t.status_id LEFT JOIN users u ON u.id=t.created_by LEFT JOIN projects prj ON prj.id=t.project_id WHERE t.id=?');$s->execute([$id]);$t=$s->fetch();
     if(!$t){http_response_code(404);exit('Task not found.');}
-    $s=$pdo->prepare('SELECT u.display_name,u.last_seen_at FROM task_assignees a JOIN users u ON u.id=a.user_id WHERE a.task_id=?');$s->execute([$id]);$assignees=$s->fetchAll();
-    $s=$pdo->prepare('SELECT c.*,u.display_name,u.last_seen_at FROM comments c LEFT JOIN users u ON u.id=c.user_id WHERE c.task_id=? ORDER BY c.created_at');$s->execute([$id]);$comments=$s->fetchAll();
-    $s=$pdo->prepare('SELECT a.*,u.display_name,u.last_seen_at FROM attachments a LEFT JOIN users u ON u.id=a.user_id WHERE a.task_id=? ORDER BY a.created_at DESC');$s->execute([$id]);$attachments=$s->fetchAll();
-    $s=$pdo->prepare('SELECT h.*,u.display_name,u.last_seen_at FROM task_history h LEFT JOIN users u ON u.id=h.user_id WHERE h.task_id=? ORDER BY h.created_at DESC');$s->execute([$id]);$historyRows=$s->fetchAll();
+    $s=$pdo->prepare('SELECT u.display_name,u.last_seen_at,u.logged_out FROM task_assignees a JOIN users u ON u.id=a.user_id WHERE a.task_id=?');$s->execute([$id]);$assignees=$s->fetchAll();
+    $s=$pdo->prepare('SELECT c.*,u.display_name,u.last_seen_at,u.logged_out FROM comments c LEFT JOIN users u ON u.id=c.user_id WHERE c.task_id=? ORDER BY c.created_at');$s->execute([$id]);$comments=$s->fetchAll();
+    $s=$pdo->prepare('SELECT a.*,u.display_name,u.last_seen_at,u.logged_out FROM attachments a LEFT JOIN users u ON u.id=a.user_id WHERE a.task_id=? ORDER BY a.created_at DESC');$s->execute([$id]);$attachments=$s->fetchAll();
+    $s=$pdo->prepare('SELECT h.*,u.display_name,u.last_seen_at,u.logged_out FROM task_history h LEFT JOIN users u ON u.id=h.user_id WHERE h.task_id=? ORDER BY h.created_at DESC');$s->execute([$id]);$historyRows=$s->fetchAll();
     $s=$pdo->prepare('SELECT l.*,t.title FROM task_links l JOIN tasks t ON t.id=l.related_task_id WHERE l.task_id=? ORDER BY l.link_type');$s->execute([$id]);$links=$s->fetchAll();
     $all=$pdo->prepare('SELECT id,title FROM tasks WHERE id<>? AND archived_at IS NULL ORDER BY id DESC LIMIT 200');$all->execute([$id]);
     $isArchived=task_is_archived($t);
@@ -1833,9 +1892,9 @@ sel.addEventListener('change',function(){
 }
 
 if ($page==='project') {
-    $id=(int)($_GET['id']??0);$s=$pdo->prepare('SELECT pr.*,s.name status_name,s.color status_color,u.display_name creator,u.last_seen_at creator_last_seen FROM projects pr JOIN statuses s ON s.id=pr.status_id LEFT JOIN users u ON u.id=pr.created_by WHERE pr.id=?');$s->execute([$id]);$pr=$s->fetch();
+    $id=(int)($_GET['id']??0);$s=$pdo->prepare('SELECT pr.*,s.name status_name,s.color status_color,u.display_name creator,u.last_seen_at creator_last_seen,u.logged_out creator_logged_out FROM projects pr JOIN statuses s ON s.id=pr.status_id LEFT JOIN users u ON u.id=pr.created_by WHERE pr.id=?');$s->execute([$id]);$pr=$s->fetch();
     if(!$pr){http_response_code(404);exit('Project not found.');}
-    $s=$pdo->prepare('SELECT u.display_name,u.last_seen_at FROM project_assignees pa JOIN users u ON u.id=pa.user_id WHERE pa.project_id=?');$s->execute([$id]);$projectAssignees=$s->fetchAll();
+    $s=$pdo->prepare('SELECT u.display_name,u.last_seen_at,u.logged_out FROM project_assignees pa JOIN users u ON u.id=pa.user_id WHERE pa.project_id=?');$s->execute([$id]);$projectAssignees=$s->fetchAll();
     $s=$pdo->prepare('SELECT t.id,t.title,t.updated_at,s.name status_name,s.color status_color FROM tasks t JOIN statuses s ON s.id=t.status_id WHERE t.project_id=? ORDER BY t.updated_at DESC');$s->execute([$id]);$projectTasks=$s->fetchAll();
     render_header('Project #'.$id,$config,$error); ?>
     <div class="d-flex justify-content-between align-items-start mb-3"><div><div class="muted">Project #<?=$id?> · <?=tb_status_badge((string)$pr['status_name'], $pr['status_color'] ?? null)?></div><h1 class="h3"><?=h($pr['name'])?></h1></div><a class="btn btn-primary" href="?page=project_edit&id=<?=$id?>">Edit project</a></div>
@@ -2069,10 +2128,10 @@ if (in_array($page, ['documents', 'documents-v2'], true)) {
 
 if ($page==='document') {
     $id=(int)($_GET['id'] ?? 0);
-    $s=$pdo->prepare('SELECT d.*, u.display_name creator, u.last_seen_at creator_last_seen FROM documents d LEFT JOIN users u ON u.id=d.created_by WHERE d.id=?'); $s->execute([$id]); $doc=$s->fetch();
+    $s=$pdo->prepare('SELECT d.*, u.display_name creator, u.last_seen_at creator_last_seen, u.logged_out creator_logged_out FROM documents d LEFT JOIN users u ON u.id=d.created_by WHERE d.id=?'); $s->execute([$id]); $doc=$s->fetch();
     if(!$doc){ http_response_code(404); exit('Document not found.'); }
-    $cs=$pdo->prepare('SELECT dc.*, u.display_name author, u.last_seen_at author_last_seen FROM document_comments dc LEFT JOIN users u ON u.id=dc.user_id WHERE dc.document_id=? ORDER BY dc.created_at, dc.id'); $cs->execute([$id]); $docComments=$cs->fetchAll();
-    $as=$pdo->prepare('SELECT da.*, u.display_name uploader, u.last_seen_at uploader_last_seen FROM document_attachments da LEFT JOIN users u ON u.id=da.user_id WHERE da.document_id=? ORDER BY da.created_at, da.id'); $as->execute([$id]); $docAttachments=$as->fetchAll();
+    $cs=$pdo->prepare('SELECT dc.*, u.display_name author, u.last_seen_at author_last_seen, u.logged_out author_logged_out FROM document_comments dc LEFT JOIN users u ON u.id=dc.user_id WHERE dc.document_id=? ORDER BY dc.created_at, dc.id'); $cs->execute([$id]); $docComments=$cs->fetchAll();
+    $as=$pdo->prepare('SELECT da.*, u.display_name uploader, u.last_seen_at uploader_last_seen, u.logged_out uploader_logged_out FROM document_attachments da LEFT JOIN users u ON u.id=da.user_id WHERE da.document_id=? ORDER BY da.created_at, da.id'); $as->execute([$id]); $docAttachments=$as->fetchAll();
     render_header('Know-how',$config,$error); ?>
     <div class="d-flex justify-content-between align-items-center mb-3"><div><h1 class="h3 mb-0"><?=h($doc['title'])?></h1><div class="muted">Created by <?=tb_user_with_activity(['display_name'=>$doc['creator'],'last_seen_at'=>$doc['creator_last_seen']??null])?> · <?=h($doc['created_at'])?> · Updated <?=h($doc['updated_at'])?></div></div><div class="d-flex gap-2"><a class="btn btn-outline-secondary" href="?page=documents-v2">All know-hows</a><?php if(document_can_edit($doc)): ?><a class="btn btn-outline-primary" href="?page=document_edit&id=<?=$doc['id']?>">Edit</a><form method="post" class="d-inline" onsubmit="return confirm('Delete this know-how permanently? Its comments and attachments go with it.')"><?=csrf_field()?><input type="hidden" name="action" value="doc_delete"><input type="hidden" name="id" value="<?=$doc['id']?>"><button class="btn btn-outline-danger">Delete</button></form><?php endif; ?></div></div>
     <div class="card p-4 mb-4"><div class="prewrap"><?php $docContent=(string)($doc['content'] ?? ''); if(trim($docContent)===''): ?><span class="muted">No content - see the attachments below.</span><?php else: ?><?=h($docContent)?><?php endif; ?></div></div>

@@ -109,7 +109,9 @@ final class ActivityLevelsTest extends TestCase
         $this->assertSame('<span class="tb-activity-dot tb-activity-green" title="Seen within the last 30 minutes"></span>', tb_activity_dot($this->stamp(10), self::NOW, $levels));
         $this->assertSame('<span class="tb-activity-dot tb-activity-yellow" title="Seen within the last 2 hours"></span>', tb_activity_dot($this->stamp(90 * 60), self::NOW, $levels));
         $this->assertSame('<span class="tb-activity-dot tb-activity-red" title="Seen within the last day"></span>', tb_activity_dot($this->stamp(3 * 3600), self::NOW, $levels));
-        $this->assertSame('<span class="tb-activity-dot tb-activity-grey" title="Last seen longer ago than every period above"></span>', tb_activity_dot(null, self::NOW, $levels));
+        // #106: the grey period renders the EMPTY circle character (the picker
+        // has always called it "grey (empty)"), not a filled grey disc.
+        $this->assertSame('<span class="tb-activity-empty" title="Last seen longer ago than every period above">&#9675;</span>', tb_activity_dot(null, self::NOW, $levels));
     }
 
     public function test_a_character_period_renders_its_escaped_glyph_instead_of_a_disc(): void

@@ -4,6 +4,7 @@ declare(strict_types=1);
 require __DIR__ . '/Support/HttpResponse.php';
 require __DIR__ . '/Support/HttpClient.php';
 require __DIR__ . '/Support/Schema.php';
+require __DIR__ . '/Support/SqlAliasScanner.php';
 require __DIR__ . '/Support/TestServer.php';
 require __DIR__ . '/Support/AppSession.php';
 require __DIR__ . '/E2E/E2eTestCase.php';

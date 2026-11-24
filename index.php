@@ -1275,7 +1275,13 @@ if ($page==='messages') {
     // so it survives sign-outs and devices without extra state to keep in
     // sync, and a new message moves its conversation to the top on the very
     // next load. People never written to sort after everyone, by name.
-    $people=$pdo->prepare('SELECT u.id, u.display_name, u.last_seen_at, MAX(m.id) last_id FROM users u LEFT JOIN messages m ON (m.sender_id=u.id AND m.recipient_id=?) OR (m.recipient_id=u.id AND m.sender_id=?) WHERE u.id<>? GROUP BY u.id, u.display_name, u.last_seen_at ORDER BY last_id IS NULL, last_id DESC, u.display_name, u.id');
+    // #102: the ORDER BY must repeat the MAX(m.id) aggregate instead of the
+    // last_id alias - MariaDB (the production engine) rejects an aggregate
+    // alias referenced inside an ORDER BY expression ("Reference 'last_id'
+    // not supported (reference to group function)", the 2026-11-24 messages
+    // page outage), while the SQLite test suite accepts it. SqlAliasGuardTest
+    // keeps this hazard from coming back.
+    $people=$pdo->prepare('SELECT u.id, u.display_name, u.last_seen_at, MAX(m.id) last_id FROM users u LEFT JOIN messages m ON (m.sender_id=u.id AND m.recipient_id=?) OR (m.recipient_id=u.id AND m.sender_id=?) WHERE u.id<>? GROUP BY u.id, u.display_name, u.last_seen_at ORDER BY MAX(m.id) IS NULL, MAX(m.id) DESC, u.display_name, u.id');
     $people->execute([$me,$me,$me]);
     $peopleRows=$people->fetchAll();
     // The "Deleted user" entry takes its place in the same latest-activity

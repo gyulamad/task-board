@@ -804,6 +804,10 @@ function tb_activity_levels_validation_error(array $levels): ?string {
     foreach ($levels as $i => $level) {
         $label = 'Period ' . ($i + 1);
         if (!is_array($level)) return $label . ' is malformed.';
+        // The filled toggle (#112) is stored only for colour rows and must be
+        // a real boolean when present - a hand-edited row with anything else
+        // is rejected so the loader falls back to the built-ins.
+        if (($level['filled'] ?? null) !== null && !is_bool($level['filled'])) return $label . ' is malformed.';
         $minutes = $level['until_minutes'] ?? null;
         $color = $level['color'] ?? null;
         $character = $level['character'] ?? null;
@@ -850,6 +854,16 @@ function tb_activity_levels_from_form(array $rows): array {
             $level['character'] = $character;
         } elseif (str_starts_with($style, 'color:')) {
             $level['color'] = substr($style, 6);
+            // The filled toggle (#112): a row-keyed hidden+checkbox pair
+            // posts '1' or '0' for every row, so the alignment with the
+            // minutes/style arrays never drifts. The key is stored only
+            // when the form actually posted the filled array - a save in
+            // the pre-#112 shape stores no key and the renderer keeps the
+            // legacy defaults (solid colours, hollow grey). Character rows
+            // carry no shape and the renderer ignores the key for glyphs.
+            if (is_array($rows['filled'] ?? null)) {
+                $level['filled'] = !empty($rows['filled'][$i]);
+            }
         }
         $levels[] = $level;
     }
@@ -1112,12 +1126,16 @@ function tb_activity_level_title(int $bucket, ?array $levels = null): string {
  * disc; a character-only period renders its glyph. Both carry a title naming
  * the state, so the colour is never the only carrier of the meaning.
  *
- * The grey period renders as the EMPTY circle character ○ (#106): the picker
- * has always labelled it "grey (empty)", but the CSS disc rendered filled, so
- * the label lied. The glyph is the character the settings page documents for
- * an empty circle (filled circle ●, empty circle ○) and is coloured grey by
- * the .tb-activity-empty class, so an empty period looks empty at every text
- * size instead of a filled disc that only claims to be one.
+ * Since #112 every colour period also carries the filled toggle: the solid
+ * dot or the hollow circle character ○, per the administrator's pick on the
+ * settings page. The grey period keeps rendering the EMPTY circle character
+ * ○ (#106) unless the toggle says filled - the picker labelled it "grey
+ * (empty)" because the CSS disc rendered filled while the label promised an
+ * empty shape; with the toggle the same grey can now also render as the
+ * solid disc the label originally lied about. The hollow grey keeps the
+ * byte-exact #106 markup (the .tb-activity-empty class already carries the
+ * grey glyph colour); the other colours hollow out through their own class
+ * so the CSS can recolour the glyph.
  */
 function tb_activity_dot_for_bucket(int $bucket, ?array $levels = null): string {
     $levels = tb_activity_levels_current($levels);
@@ -1127,10 +1145,29 @@ function tb_activity_dot_for_bucket(int $bucket, ?array $levels = null): string 
     if (($level['character'] ?? null) !== null && ($level['color'] ?? null) === null) {
         return '<span class="tb-activity-char" title="' . h($title) . '">' . h((string)$level['character']) . '</span>';
     }
-    if (($level['color'] ?? null) === 'grey') {
+    // Colour style (#112): the filled toggle picks the solid dot or the
+    // hollow circle. Legacy rows without the key keep the #34/#106 split -
+    // every colour solid, grey hollow - so an existing configuration renders
+    // exactly what it rendered before #112.
+    $color = (string)($level['color'] ?? 'red');
+    if (tb_activity_style_filled($level)) {
+        return '<span class="tb-activity-dot tb-activity-' . $color . '" title="' . h($title) . '"></span>';
+    }
+    if ($color === 'grey') {
         return '<span class="tb-activity-empty" title="' . h($title) . '">&#9675;</span>';
     }
-    return '<span class="tb-activity-dot tb-activity-' . ($level['color'] ?? 'red') . '" title="' . h($title) . '"></span>';
+    return '<span class="tb-activity-empty tb-activity-' . $color . '" title="' . h($title) . '">&#9675;</span>';
+}
+
+/**
+ * Whether one period's colour style renders as the solid dot or the hollow
+ * circle (#112): the stored 'filled' key wins; without it the pre-#112
+ * default applies - every colour solid, grey hollow (#106). Pure.
+ */
+function tb_activity_style_filled(array $level): bool {
+    $filled = $level['filled'] ?? null;
+    if (is_bool($filled)) return $filled;
+    return ($level['color'] ?? null) !== 'grey';
 }
 
 /**
@@ -1167,6 +1204,10 @@ function tb_logged_out_indicator_default(): array {
 function tb_logged_out_indicator_validation_error(array $indicator): ?string {
     $color = $indicator['color'] ?? null;
     $character = $indicator['character'] ?? null;
+    // The filled toggle (#112) must be a real boolean when present - a
+    // hand-edited row with anything else is rejected so the loader falls
+    // back to the built-in grey circle.
+    if (($indicator['filled'] ?? null) !== null && !is_bool($indicator['filled'])) return 'The logged-out indicator is malformed.';
     if ($color !== null && $character !== null) return 'The logged-out indicator must pick one: a colour or a character.';
     if ($color !== null) {
         if (!in_array($color, TB_ACTIVITY_COLORS, true)) return 'The logged-out indicator uses an unknown colour.';
@@ -1191,7 +1232,14 @@ function tb_logged_out_indicator_from_form(array $posted): ?array {
     $character = (string)($posted['character'] ?? '');
     if ($style === '' || $style === 'none') return null;
     if ($style === 'character') return ['color' => null, 'character' => $character];
-    if (str_starts_with($style, 'color:')) return ['color' => substr($style, 6), 'character' => null];
+    if (str_starts_with($style, 'color:')) {
+        // The filled toggle (#112): stored only when the form posted it - a
+        // save in the pre-#112 shape keeps the renderer's legacy defaults
+        // (solid colours, grey hollow), so nothing changes for an old client.
+        $indicator = ['color' => substr($style, 6), 'character' => null];
+        if (array_key_exists('filled', $posted)) $indicator['filled'] = !empty($posted['filled']);
+        return $indicator;
+    }
     return ['color' => null, 'character' => null];
 }
 
@@ -1264,10 +1312,16 @@ function tb_logged_out_dot(?array $indicator = null): string {
     if (($configured['character'] ?? null) !== null && ($configured['color'] ?? null) === null) {
         return '<span class="tb-activity-char" title="' . h($title) . '">' . h((string)$configured['character']) . '</span>';
     }
-    if (($configured['color'] ?? null) === 'grey') {
+    $color = (string)($configured['color'] ?? 'grey');
+    // The filled toggle (#112): the stored key wins, the pre-#112 default
+    // (every colour solid, grey hollow) applies to legacy rows.
+    if (tb_activity_style_filled($configured)) {
+        return '<span class="tb-activity-dot tb-activity-' . $color . '" title="' . h($title) . '"></span>';
+    }
+    if ($color === 'grey') {
         return '<span class="tb-activity-empty" title="' . h($title) . '">&#9675;</span>';
     }
-    return '<span class="tb-activity-dot tb-activity-' . ($configured['color'] ?? 'grey') . '" title="' . h($title) . '"></span>';
+    return '<span class="tb-activity-empty tb-activity-' . $color . '" title="' . h($title) . '">&#9675;</span>';
 }
 
 /**

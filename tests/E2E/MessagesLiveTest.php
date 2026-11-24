@@ -55,6 +55,20 @@ final class MessagesLiveTest extends E2eTestCase
         ]);
     }
 
+    public function test_the_intro_hides_on_mobile_and_the_chat_takes_the_top(): void
+    {
+        // Task #117: on a phone the page intro (title + description) only
+        // pushed the chat down - below the lg breakpoint it is hidden, so the
+        // chat top sits right below the main menu header. The markup stays in
+        // place (the newcount badge hook included) and only the stylesheet
+        // hides it; the chat re-size JS measures the freed space at runtime.
+        $admin = $this->adminSession();
+        $body = $admin->get('/?page=messages')->body;
+        $this->assertTrue(str_contains($body, 'd-flex justify-content-between align-items-center mb-3 tb-chat-intro'), 'The intro row is marked for the mobile hide.');
+        $this->assertTrue(str_contains($body, '.tb-chat-intro{display:none}'), 'The mobile media query hides the intro.');
+        $this->assertTrue(str_contains($body, 'data-tb-chat-newcount'), 'The newcount badge hook survives in the markup.');
+    }
+
     public function test_the_page_carries_the_live_hooks(): void
     {
         $admin = $this->adminSession();

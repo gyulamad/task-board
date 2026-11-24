@@ -1501,6 +1501,11 @@ if ($page === 'messages') {
     .tb-chat-composer{flex:0 0 auto}
     .tb-chat-back{display:none}
     @media (max-width: 991.98px){
+      /* #117: on a phone the intro (title + description) only pushes the chat
+         down - the chat top sits right below the main menu header instead. The
+         unread count stays visible on the navbar Messages badge, and the chat
+         re-size JS below measures the freed space at runtime. */
+      .tb-chat-intro{display:none}
       .tb-chat>.col-lg-4,.tb-chat>.col-lg-8{flex:0 0 100%;max-width:100%;height:100%}
       .tb-chat>.col-lg-8{display:none}
       .tb-chat.has-peer>.col-lg-8{display:flex}
@@ -1509,7 +1514,7 @@ if ($page === 'messages') {
       .tb-chat-bubble{max-width:88%!important}
     }
     </style>
-    <div class="d-flex justify-content-between align-items-center mb-3"><div><h1 class="h3 mb-0">Messages</h1><div class="muted">A messenger-style board: pick a person on the left, chat in bubbles on the right - every message shows when it was sent and whether it was seen.</div></div><span class="badge text-bg-danger fs-6" data-tb-chat-newcount><?=$newCount?> new message<?=$newCount===1?'':'s'?></span></div>
+    <div class="d-flex justify-content-between align-items-center mb-3 tb-chat-intro"><div><h1 class="h3 mb-0">Messages</h1><div class="muted">A messenger-style board: pick a person on the left, chat in bubbles on the right - every message shows when it was sent and whether it was seen.</div></div><span class="badge text-bg-danger fs-6" data-tb-chat-newcount><?=$newCount?> new message<?=$newCount===1?'':'s'?></span></div>
     <div class="row g-4 tb-chat<?=$hasPeer?' has-peer':''?>" data-tb-chat data-tb-chat-live-url="<?=h('?page=messages_live&u='.$peerId)?>">
         <div class="col-lg-4 tb-chat-people"><div class="card p-3 tb-chat-people-card"><h2 class="h5">People</h2>
             <form method="get" class="d-flex gap-2 mb-2"><input type="hidden" name="page" value="<?=$chatPage?>"><?php if($peerExplicit): ?><input type="hidden" name="u" value="<?=$peerId?>"><?php endif; ?><input class="form-control form-control-sm" type="search" name="q" value="<?=h($pq)?>" placeholder="Search people..." aria-label="Search people"><button class="btn btn-sm btn-outline-secondary">Search</button><?php if($pq!==''): ?><a class="btn btn-link btn-sm" href="<?=h($peerExplicit?'?page='.$chatPage.'&u='.$peerId:'?page='.$chatPage)?>&amp;clear_search=1">Clear</a><?php endif; ?></form>

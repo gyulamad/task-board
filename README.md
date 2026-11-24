@@ -1,4 +1,4 @@
-# PHP Task Board
+# PHP Task Board [![CI](https://github.com/gyulamad/task-board/actions/workflows/ci.yml/badge.svg)](https://github.com/gyulamad/task-board/actions/workflows/ci.yml)
 
 A lightweight multi-user task and message board for PHP 8.2+ and MySQL/MariaDB shared hosting.
 

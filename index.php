@@ -1619,7 +1619,11 @@ if (in_array($page, ['users', 'users-v2'], true) && is_admin()) {
         ['label'=>'Created','sortKey'=>'created','sort'=>$list['sort'],'url'=>$usersUrl,'cell'=>fn(array $u): string => '<td class="small muted">'.h($u['created_at']).'</td>'],
         ['label'=>'Last active','sortKey'=>'activity','sort'=>$list['sort'],'url'=>$usersUrl,'cell'=>fn(array $u): string => '<td class="small muted">'.h($u['last_seen_at']===null?'never':'active: '.tb_last_seen_label($u['last_seen_at'],$dbNowTs)).'</td>'],
         ['label'=>'Actions','cell'=>function(array $u): string {
-            return '<td class="text-nowrap"><a class="btn btn-sm btn-outline-secondary" href="?page=user&id='.$u['id'].'">Edit</a> <form method="post" class="d-inline" onsubmit="return confirm(\'Delete this user permanently? Their tasks, comments and attachments will be kept.\')">'.csrf_field().'<input type="hidden" name="action" value="delete_user"><input type="hidden" name="id" value="'.$u['id'].'"><button class="btn btn-sm btn-outline-danger">Delete</button></form></td>';
+            // The message shortcut (#98): jumps to the messenger with this
+            // user's conversation already selected (?u=<id>). The own row
+            // offers none - the messenger has no self-conversation.
+            $message = (int)$u['id'] === (int)user()['id'] ? '' : ' <a class="btn btn-sm btn-outline-primary" href="?page=messages&u='.$u['id'].'">Message</a>';
+            return '<td class="text-nowrap"><a class="btn btn-sm btn-outline-secondary" href="?page=user&id='.$u['id'].'">Edit</a>'.$message.' <form method="post" class="d-inline" onsubmit="return confirm(\'Delete this user permanently? Their tasks, comments and attachments will be kept.\')">'.csrf_field().'<input type="hidden" name="action" value="delete_user"><input type="hidden" name="id" value="'.$u['id'].'"><button class="btn btn-sm btn-outline-danger">Delete</button></form></td>';
         }],
     ];
     render_header('Users',$config,$error); ?>

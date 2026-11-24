@@ -4,6 +4,7 @@ declare(strict_types=1);
 namespace TaskBoard\Tests\E2E;
 
 use TaskBoard\Tests\Support\AppSession;
+use TaskBoard\Tests\Support\TestServer;
 
 /**
  * Task #57 (admin refactor) - the shared CRUD list engine.
@@ -149,6 +150,35 @@ final class CrudAbstractionTest extends E2eTestCase
 
         $this->assertSame(403, $user->get('/?page=users-v2')->status, 'The v2 users list stays admin-only like ?page=users.');
         $this->assertSame(302, (new AppSession())->get('/?page=users-v2')->status, 'Anonymous visitors are pushed to the sign-in page.');
+    }
+
+    public function test_users_v2_offers_the_message_shortcut(): void
+    {
+        $admin = $this->adminSession();
+        $this->createUser($admin, 'writable');
+        $this->createUser($admin, 'second');
+        $userId = (int)TestServer::pdo()->query("SELECT id FROM users WHERE username='writable'")->fetchColumn();
+
+        $page = $admin->get('/?page=users-v2');
+        // One Message link per other user, none on the admin's own row: the
+        // messenger has no self-conversation.
+        $this->assertSame(2, substr_count($page->body, 'href="?page=messages&u='), 'Every row but the admin\'s own carries the Message shortcut.');
+        $this->assertTrue($page->contains('href="?page=messages&u=' . $userId . '">Message</a>'), 'The Message button links to the messenger with the user preselected.');
+        $this->assertGreaterThan(
+            strpos($page->body, '>Edit</a>'),
+            strpos($page->body, '>Message</a>'),
+            'The Message button sits next to the Edit and Delete buttons.'
+        );
+
+        // The shortcut lands on the messenger with the conversation selected
+        // instantly (?u=<id>, the messages page's own selection parameter).
+        $thread = $admin->get('/?page=messages&u=' . $userId);
+        $this->assertSame(200, $thread->status);
+        $this->assertTrue($thread->contains('Conversation with Writable Name'), 'The preselected conversation renders immediately.');
+
+        // The alias serves the same shortcut.
+        $alias = $admin->get('/?page=users');
+        $this->assertSame(2, substr_count($alias->body, 'href="?page=messages&u='));
     }
 
     // --- tasks-v2: the task list feature set --------------------------------

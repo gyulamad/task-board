@@ -745,4 +745,157 @@ final class CrudAbstractionTest extends E2eTestCase
         $new = str_replace('projects-v2', 'projects', $new);
         $this->assertSame($old, $new, 'The v2 projects list must render the identical chrome to ?page=projects.');
     }
+
+    // --- templates-v2: the templates list feature set (Task #82) ------------
+
+    private function createTemplateRow(AppSession $session, string $name, string $type = 'task', string $description = 'Template body text'): int
+    {
+        $session->get('/?page=template_new');
+        $response = $session->post('/?page=template_new', [
+            'action' => 'save_template',
+            'id' => '0',
+            'type' => $type,
+            'name' => $name,
+            'description' => $description,
+        ]);
+        if ($response->status !== 302) {
+            throw new \RuntimeException('Template creation did not redirect to the templates list.');
+        }
+        $row = TestServer::pdo()->prepare('SELECT id FROM templates WHERE name=?');
+        $row->execute([$name]);
+        return (int)$row->fetchColumn();
+    }
+
+    public function test_templates_v2_carries_the_full_list_chrome(): void
+    {
+        $admin = $this->adminSession();
+        $this->createTemplateRow($admin, 'Chrome template');
+        $page = $admin->get('/?page=templates-v2');
+
+        $this->assertSame(200, $page->status);
+        $this->assertTrue($page->contains('href="?page=template_new">+ New template</a>'), 'The create button renders.');
+        $this->assertTrue($page->contains('aria-label="Filter by template types"'), 'The type[] filter card renders.');
+        $this->assertTrue($page->contains('value="templates-v2"'), 'The filter form targets the v2 page.');
+        $this->assertTrue($page->contains('aria-sort="ascending"'), 'The default name-asc sort exposes the direction.');
+        $this->assertTrue($page->contains('aria-label="Order by Name, currently asc, activate to sort descending"'), 'The shared sort_header() renders the full a11y label.');
+        $this->assertTrue($page->contains('aria-label="Order by Type, currently unsorted, activate to sort descending"'));
+        $this->assertSame(0, substr_count($page->body, 'tb-list-region'), 'The templates list carries no realtime region, exactly like the classic page.');
+        $this->assertTrue($page->contains('page=templates-v2&amp;sort=type&amp;dir=asc'), 'The header links stay on the v2 page.');
+    }
+
+    public function test_templates_v2_columns_sort(): void
+    {
+        $admin = $this->adminSession();
+        $this->createTemplateRow($admin, 'Alpha template');
+        $this->createTemplateRow($admin, 'Zulu template');
+
+        $asc = $admin->get('/?page=templates-v2&sort=name&dir=asc');
+        $this->assertGreaterThan(
+            strpos($asc->body, 'Alpha template'),
+            strpos($asc->body, 'Zulu template'),
+            'Ascending name order puts Alpha first.'
+        );
+        $this->assertTrue($asc->contains('aria-sort="ascending"'));
+
+        $desc = $admin->get('/?page=templates-v2&sort=name&dir=desc');
+        $this->assertGreaterThan(
+            strpos($desc->body, 'Zulu template'),
+            strpos($desc->body, 'Alpha template'),
+            'Descending name order puts Zulu first.'
+        );
+
+        // The unknown sort key falls back to the default; the crafted value
+        // can never reach the SQL (the shared allowlist discipline).
+        $crafted = $admin->get('/?page=templates-v2&sort=name;DROP%20TABLE%20templates&dir=desc');
+        $this->assertSame(200, $crafted->status);
+        $this->assertTrue($crafted->contains('Alpha template'), 'The crafted sort is ignored and the list renders.');
+    }
+
+    public function test_templates_v2_type_filter(): void
+    {
+        $admin = $this->adminSession();
+        $this->createTemplateRow($admin, 'Filtered task template', 'task');
+        $this->createTemplateRow($admin, 'Filtered project template', 'project');
+
+        $both = $admin->get('/?page=templates-v2&type[]=task&type[]=project');
+        $this->assertTrue($both->contains('Filtered task template'));
+        $this->assertTrue($both->contains('Filtered project template'));
+
+        $taskOnly = $admin->get('/?page=templates-v2&type[]=task');
+        $this->assertTrue($taskOnly->contains('Filtered task template'));
+        $this->assertFalse($taskOnly->contains('Filtered project template'));
+
+        // The legacy scalar value keeps working through filter_values().
+        $legacy = $admin->get('/?page=templates-v2&type=project');
+        $this->assertTrue($legacy->contains('Filtered project template'));
+        $this->assertFalse($legacy->contains('Filtered task template'));
+
+        // A crafted type value is ignored: the whole list renders.
+        $crafted = $admin->get('/?page=templates-v2&type[]=task%29%20OR%201%3D1--');
+        $this->assertSame(200, $crafted->status);
+        $this->assertTrue($crafted->contains('Filtered task template'), 'The crafted value is ignored and the list renders.');
+        $this->assertTrue($crafted->contains('Filtered project template'));
+    }
+
+    public function test_templates_v2_paginates(): void
+    {
+        $admin = $this->adminSession();
+        for ($i = 1; $i <= 21; $i++) {
+            $this->createTemplateRow($admin, 'listtpl' . str_pad((string)$i, 2, '0', STR_PAD_LEFT));
+        }
+
+        $page1 = $admin->get('/?page=templates-v2');
+        $this->assertTrue($page1->contains('21 templates'), 'The header counts all templates.');
+        $this->assertTrue($page1->contains('Page 1 of 2'));
+        $this->assertTrue($page1->contains('page=templates-v2&amp;p=2'), 'The pagination links stay on the v2 page.');
+
+        $page2 = $admin->get('/?page=templates-v2&p=2');
+        $this->assertTrue($page2->contains('listtpl21'), 'The last template lands on page 2 (name asc).');
+        $this->assertFalse($page2->contains('listtpl01'), 'Page 1 rows stay on page 1.');
+    }
+
+    public function test_templates_v2_keeps_the_access_model(): void
+    {
+        $admin = $this->adminSession();
+        $this->createTemplateRow($admin, 'Deletable template');
+
+        $page = $admin->get('/?page=templates-v2');
+        $this->assertTrue($page->contains('value="delete_template"'), 'The per-row delete form renders for the admin.');
+        $this->assertTrue($page->contains('href="?page=template_edit&id='), 'The Edit link renders.');
+
+        // The templates list stays reachable for non-admins, who see the Edit
+        // link but no delete controls (the same access model as the classic
+        // page: only an administrator or the creator may delete).
+        $this->createUser($admin, 'tplviewer');
+        $viewer = new AppSession('tplviewer', 'tplviewerPass12345');
+        $view = $viewer->get('/?page=templates-v2');
+        $this->assertSame(200, $view->status);
+        $this->assertTrue($view->contains('Deletable template'), 'The list renders for a plain user.');
+        $this->assertTrue($view->contains('href="?page=template_edit&id='), 'The Edit link renders for a plain user.');
+        $this->assertFalse($view->contains('value="delete_template"'), 'A plain user sees no delete forms.');
+    }
+
+    public function test_templates_v2_page_matches_the_templates_page(): void
+    {
+        $admin = $this->adminSession();
+        $this->createTemplateRow($admin, 'Parity template');
+
+        // The one intended difference: the v2 headers speak the shared
+        // sort_header() a11y dialect, so the header row is excluded from the
+        // byte comparison and pinned separately (see the chrome test).
+        $cutThead = fn(string $body): string => (string)preg_replace('/<thead>.*<\/thead>/s', '', $this->pageChrome($body));
+
+        // One throwaway request consumes the create-template flash message, so
+        // both compared fetches render the plain list.
+        $admin->get('/?page=templates');
+
+        $old = $cutThead($admin->get('/?page=templates')->body);
+        $new = $cutThead($admin->get('/?page=templates-v2')->body);
+        // The navbar (and after the step-5 switch every entry link) points at
+        // the v2 page, so both bodies get the same page-name rewrite before
+        // the comparison.
+        $old = str_replace('templates-v2', 'templates', $old);
+        $new = str_replace('templates-v2', 'templates', $new);
+        $this->assertSame($old, $new, 'The v2 templates list must render the identical chrome to ?page=templates.');
+    }
 }

@@ -364,7 +364,7 @@ if (user()) {
                     $pdo->prepare('INSERT INTO templates(type,name,description,created_by) VALUES(?,?,?,?)')->execute([$type,$name,$description,user()['id']]);
                     flash('Template created.');
                 }
-                redirect('?page=templates');
+                redirect('?page=templates-v2');
             }
             if ($action === 'delete_template') {
                 $id = (int)$_POST['id'];
@@ -374,7 +374,7 @@ if (user()) {
                 if (!is_admin() && (int)$creator !== (int)user()['id']) throw new RuntimeException('Only an administrator or template creator can delete this template.');
                 $pdo->prepare('DELETE FROM templates WHERE id=?')->execute([$id]);
                 flash('Template deleted.');
-                redirect('?page=templates');
+                redirect('?page=templates-v2');
             }
             if ($action === 'save_search') {
                 // Saved searches (#29): the list filters live in the URL only,
@@ -843,7 +843,7 @@ function render_header(string $title, array $config, string $error = ''): void {
     <link rel="icon" type="image/svg+xml" href="?page=favicon&amp;type=svg"><link rel="icon" href="?page=favicon" sizes="48x48 32x32 16x16">
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
     <style>body{background:#f5f6f8}.card{border:0;box-shadow:0 1px 5px #0000000d}.muted{color:#687386}.prewrap{white-space:pre-wrap}.navbar-brand{font-weight:700}.tb-activity-dot{display:inline-block;width:.55em;height:.55em;border-radius:50%;margin-right:.3em}.tb-activity-green{background:#198754}.tb-activity-yellow{background:#ffc107}.tb-activity-red{background:#dc3545}.tb-activity-grey{background:#6c757d}.tb-activity-char{font-weight:700;margin-right:.3em}html[data-bs-theme="dark"] body{background:#14181f}html[data-bs-theme="dark"] .card{box-shadow:0 1px 6px #00000059}html[data-bs-theme="dark"] .muted{color:#8b96a5}</style></head><body>
-    <nav class="navbar navbar-expand-lg navbar-dark bg-dark"><div class="container"><a class="navbar-brand" href="?"><?=h($config['app_name'])?></a><?php if(user()): ?><button class="navbar-toggler ms-auto" type="button" data-bs-toggle="collapse" data-bs-target="#tb-navbar" aria-controls="tb-navbar" aria-expanded="false" aria-label="Toggle navigation"><span class="navbar-toggler-icon"></span></button><div class="collapse navbar-collapse" id="tb-navbar"><div class="navbar-nav ms-auto align-items-center"><a class="nav-link" href="?page=tasks-v2">Tasks</a><a class="nav-link" href="?page=kanban">Kanban</a><a class="nav-link" href="?page=waterflow">Waterflow</a><a class="nav-link" href="?page=projects-v2">Projects</a><a class="nav-link" href="?page=templates">Templates</a><a class="nav-link" href="?page=documents-v2">Know-hows</a><a class="nav-link" href="?page=messages">Messages<?php global $pdo; $tbUnread=array_key_exists('TB_UNREAD_BADGE',$GLOBALS)?(int)$GLOBALS['TB_UNREAD_BADGE']:tb_unread_message_count($pdo,(int)user()['id']); if($tbUnread): ?> <span class="badge text-bg-danger" title="New messages"><?=$tbUnread?></span><?php endif; unset($GLOBALS['TB_UNREAD_BADGE']); ?></a><a class="nav-link" href="?page=notifications">Notifications<?php global $pdo; $tbSeen=array_key_exists('TB_NOTIFICATION_BADGE',$GLOBALS)?(int)$GLOBALS['TB_NOTIFICATION_BADGE']:tb_unseen_notification_count($pdo,(int)user()['id']); if($tbSeen && tb_notification_flag_enabled($pdo,(int)user()['id'])): ?> <span class="badge text-bg-danger" title="New notifications"><?=$tbSeen?></span><?php endif; unset($GLOBALS['TB_NOTIFICATION_BADGE']); ?></a><a class="nav-link" href="?page=settings">Settings</a><?php if(is_admin()): ?><a class="nav-link" href="?page=admin">Administration</a><a class="nav-link" href="?page=activity_settings">Activity periods</a><a class="nav-link" href="?page=updates">Software updates</a><?php endif; ?><form method="post" class="d-flex align-items-center mx-2"><?=csrf_field()?><input type="hidden" name="action" value="save_theme"><select name="theme" class="form-select form-select-sm bg-dark text-light border-secondary" aria-label="Theme" title="Theme" onchange="this.form.submit()"><option value="light" <?=$theme==='light'?'selected':''?>>Light</option><option value="dark" <?=$theme==='dark'?'selected':''?>>Dark</option></select><noscript><button class="btn btn-sm btn-outline-light ms-1">Save</button></noscript></form><span class="navbar-text mx-2"><?=tb_user_with_activity($_SESSION['user'])?></span><form method="post" action="?page=logout" class="d-inline m-0"><?=csrf_field()?><button type="submit" class="btn btn-link nav-link p-0 text-white text-decoration-none">Sign out</button></form></div></div><?php endif; ?></div></nav><main class="container py-4">
+    <nav class="navbar navbar-expand-lg navbar-dark bg-dark"><div class="container"><a class="navbar-brand" href="?"><?=h($config['app_name'])?></a><?php if(user()): ?><button class="navbar-toggler ms-auto" type="button" data-bs-toggle="collapse" data-bs-target="#tb-navbar" aria-controls="tb-navbar" aria-expanded="false" aria-label="Toggle navigation"><span class="navbar-toggler-icon"></span></button><div class="collapse navbar-collapse" id="tb-navbar"><div class="navbar-nav ms-auto align-items-center"><a class="nav-link" href="?page=tasks-v2">Tasks</a><a class="nav-link" href="?page=kanban">Kanban</a><a class="nav-link" href="?page=waterflow">Waterflow</a><a class="nav-link" href="?page=projects-v2">Projects</a><a class="nav-link" href="?page=templates-v2">Templates</a><a class="nav-link" href="?page=documents-v2">Know-hows</a><a class="nav-link" href="?page=messages">Messages<?php global $pdo; $tbUnread=array_key_exists('TB_UNREAD_BADGE',$GLOBALS)?(int)$GLOBALS['TB_UNREAD_BADGE']:tb_unread_message_count($pdo,(int)user()['id']); if($tbUnread): ?> <span class="badge text-bg-danger" title="New messages"><?=$tbUnread?></span><?php endif; unset($GLOBALS['TB_UNREAD_BADGE']); ?></a><a class="nav-link" href="?page=notifications">Notifications<?php global $pdo; $tbSeen=array_key_exists('TB_NOTIFICATION_BADGE',$GLOBALS)?(int)$GLOBALS['TB_NOTIFICATION_BADGE']:tb_unseen_notification_count($pdo,(int)user()['id']); if($tbSeen && tb_notification_flag_enabled($pdo,(int)user()['id'])): ?> <span class="badge text-bg-danger" title="New notifications"><?=$tbSeen?></span><?php endif; unset($GLOBALS['TB_NOTIFICATION_BADGE']); ?></a><a class="nav-link" href="?page=settings">Settings</a><?php if(is_admin()): ?><a class="nav-link" href="?page=admin">Administration</a><a class="nav-link" href="?page=activity_settings">Activity periods</a><a class="nav-link" href="?page=updates">Software updates</a><?php endif; ?><form method="post" class="d-flex align-items-center mx-2"><?=csrf_field()?><input type="hidden" name="action" value="save_theme"><select name="theme" class="form-select form-select-sm bg-dark text-light border-secondary" aria-label="Theme" title="Theme" onchange="this.form.submit()"><option value="light" <?=$theme==='light'?'selected':''?>>Light</option><option value="dark" <?=$theme==='dark'?'selected':''?>>Dark</option></select><noscript><button class="btn btn-sm btn-outline-light ms-1">Save</button></noscript></form><span class="navbar-text mx-2"><?=tb_user_with_activity($_SESSION['user'])?></span><form method="post" action="?page=logout" class="d-inline m-0"><?=csrf_field()?><button type="submit" class="btn btn-link nav-link p-0 text-white text-decoration-none">Sign out</button></form></div></div><?php endif; ?></div></nav><main class="container py-4">
     <?php if (!empty($_SESSION['flash'])): ?><div class="alert alert-success"><?=h($_SESSION['flash'])?></div><?php unset($_SESSION['flash']); endif; ?>
     <?php if($error): ?><div class="alert alert-danger"><?=h($error)?></div><?php endif;
 }
@@ -1900,21 +1900,68 @@ if (in_array($page, ['projects', 'projects-v2'], true)) {
 }
 
 
-if ($page==='templates') {
+// ---- Templates list (v2 since #82) ----------------------------------------------------------
+// The templates list, rebuilt on the shared CRUD list engine (src/crud.php):
+// the count/page/fetch query, the URL builder, the sortable table skeleton
+// and the pagination window come from the abstraction. The type[] multi-select
+// filter stays exactly as it was (filter_values() in, allowlisted bound
+// parameters out) and the feature set is otherwise unchanged: no text search
+// yet, no bulk actions, no realtime region. The shared sort_header() took
+// over from the plain <th> headers, so the a11y markup matches the other
+// lists from now on. The parity proof is tests/E2E/CrudAbstractionTest.php:
+// it pinned this page feature by feature against the classic ?page=templates
+// contract and pinned the two rendered lists byte-equal before the links
+// switched. The old page name keeps working as an alias so bookmarks and
+// saved links survive.
+if (in_array($page, ['templates', 'templates-v2'], true)) {
+    // Generated links (filter form, header links, pagination) keep the
+    // requested page name, so both the classic and the -v2 URL stay fully
+    // functional.
+    $templatesPage = $page === 'templates-v2' ? 'templates-v2' : 'templates';
     // Multi-select filter (#25): the type dropdown submits type[] as an array,
     // legacy scalar ?type=task links still work through filter_values().
     // Values outside the two real template types are ignored.
     $typeFilter=array_values(array_intersect(filter_values('type'),['task','project']));
+    $conds=[]; $params=[];
     if ($typeFilter) {
-        $s = $pdo->prepare('SELECT t.*,u.display_name creator FROM templates t JOIN users u ON u.id=t.created_by WHERE t.type IN ('.tb_in_placeholders(count($typeFilter)).') ORDER BY t.type,t.name'); $s->execute($typeFilter);
-    } else {
-        $s = $pdo->query('SELECT t.*,u.display_name creator FROM templates t JOIN users u ON u.id=t.created_by ORDER BY t.type,t.name');
+        $conds[] = 't.type IN ('.tb_in_placeholders(count($typeFilter)).')';
+        array_push($params, ...$typeFilter);
     }
-    $templates = $s->fetchAll();
+    $list=tb_crud_list([
+        'pdo'=>$pdo,
+        'table'=>'templates t',
+        'select'=>'t.id,t.type,t.name,t.description,t.updated_at,t.created_by',
+        'where'=>$conds,
+        'params'=>$params,
+        'sortColumns'=>[
+            'name'=>'t.name {dir}',
+            'type'=>'t.type {dir}, t.name {dir}',
+            'updated'=>'t.updated_at {dir}',
+        ],
+        'defaultSort'=>'name',
+        'defaultDir'=>'asc',
+        'orderBySuffix'=>'t.id {dir}',
+    ]);
+    $templates=$list['rows'];$templateSort=$list['sort'];$totalTemplates=$list['total'];$totalPages=$list['pages'];$templatePage=$list['page'];
+    $templatesUrl=tb_crud_url_builder($templatesPage,['type']);
+    $templateColumns=[
+        ['label'=>'Name','sortKey'=>'name','sort'=>$templateSort,'url'=>$templatesUrl,'cell'=>fn(array $tp): string => '<td><a class="fw-semibold text-decoration-none" href="?page=template_edit&id='.$tp['id'].'">'.h($tp['name']).'</a></td>'],
+        ['label'=>'Type','sortKey'=>'type','sort'=>$templateSort,'url'=>$templatesUrl,'cell'=>fn(array $tp): string => '<td><span class="badge text-bg-light border">'.h($tp['type']).'</span></td>'],
+        ['label'=>'Description','cell'=>function(array $tp): string {
+            $desc=(string)$tp['description']; $short=preg_replace('/^(.{0,140}).*$/su','$1',$desc);
+            return '<td class="small muted" style="max-width:32rem">'.h($short).(strlen($desc)>strlen($short)?'&hellip;':'').'</td>';
+        }],
+        ['label'=>'Updated','sortKey'=>'updated','sort'=>$templateSort,'url'=>$templatesUrl,'cell'=>fn(array $tp): string => '<td class="small muted">'.h($tp['updated_at']).'</td>'],
+        ['label'=>'Actions','cell'=>function(array $tp): string {
+            $canDelete=is_admin()||(int)$tp['created_by']===(int)user()['id'];
+            return '<td class="text-nowrap"><a class="btn btn-sm btn-outline-secondary" href="?page=template_edit&id='.$tp['id'].'">Edit</a>'.($canDelete ? ' <form method="post" class="d-inline" onsubmit="return confirm(\'Delete this template permanently?\')">'.csrf_field().'<input type="hidden" name="action" value="delete_template"><input type="hidden" name="id" value="'.$tp['id'].'"><button class="btn btn-sm btn-outline-danger">Delete</button></form>' : '').'</td>';
+        }],
+    ];
     render_header('Templates',$config,$error); ?>
-    <div class="d-flex justify-content-between align-items-center mb-3"><div><h1 class="h3 mb-0">Templates</h1><div class="muted"><?=count($templates)?> template<?=count($templates)===1?'':'s'?></div></div><a class="btn btn-primary" href="?page=template_new">+ New template</a></div>
-    <div class="card p-3 mb-3"><form class="row g-2"><input type="hidden" name="page" value="templates"><div class="col-md-3"><label class="form-label small muted mb-1">Template types</label><select class="form-select" name="type[]" multiple size="2" aria-label="Filter by template types"><option value="task" <?=in_array('task',$typeFilter,true)?'selected':''?>>Task templates</option><option value="project" <?=in_array('project',$typeFilter,true)?'selected':''?>>Project templates</option></select><div class="form-text">Hold Ctrl/Cmd to select several.</div></div><div class="col-md-3 d-grid align-self-end"><button class="btn btn-outline-primary">Filter</button></div></form></div>
-    <div class="card"><div class="table-responsive"><table class="table table-hover align-middle mb-0"><thead><tr><th>Name</th><th>Type</th><th>Description</th><th>Updated</th><th>Actions</th></tr></thead><tbody><?php foreach($templates as $tp): $canDelete=is_admin()||(int)$tp['created_by']===(int)user()['id']; $desc=(string)$tp['description']; $short=preg_replace('/^(.{0,140}).*$/su','$1',$desc); ?><tr><td><a class="fw-semibold text-decoration-none" href="?page=template_edit&id=<?=$tp['id']?>"><?=h($tp['name'])?></a></td><td><span class="badge text-bg-light border"><?=h($tp['type'])?></span></td><td class="small muted" style="max-width:32rem"><?=h($short)?><?=strlen($desc)>strlen($short)?'&hellip;':''?></td><td class="small muted"><?=h($tp['updated_at'])?></td><td class="text-nowrap"><a class="btn btn-sm btn-outline-secondary" href="?page=template_edit&id=<?=$tp['id']?>">Edit</a><?php if($canDelete): ?> <form method="post" class="d-inline" onsubmit="return confirm('Delete this template permanently?')"><?=csrf_field()?><input type="hidden" name="action" value="delete_template"><input type="hidden" name="id" value="<?=$tp['id']?>"><button class="btn btn-sm btn-outline-danger">Delete</button></form><?php endif; ?></td></tr><?php endforeach; if(!$templates): ?><tr><td colspan="5" class="text-center muted py-4">No templates found.</td></tr><?php endif; ?></tbody></table></div></div>
+    <div class="d-flex justify-content-between align-items-center mb-3"><div><h1 class="h3 mb-0">Templates</h1><div class="muted"><?=$totalTemplates?> template<?=$totalTemplates===1?'':'s'?></div></div><a class="btn btn-primary" href="?page=template_new">+ New template</a></div>
+    <div class="card p-3 mb-3"><form class="row g-2"><input type="hidden" name="page" value="<?=$templatesPage?>"><div class="col-md-3"><label class="form-label small muted mb-1">Template types</label><select class="form-select" name="type[]" multiple size="2" aria-label="Filter by template types"><option value="task" <?=in_array('task',$typeFilter,true)?'selected':''?>>Task templates</option><option value="project" <?=in_array('project',$typeFilter,true)?'selected':''?>>Project templates</option></select><div class="form-text">Hold Ctrl/Cmd to select several.</div></div><div class="col-md-3 d-grid align-self-end"><button class="btn btn-outline-primary">Filter</button></div></form></div>
+    <div class="card"><?=tb_crud_table(['columns'=>$templateColumns,'rows'=>$templates,'emptyText'=>'No templates found.','emptyColspan'=>5])?></div>
+    <?php if($totalPages>1): echo tb_crud_pagination(['ariaLabel'=>'Template list pages','page'=>$templatePage,'pages'=>$totalPages,'url'=>$templatesUrl]), "\n"; endif; ?>
     <?php render_footer(); exit;
 }
 
@@ -1922,7 +1969,7 @@ if ($page==='template_new' || $page==='template_edit') {
     $id=(int)($_GET['id']??0); $tpl=['id'=>0,'type'=>'task','name'=>'','description'=>''];
     if($id){$s=$pdo->prepare('SELECT * FROM templates WHERE id=?');$s->execute([$id]);$tpl=$s->fetch() ?: $tpl;}
     render_header($id?'Edit template':'New template',$config,$error); ?>
-    <div class="card p-4"><h2 class="h4"><?= $id?'Edit template':'Create template' ?></h2><form method="post"><?=csrf_field()?><input type="hidden" name="action" value="save_template"><input type="hidden" name="id" value="<?=$id?>"><div class="row"><div class="col-md-4 mb-3"><label class="form-label">Type</label><select class="form-select" name="type"><option value="task" <?=$tpl['type']==='task'?'selected':''?>>Task</option><option value="project" <?=$tpl['type']==='project'?'selected':''?>>Project</option></select></div><div class="col-md-8 mb-3"><label class="form-label">Name</label><input class="form-control" name="name" maxlength="120" value="<?=h($tpl['name'])?>" required></div></div><div class="mb-3"><label class="form-label">Description</label><textarea class="form-control" name="description" rows="6"><?=h($tpl['description'])?></textarea><div class="form-text">Selecting this template on a create page fills the description with this text.</div></div><button class="btn btn-primary">Save template</button> <a class="btn btn-outline-secondary" href="?page=templates">Cancel</a></form></div>
+    <div class="card p-4"><h2 class="h4"><?= $id?'Edit template':'Create template' ?></h2><form method="post"><?=csrf_field()?><input type="hidden" name="action" value="save_template"><input type="hidden" name="id" value="<?=$id?>"><div class="row"><div class="col-md-4 mb-3"><label class="form-label">Type</label><select class="form-select" name="type"><option value="task" <?=$tpl['type']==='task'?'selected':''?>>Task</option><option value="project" <?=$tpl['type']==='project'?'selected':''?>>Project</option></select></div><div class="col-md-8 mb-3"><label class="form-label">Name</label><input class="form-control" name="name" maxlength="120" value="<?=h($tpl['name'])?>" required></div></div><div class="mb-3"><label class="form-label">Description</label><textarea class="form-control" name="description" rows="6"><?=h($tpl['description'])?></textarea><div class="form-text">Selecting this template on a create page fills the description with this text.</div></div><button class="btn btn-primary">Save template</button> <a class="btn btn-outline-secondary" href="?page=templates-v2">Cancel</a></form></div>
     <?php render_footer(); exit;
 }
 

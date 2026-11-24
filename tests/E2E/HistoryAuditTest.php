@@ -91,6 +91,27 @@ final class HistoryAuditTest extends E2eTestCase
         return (string)TestServer::pdo()->query('SELECT display_name FROM users WHERE id=' . (int)$row['user_id'])->fetchColumn();
     }
 
+    public function test_long_history_details_are_cut_at_100_chars_on_the_task_page(): void
+    {
+        $admin = $this->adminSession();
+        $taskId = $admin->createTask('Long history task', ['description' => str_repeat('a', 150)]);
+        $admin->post('/?page=edit&id=' . $taskId, [
+            'action' => 'save_task', 'id' => (string)$taskId, 'title' => 'Long history task',
+            'description' => str_repeat('b', 150), 'status_id' => '1',
+            'parent_id' => '', 'assignees' => [],
+        ]);
+
+        // The generic entry's summary and the field row's from/to values are
+        // far longer than 100 characters: the task page cuts them with an
+        // ellipsis (#80), and the row's details link shows the full change.
+        $page = $admin->get('/?page=task&id=' . $taskId);
+        $this->assertTrue($page->contains('The followings are changed: Description.'), 'The generic summary stays visible within the cut.');
+        $this->assertTrue($page->contains(str_repeat('a', 100) . '…'), 'The long old value renders cut at exactly 100 characters with the ellipsis.');
+        $this->assertTrue($page->contains(str_repeat('b', 100) . '…'), 'The long new value renders cut at exactly 100 characters with the ellipsis.');
+        $this->assertFalse($page->contains(str_repeat('a', 150)), 'The full old value never leaks into the history list.');
+        $this->assertTrue($page->contains('page=task_history&id='), 'The details link is on the row for the full audit (#54).');
+    }
+
     public function test_an_unchanged_save_writes_no_audit_rows(): void
     {
         $admin = $this->adminSession();

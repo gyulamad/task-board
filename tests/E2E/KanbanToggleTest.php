@@ -123,4 +123,35 @@ final class KanbanToggleTest extends E2eTestCase
         $this->assertSame(302, $admin->post('/?page=kanban', ['action' => 'toggle_kanban_column', 'status_id' => '1'])->status);
         $this->assertSame('1', $this->collapsedValue($this->userIdFromName('admin')), 'The toggle persists into the recreated table.');
     }
+
+    public function test_a_closed_column_renders_header_only_while_open_columns_keep_the_stretch(): void
+    {
+        $admin = $this->adminSession();
+        // A task outside the column that is about to be closed, so the open
+        // columns keep a rendered card to compare against.
+        $admin->createTask('Stretch witness', ['status_id' => '2']);
+
+        $open = $admin->get('/?page=kanban')->body;
+        $this->assertSame(0, substr_count($open, '<div class="col"><div class="card">'), 'Nothing is header-only before the first toggle (#97).');
+        $this->assertTrue(str_contains($open, '<div class="col"><div class="card h-100">'), 'Open column cards stretch (h-100) so the board rows stay aligned.');
+
+        // #97: closing a column must render it as its header only - the card
+        // drops the h-100 row stretch, so the closed shell no longer fills the
+        // whole row height and cannot be mistaken for an empty open group
+        // (which keeps its body with the "No tasks" placeholder).
+        $this->assertSame(302, $admin->post('/?page=kanban', [
+            'action' => 'toggle_kanban_column', 'status_id' => '1',
+        ])->status);
+        $closed = $admin->get('/?page=kanban')->body;
+
+        $this->assertTrue(str_contains($closed, '<div class="col"><div class="card"><div class="card-header bg-transparent d-flex justify-content-between align-items-center py-2">'), 'The closed column renders a header-only card without the h-100 stretch.');
+        $this->assertSame(1, substr_count($closed, '<div class="col"><div class="card">'), 'Exactly one column (the closed one) renders header-only.');
+        $this->assertSame(2, substr_count($closed, '<div class="col"><div class="card h-100">'), 'The open columns keep the row stretch.');
+        $this->assertTrue(str_contains($closed, 'card-body p-2 d-none'), 'The closed column body stays hidden server-side.');
+        $this->assertStringContainsString('Stretch witness', $closed, 'The open columns still render their cards.');
+
+        // Reopening restores the stretch everywhere.
+        $this->assertSame(302, $admin->post('/?page=kanban', ['action' => 'toggle_kanban_column', 'status_id' => '1'])->status);
+        $this->assertSame(0, substr_count($admin->get('/?page=kanban')->body, '<div class="col"><div class="card">'), 'Every card carries the stretch again once the column is open.');
+    }
 }

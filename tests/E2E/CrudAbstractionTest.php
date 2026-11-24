@@ -319,6 +319,7 @@ final class CrudAbstractionTest extends E2eTestCase
             ['/page=tasks&q=Parity', '/page=tasks-v2&q=Parity', 'tasks-v2', 'tasks'],
             ['/page=tasks&sort=id&dir=desc', '/page=tasks-v2&sort=id&dir=desc', 'tasks-v2', 'tasks'],
             ['/page=users&q=parityuser', '/page=users-v2&q=parityuser', 'users-v2', 'users'],
+            ['/page=documents&q=Parity', '/page=documents-v2&q=Parity', 'documents-v2', 'documents'],
         ];
         foreach ($pairs as [$oldPath, $newPath, $fromName, $toName]) {
             $old = $this->pageChrome($admin->get('/?' . ltrim($oldPath, '/'))->body);
@@ -327,5 +328,147 @@ final class CrudAbstractionTest extends E2eTestCase
             $new = str_replace($fromName, $toName, $new);
             $this->assertSame($old, $new, "Filtered views must match too: {$oldPath} vs {$newPath}.");
         }
+    }
+
+    // --- documents-v2: the know-hows list feature set (mirrors KnowledgeBaseTest) ---
+
+    private function createDoc(AppSession $admin, string $title, string $content = 'The standard process text.'): void
+    {
+        $response = $admin->post('/?page=document_new', [
+            'action' => 'doc_save',
+            'title' => $title,
+            'content' => $content,
+        ]);
+        $this->assertSame(302, $response->status, 'Saving a know-how must redirect to the list.');
+    }
+
+    public function test_documents_v2_carries_the_know_how_chrome(): void
+    {
+        $admin = $this->adminSession();
+        $this->createDoc($admin, 'Chrome doc', 'chrome payload 83');
+
+        $page = $admin->get('/?page=documents-v2');
+        $this->assertTrue($page->contains('Know-hows</h1>'), 'The page header renders.');
+        $this->assertTrue($page->contains('1 document · standard processes, rules and everything worth writing down'), 'The header counts the documents.');
+        $this->assertTrue($page->contains('href="?page=document_new">+ New know-how</a>'), 'The create entry stays.');
+        $this->assertTrue($page->contains('aria-label="Search know-hows"'), 'The search bar renders.');
+        $this->assertTrue($page->contains('<input type="hidden" name="page" value="documents-v2">'), 'The search form submits back to the requested page name.');
+        foreach (['<th class="ps-3">Title</th>', '<th>Updated</th>', '<th>Created by</th>', '<th>Comments</th>', '<th>Attachments</th>'] as $header) {
+            $this->assertTrue($page->contains($header), 'The classic header row stays: ' . $header);
+        }
+        $this->assertTrue($page->contains('href="?page=document&id='), 'Every row links its know-how.');
+        // The no-refresh contract (#83): this list has no realtime region and
+        // no bulk wiring - the classic page never had either.
+        $this->assertFalse(str_contains($page->body, 'tb-list-region'), 'The know-hows list carries no realtime region.');
+        $this->assertFalse(str_contains($page->body, 'check-all'), 'The know-hows list carries no bulk select.');
+    }
+
+    public function test_documents_v2_searches_title_and_content(): void
+    {
+        $admin = $this->adminSession();
+        $this->createDoc($admin, 'WiFi relay guide', 'How the relay talks to the nodes.');
+        $this->createDoc($admin, 'Billing rules', 'How invoices are issued.');
+
+        $page = $admin->get('/?page=documents-v2&q=relay');
+        $this->assertTrue($page->contains('WiFi relay guide'));
+        $this->assertFalse($page->contains('Billing rules'), 'The search must filter the list.');
+        $this->assertTrue($page->contains('value="relay"'), 'The search term stays in the input.');
+        $this->assertTrue($page->contains('href="?page=documents-v2&amp;q=relay">Clear</a>'), 'The clear link stays on the requested page name and keeps the search term.');
+
+        $page = $admin->get('/?page=documents-v2&q=invoices');
+        $this->assertTrue($page->contains('Billing rules'), 'The content is searched too.');
+        $this->assertFalse($page->contains('WiFi relay guide'));
+
+        $page = $admin->get('/?page=documents-v2&q=%25');
+        $this->assertTrue($page->contains('No know-hows match the search.'), 'A literal % must not act as a wildcard.');
+    }
+
+    public function test_documents_v2_empty_board_explains_itself(): void
+    {
+        $admin = $this->adminSession();
+
+        $page = $admin->get('/?page=documents-v2');
+        $this->assertTrue($page->contains('No know-hows yet. Write the first one.'), 'The empty board shows the create-first call to action.');
+        $this->assertTrue($page->contains('0 documents'), 'The header counts zero documents.');
+    }
+
+    public function test_documents_v2_paginates(): void
+    {
+        $admin = $this->adminSession();
+        for ($i = 1; $i <= 22; $i++) {
+            $this->createDoc($admin, 'Paged doc ' . str_pad((string)$i, 2, '0', STR_PAD_LEFT));
+        }
+
+        $page1 = $admin->get('/?page=documents-v2');
+        $this->assertTrue($page1->contains('22 documents'), 'The header counts all documents.');
+        $this->assertTrue($page1->contains('Page 1 of 2'), 'The shared pagination counter renders.');
+        $this->assertTrue($page1->contains('Paged doc 22'), 'The fixed recency order puts the newest first.');
+        $this->assertTrue($page1->contains('page=documents-v2&amp;p=2'), 'The pagination links stay on the v2 page.');
+
+        $page2 = $admin->get('/?page=documents-v2&p=2');
+        $this->assertTrue($page2->contains('Paged doc 01'), 'The oldest rows land on page 2.');
+        $this->assertFalse($page2->contains('Paged doc 22'), 'Page 1 rows stay on page 1.');
+
+        // The search travels through the pagination links.
+        $filtered = $admin->get('/?page=documents-v2&q=Paged+doc+');
+        $this->assertTrue($filtered->contains('Page 1 of 2'), 'The filtered list still spans two pages.');
+        $this->assertTrue($filtered->contains('page=documents-v2&amp;q=Paged+doc+&amp;p=2'), 'Pagination links keep the search term.');
+    }
+
+    public function test_documents_v2_keeps_the_fixed_order_and_crafted_sorts_change_nothing(): void
+    {
+        $admin = $this->adminSession();
+        $this->createDoc($admin, 'Alpha doc');
+        $this->createDoc($admin, 'Zulu doc');
+
+        // The know-hows list has no sortable headers: the classic page ignored
+        // sort and dir requests, and the v2 keeps that contract - the sort
+        // allowlist entry is a fixed fragment, so even the allowlisted key with
+        // dir=asc renders the same recency order.
+        $default = $admin->get('/?page=documents-v2');
+        $this->assertLessThan(
+            strpos($default->body, 'Alpha doc'),
+            strpos($default->body, 'Zulu doc'),
+            'The recency order puts the newest document first.'
+        );
+
+        $flipped = $admin->get('/?page=documents-v2&sort=updated&dir=asc');
+        $this->assertLessThan(
+            strpos($flipped->body, 'Alpha doc'),
+            strpos($flipped->body, 'Zulu doc'),
+            'dir=asc changes nothing: the list keeps its fixed order.'
+        );
+
+        $crafted = $admin->get('/?page=documents-v2&sort=title;DROP%20TABLE%20documents&dir=desc');
+        $this->assertSame(200, $crafted->status);
+        $this->assertTrue($crafted->contains('Alpha doc'), 'The crafted sort is ignored and the list renders.');
+    }
+
+    public function test_documents_v2_stays_available_to_every_signed_in_user(): void
+    {
+        $admin = $this->adminSession();
+        $this->createUser($admin, 'docreader');
+        $user = new AppSession('docreader', 'docreaderPass12345');
+
+        $this->assertSame(200, $user->get('/?page=documents-v2')->status, 'The know-hows list stays available to regular users.');
+        $this->assertSame(302, (new AppSession())->get('/?page=documents-v2')->status, 'Anonymous visitors are pushed to the sign-in page.');
+    }
+
+    public function test_documents_v2_page_matches_the_documents_page(): void
+    {
+        $admin = $this->adminSession();
+        $this->createDoc($admin, 'Parity doc', 'parity payload 83');
+
+        // One throwaway request consumes the save flash message, so both
+        // compared fetches render the plain list.
+        $admin->get('/?page=documents');
+
+        $old = $this->pageChrome($admin->get('/?page=documents')->body);
+        $new = $this->pageChrome($admin->get('/?page=documents-v2')->body);
+        // The generated links carry the requested page name, so both bodies
+        // get the same page-name rewrite before the comparison.
+        $old = str_replace('documents-v2', 'documents', $old);
+        $new = str_replace('documents-v2', 'documents', $new);
+        $this->assertSame($old, $new, 'The v2 know-hows list must render the identical chrome to ?page=documents.');
     }
 }

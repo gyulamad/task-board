@@ -543,7 +543,7 @@ if (user()) {
                     flash('Know-how updated.'); redirect('?page=document&id='.$id);
                 }
                 $pdo->prepare('INSERT INTO documents(title,content,created_by) VALUES(?,?,?)')->execute([$title,$content,user()['id']]);
-                flash('Know-how saved.'); redirect('?page=documents');
+                flash('Know-how saved.'); redirect('?page=documents-v2');
             }
             if ($action === 'doc_comment') {
                 $id=(int)($_POST['document_id'] ?? 0); $body=trim((string)($_POST['body'] ?? ''));
@@ -597,7 +597,7 @@ if (user()) {
                 $pdo->prepare('DELETE FROM document_comments WHERE document_id=?')->execute([$id]);
                 $pdo->prepare('DELETE FROM document_attachments WHERE document_id=?')->execute([$id]);
                 $pdo->prepare('DELETE FROM documents WHERE id=?')->execute([$id]);
-                flash('Know-how deleted.'); redirect('?page=documents');
+                flash('Know-how deleted.'); redirect('?page=documents-v2');
             }
             if ($action === 'save_theme') {
                 $theme = $_POST['theme'] ?? '';
@@ -823,7 +823,7 @@ function render_header(string $title, array $config, string $error = ''): void {
     <link rel="icon" type="image/svg+xml" href="?page=favicon&amp;type=svg"><link rel="icon" href="?page=favicon" sizes="48x48 32x32 16x16">
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
     <style>body{background:#f5f6f8}.card{border:0;box-shadow:0 1px 5px #0000000d}.muted{color:#687386}.prewrap{white-space:pre-wrap}.navbar-brand{font-weight:700}.tb-activity-dot{display:inline-block;width:.55em;height:.55em;border-radius:50%;margin-right:.3em}.tb-activity-green{background:#198754}.tb-activity-yellow{background:#ffc107}.tb-activity-red{background:#dc3545}.tb-activity-grey{background:#6c757d}.tb-activity-char{font-weight:700;margin-right:.3em}html[data-bs-theme="dark"] body{background:#14181f}html[data-bs-theme="dark"] .card{box-shadow:0 1px 6px #00000059}html[data-bs-theme="dark"] .muted{color:#8b96a5}</style></head><body>
-    <nav class="navbar navbar-expand-lg navbar-dark bg-dark"><div class="container"><a class="navbar-brand" href="?"><?=h($config['app_name'])?></a><?php if(user()): ?><button class="navbar-toggler ms-auto" type="button" data-bs-toggle="collapse" data-bs-target="#tb-navbar" aria-controls="tb-navbar" aria-expanded="false" aria-label="Toggle navigation"><span class="navbar-toggler-icon"></span></button><div class="collapse navbar-collapse" id="tb-navbar"><div class="navbar-nav ms-auto align-items-center"><a class="nav-link" href="?page=tasks-v2">Tasks</a><a class="nav-link" href="?page=kanban">Kanban</a><a class="nav-link" href="?page=waterflow">Waterflow</a><a class="nav-link" href="?page=projects">Projects</a><a class="nav-link" href="?page=templates">Templates</a><a class="nav-link" href="?page=documents">Know-hows</a><a class="nav-link" href="?page=messages">Messages<?php global $pdo; $tbUnread=array_key_exists('TB_UNREAD_BADGE',$GLOBALS)?(int)$GLOBALS['TB_UNREAD_BADGE']:tb_unread_message_count($pdo,(int)user()['id']); if($tbUnread): ?> <span class="badge text-bg-danger" title="New messages"><?=$tbUnread?></span><?php endif; unset($GLOBALS['TB_UNREAD_BADGE']); ?></a><a class="nav-link" href="?page=notifications">Notifications<?php global $pdo; $tbSeen=array_key_exists('TB_NOTIFICATION_BADGE',$GLOBALS)?(int)$GLOBALS['TB_NOTIFICATION_BADGE']:tb_unseen_notification_count($pdo,(int)user()['id']); if($tbSeen): ?> <span class="badge text-bg-danger" title="New notifications"><?=$tbSeen?></span><?php endif; unset($GLOBALS['TB_NOTIFICATION_BADGE']); ?></a><a class="nav-link" href="?page=settings">Settings</a><?php if(is_admin()): ?><a class="nav-link" href="?page=admin">Administration</a><a class="nav-link" href="?page=activity_settings">Activity periods</a><a class="nav-link" href="?page=updates">Software updates</a><?php endif; ?><form method="post" class="d-flex align-items-center mx-2"><?=csrf_field()?><input type="hidden" name="action" value="save_theme"><select name="theme" class="form-select form-select-sm bg-dark text-light border-secondary" aria-label="Theme" title="Theme" onchange="this.form.submit()"><option value="light" <?=$theme==='light'?'selected':''?>>Light</option><option value="dark" <?=$theme==='dark'?'selected':''?>>Dark</option></select><noscript><button class="btn btn-sm btn-outline-light ms-1">Save</button></noscript></form><span class="navbar-text mx-2"><?=tb_user_with_activity($_SESSION['user'])?></span><form method="post" action="?page=logout" class="d-inline m-0"><?=csrf_field()?><button type="submit" class="btn btn-link nav-link p-0 text-white text-decoration-none">Sign out</button></form></div></div><?php endif; ?></div></nav><main class="container py-4">
+    <nav class="navbar navbar-expand-lg navbar-dark bg-dark"><div class="container"><a class="navbar-brand" href="?"><?=h($config['app_name'])?></a><?php if(user()): ?><button class="navbar-toggler ms-auto" type="button" data-bs-toggle="collapse" data-bs-target="#tb-navbar" aria-controls="tb-navbar" aria-expanded="false" aria-label="Toggle navigation"><span class="navbar-toggler-icon"></span></button><div class="collapse navbar-collapse" id="tb-navbar"><div class="navbar-nav ms-auto align-items-center"><a class="nav-link" href="?page=tasks-v2">Tasks</a><a class="nav-link" href="?page=kanban">Kanban</a><a class="nav-link" href="?page=waterflow">Waterflow</a><a class="nav-link" href="?page=projects">Projects</a><a class="nav-link" href="?page=templates">Templates</a><a class="nav-link" href="?page=documents-v2">Know-hows</a><a class="nav-link" href="?page=messages">Messages<?php global $pdo; $tbUnread=array_key_exists('TB_UNREAD_BADGE',$GLOBALS)?(int)$GLOBALS['TB_UNREAD_BADGE']:tb_unread_message_count($pdo,(int)user()['id']); if($tbUnread): ?> <span class="badge text-bg-danger" title="New messages"><?=$tbUnread?></span><?php endif; unset($GLOBALS['TB_UNREAD_BADGE']); ?></a><a class="nav-link" href="?page=notifications">Notifications<?php global $pdo; $tbSeen=array_key_exists('TB_NOTIFICATION_BADGE',$GLOBALS)?(int)$GLOBALS['TB_NOTIFICATION_BADGE']:tb_unseen_notification_count($pdo,(int)user()['id']); if($tbSeen): ?> <span class="badge text-bg-danger" title="New notifications"><?=$tbSeen?></span><?php endif; unset($GLOBALS['TB_NOTIFICATION_BADGE']); ?></a><a class="nav-link" href="?page=settings">Settings</a><?php if(is_admin()): ?><a class="nav-link" href="?page=admin">Administration</a><a class="nav-link" href="?page=activity_settings">Activity periods</a><a class="nav-link" href="?page=updates">Software updates</a><?php endif; ?><form method="post" class="d-flex align-items-center mx-2"><?=csrf_field()?><input type="hidden" name="action" value="save_theme"><select name="theme" class="form-select form-select-sm bg-dark text-light border-secondary" aria-label="Theme" title="Theme" onchange="this.form.submit()"><option value="light" <?=$theme==='light'?'selected':''?>>Light</option><option value="dark" <?=$theme==='dark'?'selected':''?>>Dark</option></select><noscript><button class="btn btn-sm btn-outline-light ms-1">Save</button></noscript></form><span class="navbar-text mx-2"><?=tb_user_with_activity($_SESSION['user'])?></span><form method="post" action="?page=logout" class="d-inline m-0"><?=csrf_field()?><button type="submit" class="btn btn-link nav-link p-0 text-white text-decoration-none">Sign out</button></form></div></div><?php endif; ?></div></nav><main class="container py-4">
     <?php if (!empty($_SESSION['flash'])): ?><div class="alert alert-success"><?=h($_SESSION['flash'])?></div><?php unset($_SESSION['flash']); endif; ?>
     <?php if($error): ?><div class="alert alert-danger"><?=h($error)?></div><?php endif;
 }
@@ -1871,11 +1871,27 @@ if ($page==='document_new' || $page==='document_edit') {
         if (!document_can_edit($doc)) { http_response_code(403); exit('Forbidden.'); }
     }
     render_header($id?'Edit know-how':'New know-how',$config,$error); ?>
-    <div class="row justify-content-center"><div class="col-lg-8"><div class="card p-4"><h2 class="h4"><?=$id?'Edit know-how':'New know-how'?></h2><form method="post"><?=csrf_field()?><input type="hidden" name="action" value="doc_save"><input type="hidden" name="id" value="<?=$id?>"><div class="mb-3"><label class="form-label" for="document-title">Title</label><input class="form-control" name="title" id="document-title" maxlength="200" value="<?=h($doc['title'] ?? '')?>" required></div><div class="mb-3"><label class="form-label" for="document-content">Content</label><textarea class="form-control" name="content" id="document-content" rows="14" placeholder="The process, rule or know-how..."><?=h($doc['content'] ?? '')?></textarea><div class="form-text">Plain text; line breaks are kept. Leave empty for an attachment-only entry.</div></div><button class="btn btn-primary">Save know-how</button> <a class="btn btn-outline-secondary" href="<?=$id?'?page=document&id='.$id:'?page=documents'?>">Cancel</a></form></div></div></div>
+    <div class="row justify-content-center"><div class="col-lg-8"><div class="card p-4"><h2 class="h4"><?=$id?'Edit know-how':'New know-how'?></h2><form method="post"><?=csrf_field()?><input type="hidden" name="action" value="doc_save"><input type="hidden" name="id" value="<?=$id?>"><div class="mb-3"><label class="form-label" for="document-title">Title</label><input class="form-control" name="title" id="document-title" maxlength="200" value="<?=h($doc['title'] ?? '')?>" required></div><div class="mb-3"><label class="form-label" for="document-content">Content</label><textarea class="form-control" name="content" id="document-content" rows="14" placeholder="The process, rule or know-how..."><?=h($doc['content'] ?? '')?></textarea><div class="form-text">Plain text; line breaks are kept. Leave empty for an attachment-only entry.</div></div><button class="btn btn-primary">Save know-how</button> <a class="btn btn-outline-secondary" href="<?=$id?'?page=document&id='.$id:'?page=documents-v2'?>">Cancel</a></form></div></div></div>
     <?php render_footer(); exit;
 }
 
-if ($page==='documents') {
+// ---- Know-hows list (v2 since #83, admin refactor step 6) ----------------------------------
+// The know-hows list, rebuilt on the shared CRUD list engine (src/crud.php):
+// the count/page/fetch query, the URL builder, the table skeleton and the
+// pagination window come from the abstraction; the entity-specific parts (the
+// search WHERE, the excerpt/creator/comment/attachment cells, the "+ New
+// know-how" entry) stay here as small column definitions. The list keeps its
+// classic feature set: the same search with the |, %, _ escaping discipline,
+// plain (non-sortable) headers and the fixed recency order - the sort
+// allowlist entry carries a fixed DESC fragment without the {dir} placeholder,
+// so a crafted ?sort=/&dir= request changes nothing, exactly like before.
+// The parity proof is tests/E2E/CrudAbstractionTest.php: it exercises this
+// page feature by feature, pins the alias equivalence of the two page names
+// and the no-refresh contract (this list has no realtime region). The navbar,
+// the back links and the save/delete redirects point at ?page=documents-v2,
+// while ?page=documents keeps rendering the same engine under its own name.
+if (in_array($page, ['documents', 'documents-v2'], true)) {
+    $listPage = $page === 'documents-v2' ? 'documents-v2' : 'documents';
     $conds=[]; $params=[];
     $q = trim((string)($_GET['q'] ?? ''));
     if ($q !== '') {
@@ -1885,23 +1901,32 @@ if ($page==='documents') {
         $conds[] = "(d.title LIKE ? ESCAPE '|' OR d.content LIKE ? ESCAPE '|')";
         $params[] = '%'.$term.'%'; $params[] = '%'.$term.'%';
     }
-    $whereSql = $conds ? 'WHERE '.implode(' AND ',$conds) : '';
-    $perPage = 20; $docPage = max(1,(int)($_GET['p'] ?? 1));
-    $cs = $pdo->prepare('SELECT COUNT(*) FROM documents d '.$whereSql); $cs->execute($params);
-    $totalDocs=(int)$cs->fetchColumn();
-    $totalPages = max(1,(int)ceil($totalDocs/$perPage));
-    $docPage = min($docPage,$totalPages);
-    $ds = $pdo->prepare('SELECT d.id,d.title,d.content,d.updated_at,u.display_name creator,u.last_seen_at creator_last_seen,(SELECT COUNT(*) FROM document_comments dc WHERE dc.document_id=d.id) comments,(SELECT COUNT(*) FROM document_attachments da WHERE da.document_id=d.id) attachments FROM documents d LEFT JOIN users u ON u.id=d.created_by '.$whereSql.' ORDER BY d.updated_at DESC, d.id DESC LIMIT '.$perPage.' OFFSET '.(($docPage-1)*$perPage));
-    $ds->execute($params); $documents=$ds->fetchAll();
-    $docQ = $q!=='' ? '&q='.urlencode($q) : '';
+    $list=tb_crud_list([
+        'pdo'=>$pdo,
+        'table'=>'documents d LEFT JOIN users u ON u.id=d.created_by',
+        'select'=>'d.id,d.title,d.content,d.updated_at,u.display_name creator,u.last_seen_at creator_last_seen,(SELECT COUNT(*) FROM document_comments dc WHERE dc.document_id=d.id) comments,(SELECT COUNT(*) FROM document_attachments da WHERE da.document_id=d.id) attachments',
+        'where'=>$conds,
+        'params'=>$params,
+        'sortColumns'=>['updated'=>'d.updated_at DESC'],
+        'defaultSort'=>'updated',
+        'defaultDir'=>'desc',
+        'orderBySuffix'=>'d.id DESC',
+    ]);
+    $documents=$list['rows'];$totalDocs=$list['total'];
+    $docsUrl=tb_crud_url_builder($listPage,['q']);
+    $documentColumns=[
+        ['header'=>'<th class="ps-3">Title</th>','cell'=>fn(array $d): string => '<td class="ps-3"><a class="fw-semibold text-decoration-none" href="?page=document&id='.$d['id'].'">'.h($d['title']).'</a><div class="small muted">'.h(tb_excerpt((string)$d['content'])).'</div></td>'],
+        ['label'=>'Updated','cell'=>fn(array $d): string => '<td class="small muted">'.h($d['updated_at']).'</td>'],
+        ['label'=>'Created by','cell'=>fn(array $d): string => '<td>'.tb_user_with_activity(['display_name'=>$d['creator'],'last_seen_at'=>$d['creator_last_seen']??null]).'</td>'],
+        ['label'=>'Comments','cell'=>fn(array $d): string => '<td>'.h((string)$d['comments']).'</td>'],
+        ['label'=>'Attachments','cell'=>fn(array $d): string => '<td>'.h((string)$d['attachments']).'</td>'],
+    ];
+    $emptyText = $q!=='' ? 'No know-hows match the search.' : 'No know-hows yet. Write the first one.';
     render_header('Know-hows',$config,$error); ?>
     <div class="d-flex justify-content-between align-items-center mb-3"><div><h1 class="h3 mb-0">Know-hows</h1><div class="muted"><?=$totalDocs?> document<?=$totalDocs===1?'':'s'?> · standard processes, rules and everything worth writing down</div></div><a class="btn btn-primary" href="?page=document_new">+ New know-how</a></div>
-    <form method="get" class="d-flex gap-2 mb-3"><input class="form-control" type="search" name="q" value="<?=h($q)?>" placeholder="Search title and content..." aria-label="Search know-hows"><button class="btn btn-outline-secondary">Search</button><?php if($q!==''): ?><a class="btn btn-link" href="?page=documents">Clear</a><?php endif; ?></form>
-    <div class="card"><div class="table-responsive"><table class="table table-hover align-middle mb-0"><thead><tr><th class="ps-3">Title</th><th>Updated</th><th>Created by</th><th>Comments</th><th>Attachments</th></tr></thead><tbody>
-    <?php foreach($documents as $d): ?><tr><td class="ps-3"><a class="fw-semibold text-decoration-none" href="?page=document&id=<?=$d['id']?>"><?=h($d['title'])?></a><div class="small muted"><?=h(tb_excerpt((string)$d['content']))?></div></td><td class="small muted"><?=h($d['updated_at'])?></td><td><?=tb_user_with_activity(['display_name'=>$d['creator'],'last_seen_at'=>$d['creator_last_seen']??null])?></td><td><?=$d['comments']?></td><td><?=$d['attachments']?></td></tr>
-    <?php endforeach; if(!$documents): ?><tr><td colspan="5" class="text-center muted py-4"><?=$q!==''?'No know-hows match the search.':'No know-hows yet. Write the first one.'?></td></tr><?php endif; ?>
-    </tbody></table></div></div>
-    <?php if($totalPages>1): ?><nav aria-label="Know-how list pages" class="mt-3"><ul class="pagination mb-0"><li class="page-item <?=$docPage<=1?'disabled':''?>"><a class="page-link" href="?page=documents&p=<?=max(1,$docPage-1)?><?=h($docQ)?>">&laquo;</a></li><?php for($i=max(1,$docPage-2);$i<=min($totalPages,$docPage+2);$i++): ?><li class="page-item <?=$i===$docPage?'active':''?>"><a class="page-link" href="?page=documents&p=<?=$i?><?=h($docQ)?>"><?=$i?></a></li><?php endfor; ?><li class="page-item <?=$docPage>=$totalPages?'disabled':''?>"><a class="page-link" href="?page=documents&p=<?=min($totalPages,$docPage+1)?><?=h($docQ)?>">&raquo;</a></li></ul></nav><?php endif; ?>
+    <form method="get" class="d-flex gap-2 mb-3"><input type="hidden" name="page" value="<?=$listPage?>"><input class="form-control" type="search" name="q" value="<?=h($q)?>" placeholder="Search title and content..." aria-label="Search know-hows"><button class="btn btn-outline-secondary">Search</button><?php if($q!==''): ?><a class="btn btn-link" href="<?=h($docsUrl())?>">Clear</a><?php endif; ?></form>
+    <div class="card"><?=tb_crud_table(['columns'=>$documentColumns,'rows'=>$documents,'emptyText'=>$emptyText,'emptyColspan'=>5])?></div>
+    <?=tb_crud_pagination(['ariaLabel'=>'Know-how list pages','page'=>$list['page'],'pages'=>$list['pages'],'url'=>$docsUrl])?>
     <?php render_footer(); exit;
 }
 
@@ -1912,7 +1937,7 @@ if ($page==='document') {
     $cs=$pdo->prepare('SELECT dc.*, u.display_name author, u.last_seen_at author_last_seen FROM document_comments dc LEFT JOIN users u ON u.id=dc.user_id WHERE dc.document_id=? ORDER BY dc.created_at, dc.id'); $cs->execute([$id]); $docComments=$cs->fetchAll();
     $as=$pdo->prepare('SELECT da.*, u.display_name uploader, u.last_seen_at uploader_last_seen FROM document_attachments da LEFT JOIN users u ON u.id=da.user_id WHERE da.document_id=? ORDER BY da.created_at, da.id'); $as->execute([$id]); $docAttachments=$as->fetchAll();
     render_header('Know-how',$config,$error); ?>
-    <div class="d-flex justify-content-between align-items-center mb-3"><div><h1 class="h3 mb-0"><?=h($doc['title'])?></h1><div class="muted">Created by <?=tb_user_with_activity(['display_name'=>$doc['creator'],'last_seen_at'=>$doc['creator_last_seen']??null])?> · <?=h($doc['created_at'])?> · Updated <?=h($doc['updated_at'])?></div></div><div class="d-flex gap-2"><a class="btn btn-outline-secondary" href="?page=documents">All know-hows</a><?php if(document_can_edit($doc)): ?><a class="btn btn-outline-primary" href="?page=document_edit&id=<?=$doc['id']?>">Edit</a><form method="post" class="d-inline" onsubmit="return confirm('Delete this know-how permanently? Its comments and attachments go with it.')"><?=csrf_field()?><input type="hidden" name="action" value="doc_delete"><input type="hidden" name="id" value="<?=$doc['id']?>"><button class="btn btn-outline-danger">Delete</button></form><?php endif; ?></div></div>
+    <div class="d-flex justify-content-between align-items-center mb-3"><div><h1 class="h3 mb-0"><?=h($doc['title'])?></h1><div class="muted">Created by <?=tb_user_with_activity(['display_name'=>$doc['creator'],'last_seen_at'=>$doc['creator_last_seen']??null])?> · <?=h($doc['created_at'])?> · Updated <?=h($doc['updated_at'])?></div></div><div class="d-flex gap-2"><a class="btn btn-outline-secondary" href="?page=documents-v2">All know-hows</a><?php if(document_can_edit($doc)): ?><a class="btn btn-outline-primary" href="?page=document_edit&id=<?=$doc['id']?>">Edit</a><form method="post" class="d-inline" onsubmit="return confirm('Delete this know-how permanently? Its comments and attachments go with it.')"><?=csrf_field()?><input type="hidden" name="action" value="doc_delete"><input type="hidden" name="id" value="<?=$doc['id']?>"><button class="btn btn-outline-danger">Delete</button></form><?php endif; ?></div></div>
     <div class="card p-4 mb-4"><div class="prewrap"><?php $docContent=(string)($doc['content'] ?? ''); if(trim($docContent)===''): ?><span class="muted">No content - see the attachments below.</span><?php else: ?><?=h($docContent)?><?php endif; ?></div></div>
     <div class="card p-4 mb-4"><h2 class="h5">Attachments</h2><?php foreach($docAttachments as $a): ?><div class="d-flex justify-content-between border-bottom py-2"><a href="?page=doc_download&id=<?=$a['id']?>"><?=h($a['original_name'])?></a><span class="small muted"><?=tb_user_with_activity(['display_name'=>$a['uploader'],'last_seen_at'=>$a['uploader_last_seen']??null])?> · <?=number_format($a['file_size']/1024,1)?> KB · <?=h($a['created_at'])?></span><?php if(is_admin()||(int)$a['user_id']===(int)user()['id']): ?><form method="post" class="d-inline" onsubmit="return confirm('Delete this attachment permanently?')"><?=csrf_field()?><input type="hidden" name="action" value="doc_delete_attachment"><input type="hidden" name="attachment_id" value="<?=$a['id']?>"><input type="hidden" name="document_id" value="<?=$doc['id']?>"><button class="btn btn-sm btn-link text-danger p-0" title="Delete this attachment">delete</button></form><?php endif; ?></div><?php endforeach; if(!$docAttachments): ?><div class="small muted">No attachments yet.</div><?php endif; ?><form method="post" enctype="multipart/form-data" class="mt-3"><?=csrf_field()?><input type="hidden" name="action" value="doc_upload"><input type="hidden" name="document_id" value="<?=$doc['id']?>"><div class="input-group"><input class="form-control" type="file" name="file" required><button class="btn btn-outline-primary">Upload</button></div><div class="form-text">Max <?=round($config['max_upload_bytes']/1024/1024)?> MB. Allowed: common images, PDF, TXT, ZIP, DOCX and XLSX.</div></form></div>
     <div class="card p-4 mb-4" id="comments"><h2 class="h5">Comments</h2><?php foreach($docComments as $c): ?><div class="border-bottom py-3"><strong><?=tb_user_with_activity(['display_name'=>$c['author'],'last_seen_at'=>$c['author_last_seen']??null])?></strong> <span class="small muted"><?=h($c['created_at'])?></span><div class="prewrap mt-1"><?=h($c['body'])?></div></div><?php endforeach; if(!$docComments): ?><div class="small muted">No comments yet.</div><?php endif; ?><form method="post" class="mt-3"><?=csrf_field()?><input type="hidden" name="action" value="doc_comment"><input type="hidden" name="document_id" value="<?=$doc['id']?>"><textarea class="form-control mb-2" name="body" rows="3" placeholder="Write a comment..." required></textarea><button class="btn btn-primary">Add comment</button></form></div>

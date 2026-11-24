@@ -104,8 +104,13 @@ function tb_update_archive_files(string $archiveData): array {
             if ($root === '') $root = $parts[0];
             if ($parts[0] !== $root) throw new RuntimeException('The archive has an unexpected directory layout.');
             $relative = implode('/', array_slice($parts, 1));
-            if ($relative === '' || !in_array($relative, TASK_BOARD_UPDATE_FILES, true)) continue;
-            if (str_ends_with($name, '/')) continue;
+            if ($relative === '' || str_ends_with($name, '/')) continue;
+            // #103: every regular archive file is extracted; WHAT actually
+            // gets written is decided later, by the allowlist of the
+            // archive's own updater.php, so a file that arrived after the
+            // running updater shipped (src/crud.php in the 2026-11-24
+            // outage) can no longer be silently dropped at this stage.
+            if (count($files) >= 2000) throw new RuntimeException('The update archive contains too many files.');
             $opsys = 0; $attributes = 0;
             if ($zip->getExternalAttributesIndex($i, $opsys, $attributes) && $opsys === ZipArchive::OPSYS_UNIX) {
                 $mode = ($attributes >> 16) & 0170000;
@@ -127,15 +132,118 @@ function tb_update_archive_files(string $archiveData): array {
     }
 }
 
-function tb_update_install(array $files): string {
+/**
+ * Reads the TASK_BOARD_UPDATE_FILES allowlist out of an updater.php SOURCE
+ * (#103, phase 2). The allowlist that decides what an update writes must be
+ * the one shipped by the update itself - the allowlist of the updater that
+ * is already running on this instance is stale by definition, and that
+ * staleness caused the 2026-11-24 outage (its list no longer knew
+ * src/crud.php, so installing develop silently skipped the file and the
+ * board came up with a broken src/ directory).
+ *
+ * The definition is read straight from the file text with the tokenizer - no
+ * include, no eval, no side effects: the archive updater is never executed
+ * during the install decision. Anything unexpected inside the array literal
+ * (variables, expressions, double-quoted strings) refuses the whole install,
+ * as does a missing definition, an unsafe path or the protected config.php.
+ *
+ * @return string[] the allowed relative paths, in the order the archive lists them
+ */
+function tb_update_allowlist_from_source(string $updaterSource): array {
+    $refuse = fn(string $why): RuntimeException => new RuntimeException('Could not read the file list (TASK_BOARD_UPDATE_FILES) from the updater.php in the update - ' . $why . ' Nothing was written.');
+    $tokens = token_get_all($updaterSource);
+    $total = count($tokens);
+    // Locate `const TASK_BOARD_UPDATE_FILES` (the next non-trivial token
+    // after a const keyword must be the name).
+    $cursor = null;
+    for ($i = 0; $i < $total; $i++) {
+        $token = $tokens[$i];
+        if (!is_array($token) || $token[0] !== T_CONST) continue;
+        for ($j = $i + 1; $j < $total; $j++) {
+            $next = $tokens[$j];
+            if (is_array($next) && in_array($next[0], [T_WHITESPACE, T_COMMENT, T_DOC_COMMENT], true)) continue;
+            if (is_array($next) && $next[0] === T_STRING && strcasecmp($next[1], 'TASK_BOARD_UPDATE_FILES') === 0) $cursor = $j;
+            break;
+        }
+        if ($cursor !== null) break;
+    }
+    if ($cursor === null) throw $refuse('the updater does not declare it.');
+    // The value of the const is the first '[' after the name; between them
+    // only '=' and trivia can appear, so nothing can be missed here.
+    while ($cursor < $total && $tokens[$cursor] !== '[') $cursor++;
+    if ($cursor >= $total) throw $refuse('no TASK_BOARD_UPDATE_FILES definition found.');
+    $cursor++;
+    $list = [];
+    $depth = 1;
+    for (; $cursor < $total && $depth > 0; $cursor++) {
+        $token = $tokens[$cursor];
+        if (is_array($token)) {
+            if (in_array($token[0], [T_WHITESPACE, T_COMMENT, T_DOC_COMMENT], true)) continue;
+            if ($token[0] !== T_CONSTANT_ENCAPSED_STRING) throw $refuse('the file list contains something that is not a plain string.');
+            $literal = $token[1];
+            if ($literal[0] !== "'") throw $refuse('the file list entries must be single-quoted strings.');
+            $value = str_replace(["\\'", '\\\\'], ["'", '\\'], substr($literal, 1, -1));
+            if ($value === '' || str_contains($value, '\\') || str_starts_with($value, '/') || str_ends_with($value, '/') || preg_match('#(^|/)\.\.(/|$)#', $value) || str_contains($value, "\0")) {
+                throw $refuse('the file list contains an unsafe path (' . $value . ').');
+            }
+            if (in_array($value, TASK_BOARD_PACK_FORBIDDEN_PATHS, true)) {
+                throw $refuse('the file list targets a protected file (' . $value . ').');
+            }
+            $list[] = $value;
+            continue;
+        }
+        if ($token === '[') { $depth++; continue; }
+        if ($token === ']') { $depth--; continue; }
+        if ($token === ',') { continue; }
+        throw $refuse('the file list contains something that is not a plain string.');
+    }
+    if ($depth !== 0) throw $refuse('the file list is not closed.');
+    if (count($list) > 200) throw $refuse('the file list is unreasonably long.');
+    if (count($list) !== count(array_unique($list))) throw $refuse('the file list contains duplicates.');
+    if (!in_array('index.php', $list, true) || !in_array('updater.php', $list, true)) {
+        throw $refuse('it does not allow installing index.php and updater.php.');
+    }
+    return $list;
+}
+
+/**
+ * Installs an extracted update in two phases (#103):
+ *
+ *   Phase 1 - the archive's updater.php is written first, so the file list
+ *   that governs the rest of the install is the one the update ships.
+ *   Phase 2 - every remaining archive file that the NEW allowlist covers is
+ *   written with the same tempnam+rename mechanics as before.
+ *
+ * Before anything is written the update fails fast when the new allowlist
+ * names a file that is neither contained in the archive nor already present
+ * on this installation - installing it would produce a tree that cannot
+ * boot. The existing mechanics are unchanged: full validation, a private
+ * backup of every replaced file and a reverse-order rollback when any write
+ * fails (including the phase-1 updater.php replacement).
+ *
+ * @param array<string,string> $files relative path => content (from tb_update_archive_files)
+ * @param string|null $appDir application root; defaults to this deployment (__DIR__)
+ */
+function tb_update_install(array $files, ?string $appDir = null): string {
+    $root = $appDir ?? __DIR__;
+    if (!isset($files['updater.php']) || !is_string($files['updater.php'])) throw new RuntimeException('The update archive is missing updater.php.');
+    // Phase-2 allowlist: read from the archive's own updater.php source, not
+    // from the updater that is already running on this instance (#103).
+    $allowlist = tb_update_allowlist_from_source($files['updater.php']);
+    $installable = [];
+    foreach ($allowlist as $relative) {
+        if (!isset($files[$relative]) && !is_file($root . '/' . $relative)) {
+            throw new RuntimeException('The update does not contain ' . $relative . ' and this installation does not have it either. Refusing to install: the result could not boot (nothing was written).');
+        }
+        if (isset($files[$relative])) $installable[$relative] = $files[$relative];
+    }
     $backupDir = sys_get_temp_dir() . '/task-board-backup-' . bin2hex(random_bytes(12));
     if (!mkdir($backupDir, 0700)) throw new RuntimeException('Could not create a private update backup.');
     $backedUp = [];
     $written = [];
     try {
-        foreach ($files as $relative => $content) {
-            if (!in_array($relative, TASK_BOARD_UPDATE_FILES, true)) throw new RuntimeException('An unexpected update path was rejected.');
-            $target = __DIR__ . '/' . $relative;
+        foreach ($installable as $relative => $content) {
+            $target = $root . '/' . $relative;
             $parent = dirname($target);
             // Post-split versions may introduce sub-directories (e.g. src/)
             // that do not exist on installations made before the split, so an
@@ -153,20 +261,28 @@ function tb_update_install(array $files): string {
                 $backedUp[$relative] = null;
             }
         }
-        foreach ($files as $relative => $content) {
-            $target = __DIR__ . '/' . $relative;
+        $write = function (string $relative, string $content) use ($root, &$written): void {
+            $target = $root . '/' . $relative;
             $tmp = tempnam(dirname($target), '.tb-update-');
             if ($tmp === false || file_put_contents($tmp, $content, LOCK_EX) !== strlen($content)) throw new RuntimeException('Could not write ' . $relative . '.');
             $mode = is_file($target) ? (fileperms($target) & 0777) : 0644;
             @chmod($tmp, $mode);
-            if (!rename($tmp, $target)) { @unlink($tmp); throw new RuntimeException('Could not replace ' . $relative . '.'); }
+            if (!@rename($tmp, $target)) { @unlink($tmp); throw new RuntimeException('Could not replace ' . $relative . '.'); }
             $written[] = $relative;
+        };
+        // Phase 1 (#103): the archive's updater.php lands first, so from here
+        // on the file list that governs the install is the update's own.
+        $write('updater.php', $installable['updater.php']);
+        // Phase 2 (#103): everything else the NEW allowlist covers.
+        foreach ($installable as $relative => $content) {
+            if ($relative === 'updater.php') continue;
+            $write($relative, $content);
         }
         return $backupDir;
     } catch (Throwable $e) {
         foreach (array_reverse($written) as $relative) {
             $backup = $backedUp[$relative] ?? null;
-            $target = __DIR__ . '/' . $relative;
+            $target = $root . '/' . $relative;
             if ($backup && is_file($backup)) @copy($backup, $target);
             elseif (is_file($target)) @unlink($target);
         }

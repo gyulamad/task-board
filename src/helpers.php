@@ -53,10 +53,10 @@ function tb_message_bubble(array $m, bool $mine, array $attachments = []): strin
     }
     if ($mine) {
         return '<div class="d-flex justify-content-end mb-2"><div class="bg-primary text-white rounded-3 px-3 py-2 tb-chat-bubble" style="max-width:75%">' . $inner
-            . '<div class="small mt-1" style="opacity:.75">' . h(tb_dt($m['created_at'])) . ' · ' . ((int)$m['is_read'] ? 'Seen' : 'Sent') . '</div></div></div>';
+            . '<div class="small mt-1" style="opacity:.75">' . h(tb_ago($m['created_at'])) . ' · ' . ((int)$m['is_read'] ? 'Seen' : 'Sent') . '</div></div></div>';
     }
     return '<div class="d-flex justify-content-start mb-2"><div class="border rounded-3 px-3 py-2 tb-chat-bubble" style="max-width:75%">' . $inner
-        . '<div class="small muted mt-1">' . h(tb_dt($m['created_at'])) . '</div></div></div>';
+        . '<div class="small muted mt-1">' . h(tb_ago($m['created_at'])) . '</div></div></div>';
 }
 
 /** The attachments of a set of chat messages (#94), grouped by message id:
@@ -922,6 +922,47 @@ function tb_default_now_ts(): int {
 }
 
 /**
+ * The date/time display formats a viewer can pick on the Settings page
+ * (#110). An allowlist, not free-form date() input: every entry is a shape
+ * the board can render safely, the labels double as validation on every
+ * read, and a stale or crafted preference falls back to the default instead
+ * of breaking a page. The first entry is the default and is byte-identical
+ * to the classic board's render, so a user who never opens Settings sees
+ * exactly what they saw before #110.
+ */
+const TB_DATETIME_FORMAT_DEFAULT = 'Y-m-d H:i:s';
+
+function tb_datetime_formats(): array {
+    return [
+        'Y-m-d H:i:s' => '2026-11-24 17:05:56',
+        'Y-m-d H:i' => '2026-11-24 17:05',
+        'd/m/Y H:i' => '24/11/2026 17:05',
+        'm/d/Y h:i A' => '11/24/2026 05:05 PM',
+        'd.m.Y H:i' => '24.11.2026 17:05',
+        'D, M j, Y H:i' => 'Tue, Nov 24, 2026 17:05',
+    ];
+}
+
+/**
+ * The date/time format the signed-in viewer sees datetimes in (#110). Stored
+ * with the #66 user_preferences discipline (key 'datetime_format'); the
+ * default is the classic board shape. The value is validated against the
+ * allowlist on every read, so a crafted or stale preference can never break
+ * the render layer - the same discipline the #108 timezone preference uses.
+ * Pure when the caller pins $format (tests, single-purpose renders).
+ */
+function tb_user_datetime_format(?PDO $pdo): string {
+    $fmt = null;
+    if ($pdo !== null && function_exists('user') && user() !== null) {
+        $fmt = tb_user_pref_get($pdo, (int)user()['id'], 'datetime_format', TB_DATETIME_FORMAT_DEFAULT);
+    }
+    if (!is_string($fmt) || !array_key_exists($fmt, tb_datetime_formats())) {
+        return TB_DATETIME_FORMAT_DEFAULT;
+    }
+    return $fmt;
+}
+
+/**
  * The timezone the signed-in viewer sees datetimes in (#108). Stored with the
  * #66 user_preferences discipline as an IANA name (key 'timezone'); the
  * default is UTC - the board's own storage timezone - so a fresh user sees
@@ -946,13 +987,61 @@ function tb_user_timezone(PDO $pdo): DateTimeZone {
  * layer and becomes a local datetime exactly where it is displayed. NULL/0
  * (a stamp that was never set - last_seen, archived_at) renders as the
  * classic empty-ish 'never' marker the string era used for NULL.
+ *
+ * Since #110 the shape comes from the viewer's Settings preference (the
+ * tb_datetime_formats() allowlist) - pass $format to pin one (tests,
+ * single-purpose renders); the default keeps the classic board's exact
+ * shape, so nobody's render changes until they pick a format themselves.
  */
-function tb_dt(int|string|null $ts, ?PDO $pdo = null, ?DateTimeZone $tz = null): string {
+function tb_dt(int|string|null $ts, ?PDO $pdo = null, ?DateTimeZone $tz = null, ?string $format = null): string {
     if ($ts === null || (int)$ts <= 0) return 'never';
-    $zone = $tz ?? tb_user_timezone($pdo ?? $GLOBALS['TB_PDO'] ?? null);
+    $globals = $GLOBALS['TB_PDO'] ?? null;
+    $zone = $tz ?? tb_user_timezone($pdo ?? $globals);
+    $fmt = $format ?? tb_user_datetime_format($pdo ?? $globals);
     $d = new DateTime('@' . (int)$ts);
     $d->setTimezone($zone);
-    return $d->format('Y-m-d H:i:s');
+    return $d->format($fmt);
+}
+
+/**
+ * The 'how long ago' suffix of a stored epoch second (#110): '' for a stamp
+ * that was never set (the render stays the bare 'never' marker) and for a
+ * future stamp (a next-run moment is not 'ago' anything - the absolute time
+ * already says when it happens), 'just now' inside the first minute and the
+ * bucketed '(15 minutes ago)' / '(2 days ago)' form afterwards. Pure: pass
+ * $now to pin the clock (tests), else the shared default clock.
+ */
+function tb_ago_suffix(int|string|null $ts, ?int $now = null): string {
+    if ($ts === null || (int)$ts <= 0) return '';
+    $s = ($now ?? tb_default_now_ts()) - (int)$ts;
+    if ($s < 0) return '';
+    if ($s < 60) return 'just now';
+    $unit = static function (int $n, string $word): string {
+        return $n . ' ' . ($word . ($n === 1 ? '' : 's')) . ' ago';
+    };
+    $minutes = intdiv($s, 60);
+    if ($minutes < 60) return $unit($minutes, 'minute');
+    $hours = intdiv($s, 3600);
+    if ($hours < 24) return $unit($hours, 'hour');
+    $days = intdiv($s, 86400);
+    if ($days < 7) return $unit($days, 'day');
+    if ($days < 30) return $unit(intdiv($days, 7), 'week');
+    if ($days < 365) return $unit(intdiv($days, 30), 'month');
+    return $unit(intdiv($days, 365), 'year');
+}
+
+/**
+ * The full 'when was this' render of a stored epoch second (#110): the
+ * absolute datetime in the viewer's timezone and format (tb_dt()) with the
+ * relative 'how long ago' suffix appended - 2026-11-22 06:46:16 (15 minutes
+ * ago). Stamps that never were set render the bare 'never' marker and future
+ * stamps render the bare absolute time, so a caller can opt in everywhere
+ * without special-casing. Pure: pin $now (clock), $tz, $format in tests.
+ */
+function tb_ago(int|string|null $ts, ?PDO $pdo = null, ?DateTimeZone $tz = null, ?int $now = null, ?string $format = null): string {
+    $dt = tb_dt($ts, $pdo, $tz, $format);
+    $suffix = tb_ago_suffix($ts, $now);
+    return $suffix === '' ? $dt : $dt . ' (' . $suffix . ')';
 }
 
 /**

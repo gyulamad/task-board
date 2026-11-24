@@ -484,12 +484,30 @@ database never formats a date.
   stored timestamp into the **signed-in viewer's timezone** exactly where the
   value is displayed. New lists call it instead of echoing a datetime column;
   NULL/0 stamps render as `never`.
-- **Preference**: the viewer's timezone is an IANA-name select on the Settings
-  page (`?page=settings`), stored with the #66 `user_preferences` discipline
-  (key `timezone`). The default is UTC — the storage zone — so a fresh user
-  sees the classic board until they pick; the value is re-validated against
-  PHP's timezone list on every read, so a stale or crafted preference falls
-  back to UTC instead of breaking a page.
+- **Relative time (#110)**: the companion helper `tb_ago($ts)` renders the
+  same absolute datetime with a "how long ago" note appended —
+  `2026-11-22 06:46:16 (15 minutes ago)` — and every list and detail page
+  opts in (task/project/document cards and comments, history and
+  notification rows, list table cells, chat bubbles). Buckets: `just now`
+  under a minute, then minutes / hours / days / weeks / months / years with
+  proper plurals; a stamp that was never set stays the bare `never` marker
+  and a future stamp (the scheduler's next run) stays the bare absolute
+  time, since neither is "ago" anything. `tb_ago_suffix($ts, $now)` builds
+  just the note and is the pure, clock-pinnable half.
+- **Preference (timezone)**: the viewer's timezone is an IANA-name select on
+  the Settings page (`?page=settings`), stored with the #66
+  `user_preferences` discipline (key `timezone`). The default is UTC — the
+  storage zone — so a fresh user sees the classic board until they pick; the
+  value is re-validated against PHP's timezone list on every read, so a
+  stale or crafted preference falls back to UTC instead of breaking a page.
+- **Preference (date/time format, #110)**: next to the timezone select, a
+  second Settings select (key `datetime_format`) picks the shape every
+  datetime renders in from the `tb_datetime_formats()` allowlist — free-form
+  `date()` input is deliberately not offered, so a crafted value can never
+  reach the render. The default `Y-m-d H:i:s` is byte-identical to the
+  classic board, so nobody's render changes until they pick. Both helpers
+  accept explicit `$format` / `$tz` / `$now` arguments so tests and
+  single-purpose renders can pin their output.
 - **Upgrading an existing installation**: the schema self-heal converts the
   legacy string columns in place on the first request — values through
   `UNIX_TIMESTAMP()`, which reads each string in the database server's own
@@ -498,8 +516,8 @@ database never formats a date.
   `config.example.php`) re-interprets the strings instead when a host's
   database timezone changed after old rows were written. SQLite boards
   convert via `strftime('%s')` (their strings were always UTC). The relative
-  "15 minutes ago" display and a per-user date/time format preference are the
-  follow-up task #110.
+  "15 minutes ago" display and the per-user date/time format preference
+  shipped with task #110.
 
 ## Requirements
 - PHP 8.2+ recommended

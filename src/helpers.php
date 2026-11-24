@@ -53,10 +53,10 @@ function tb_message_bubble(array $m, bool $mine, array $attachments = []): strin
     }
     if ($mine) {
         return '<div class="d-flex justify-content-end mb-2"><div class="bg-primary text-white rounded-3 px-3 py-2 tb-chat-bubble" style="max-width:75%">' . $inner
-            . '<div class="small mt-1" style="opacity:.75">' . h((string)$m['created_at']) . ' · ' . ((int)$m['is_read'] ? 'Seen' : 'Sent') . '</div></div></div>';
+            . '<div class="small mt-1" style="opacity:.75">' . h(tb_dt($m['created_at'])) . ' · ' . ((int)$m['is_read'] ? 'Seen' : 'Sent') . '</div></div></div>';
     }
     return '<div class="d-flex justify-content-start mb-2"><div class="border rounded-3 px-3 py-2 tb-chat-bubble" style="max-width:75%">' . $inner
-        . '<div class="small muted mt-1">' . h((string)$m['created_at']) . '</div></div></div>';
+        . '<div class="small muted mt-1">' . h(tb_dt($m['created_at'])) . '</div></div></div>';
 }
 
 /** The attachments of a set of chat messages (#94), grouped by message id:
@@ -75,8 +75,8 @@ function tb_message_attachments(PDO $pdo, array $messageIds): array {
     return $grouped;
 }
 function history(PDO $pdo, int $taskId, string $event, string $details = ''): void {
-    $s = $pdo->prepare('INSERT INTO task_history(task_id,user_id,event,details) VALUES(?,?,?,?)');
-    $s->execute([$taskId, user()['id'], $event, $details]);
+    $s = $pdo->prepare('INSERT INTO task_history(task_id,user_id,event,details,created_at) VALUES(?,?,?,?,?)');
+    $s->execute([$taskId, user()['id'], $event, $details, time()]);
     // Notifications (#58): every event-level history row lands in the stream
     // of the task's assignees, minus whoever made the change. The per-field
     // audit rows written by history_change() deliberately stay silent, so one
@@ -89,8 +89,8 @@ function history(PDO $pdo, int $taskId, string $event, string $details = ''): vo
  * project names, task titles, assignee display names). The change details
  * page (?page=task_history&id=N) renders exactly that. */
 function history_change(PDO $pdo, int $taskId, string $field, string $label, string $oldValue, string $newValue): void {
-    $s = $pdo->prepare('INSERT INTO task_history(task_id,user_id,event,details,field,old_value,new_value) VALUES(?,?,?,?,?,?,?)');
-    $s->execute([$taskId, user()['id'], 'Field changed', $label . ' changed', $field, $oldValue, $newValue]);
+    $s = $pdo->prepare('INSERT INTO task_history(task_id,user_id,event,details,field,old_value,new_value,created_at) VALUES(?,?,?,?,?,?,?,?)');
+    $s->execute([$taskId, user()['id'], 'Field changed', $label . ' changed', $field, $oldValue, $newValue, time()]);
 }
 function task_exists(PDO $pdo, int $id): bool {
     $s = $pdo->prepare('SELECT 1 FROM tasks WHERE id=?'); $s->execute([$id]); return (bool)$s->fetchColumn();
@@ -213,7 +213,7 @@ function task_is_archived(array $task): bool {
  *
  * @return array{done: int, skipped: int}
  */
-function tb_bulk_apply(PDO $pdo, array $ids, string $checkSql, string $actionSql): array {
+function tb_bulk_apply(PDO $pdo, array $ids, string $checkSql, string $actionSql, array $actionParams = []): array {
     $check = $pdo->prepare($checkSql);
     $act = $pdo->prepare($actionSql);
     $done = 0;
@@ -222,7 +222,9 @@ function tb_bulk_apply(PDO $pdo, array $ids, string $checkSql, string $actionSql
         $check->execute([(int)$id]);
         $creator = (int)$check->fetchColumn();
         if (is_admin() || $creator === (int)user()['id']) {
-            $act->execute([(int)$id]);
+            // The extra params ride ahead of the id (e.g. the epoch stamps the
+            // bulk archive writes, #108).
+            $act->execute([...$actionParams, (int)$id]);
             $done++;
         } else {
             $skipped++;
@@ -710,17 +712,16 @@ const TB_LAST_SEEN_MIN_INTERVAL_MINUTES = 2;
 function tb_touch_last_seen(PDO $pdo): void {
     $u = user();
     if ($u === null) return;   // anonymous requests are not user activity
-    $isMysql = $pdo->getAttribute(PDO::ATTR_DRIVER_NAME) === 'mysql';
-    $sql = $isMysql
-        ? 'UPDATE users SET last_seen_at = CURRENT_TIMESTAMP WHERE id = ? AND (last_seen_at IS NULL OR last_seen_at < NOW() - INTERVAL ' . TB_LAST_SEEN_MIN_INTERVAL_MINUTES . ' MINUTE)'
-        : "UPDATE users SET last_seen_at = CURRENT_TIMESTAMP WHERE id = ? AND (last_seen_at IS NULL OR last_seen_at <= datetime('now', '-" . TB_LAST_SEEN_MIN_INTERVAL_MINUTES . " minutes'))";
-    $st = $pdo->prepare($sql);
-    $st->execute([$u['id']]);
+    // The stamp is an epoch second (#108): the throttling comparison is plain
+    // integer arithmetic on the same clock every other stamp uses, so no
+    // dialect branch and no database-clock indirection is needed anymore.
+    $st = $pdo->prepare('UPDATE users SET last_seen_at = ? WHERE id = ? AND (last_seen_at IS NULL OR last_seen_at < ?)');
+    $st->execute([time(), $u['id'], time() - TB_LAST_SEEN_MIN_INTERVAL_MINUTES * 60]);
     // Keep the session copy in step with the column: the navbar renders the
     // signed-in user's activity dot from the session, so whenever the stored
     // stamp is actually refreshed, the session learns the new value too.
     if ($st->rowCount() > 0 && isset($_SESSION['user']) && is_array($_SESSION['user'])) {
-        $_SESSION['user']['last_seen_at'] = $pdo->query('SELECT CURRENT_TIMESTAMP')->fetchColumn();
+        $_SESSION['user']['last_seen_at'] = time();
     }
 }
 
@@ -731,10 +732,10 @@ function tb_touch_last_seen(PDO $pdo): void {
  * the same clock the stamp was written with; tests pass a fixed one. NULL (a
  * user not seen since the feature landed) reads 'never'.
  */
-function tb_last_seen_label(?string $lastSeenAt, ?int $now = null): string {
-    if ($lastSeenAt === null || $lastSeenAt === '') return 'never';
-    $ts = strtotime($lastSeenAt);
-    if ($ts === false) return 'unknown';
+function tb_last_seen_label(int|string|null $lastSeenAt, ?int $now = null): string {
+    if ($lastSeenAt === null || $lastSeenAt === '' || (string)$lastSeenAt === '0') return 'never';
+    $ts = (int)$lastSeenAt;
+    if ($ts <= 0) return 'unknown';
     $s = ($now ?? tb_default_now_ts()) - $ts;
     if ($s < 0) $s = 0;   // a clock hiccup must not read negative
     if ($s < 60) return 'just now';
@@ -908,18 +909,50 @@ function tb_activity_levels_current(?array $levels = null): array {
 }
 
 /**
- * The clock the activity ages are computed against (#14): the database's own
- * wall clock, captured once per request in index.php — every last_seen_at
- * stamp is written with CURRENT_TIMESTAMP on that clock, so comparing against
- * PHP's time() instead makes a PHP/database timezone mismatch age every user
- * by the offset (admin's "the dot is always red" report on #30: labels said
- * '1 minute ago' while the same stamp read as hours old). Tests and other
- * callers that need a pinned clock pass $now explicitly; anything that does
- * not gets the DB clock when the page captured one, else PHP's clock.
+ * The clock the activity ages are computed against (#14). Since #108 every
+ * stamp is an epoch second written with PHP's time(), so there is exactly
+ * one clock on the board - time() is timezone-independent and can never
+ * disagree with the database the way the old string datetimes could (the
+ * '1 minute ago' vs 'hours old' mismatch of #30 is structurally gone).
+ * Tests and other callers that need a pinned clock keep passing $now
+ * explicitly; this stays the shared default so that discipline survives.
  */
 function tb_default_now_ts(): int {
-    $db = $GLOBALS['TB_DB_NOW_TS'] ?? null;
-    return is_int($db) ? $db : time();
+    return time();
+}
+
+/**
+ * The timezone the signed-in viewer sees datetimes in (#108). Stored with the
+ * #66 user_preferences discipline as an IANA name (key 'timezone'); the
+ * default is UTC - the board's own storage timezone - so a fresh user sees
+ * exactly what the classic board rendered until they pick their zone. The
+ * value is validated against PHP's timezone list on every read, so a crafted
+ * or stale preference can never break the render layer.
+ */
+function tb_user_timezone(PDO $pdo): DateTimeZone {
+    $tz = null;
+    if (function_exists('user') && user() !== null) {
+        $tz = tb_user_pref_get($pdo, (int)user()['id'], 'timezone', 'UTC');
+    }
+    if (!is_string($tz) || $tz === '' || !in_array($tz, DateTimeZone::listIdentifiers(), true)) {
+        $tz = 'UTC';
+    }
+    return new DateTimeZone($tz);
+}
+
+/**
+ * Formats one stored epoch second (#108) for the signed-in viewer: the
+ * database never formats a date anymore - the integer travels to the render
+ * layer and becomes a local datetime exactly where it is displayed. NULL/0
+ * (a stamp that was never set - last_seen, archived_at) renders as the
+ * classic empty-ish 'never' marker the string era used for NULL.
+ */
+function tb_dt(int|string|null $ts, ?PDO $pdo = null, ?DateTimeZone $tz = null): string {
+    if ($ts === null || (int)$ts <= 0) return 'never';
+    $zone = $tz ?? tb_user_timezone($pdo ?? $GLOBALS['TB_PDO'] ?? null);
+    $d = new DateTime('@' . (int)$ts);
+    $d->setTimezone($zone);
+    return $d->format('Y-m-d H:i:s');
 }
 
 /**
@@ -929,11 +962,11 @@ function tb_default_now_ts(): int {
  * missing or unparsable stamp lands in the last period - the "long gone"
  * end of the scale, exactly where #30 put it.
  */
-function tb_activity_bucket(?string $lastSeenAt, ?int $now = null, ?array $levels = null): int {
+function tb_activity_bucket(int|string|null $lastSeenAt, ?int $now = null, ?array $levels = null): int {
     $levels = tb_activity_levels_current($levels);
-    if ($lastSeenAt === null || $lastSeenAt === '') return count($levels) - 1;
-    $ts = strtotime($lastSeenAt);
-    if ($ts === false) return count($levels) - 1;
+    if ($lastSeenAt === null || $lastSeenAt === '' || (string)$lastSeenAt === '0') return count($levels) - 1;
+    $ts = (int)$lastSeenAt;
+    if ($ts <= 0) return count($levels) - 1;
     // Second granularity (#14): the bucket changes at exactly the boundary
     // seconds, and minute-truncation would make 59:59 and 60:01 the same
     // bucket as the boundaries themselves, which contradicts the thresholds.
@@ -954,7 +987,7 @@ function tb_activity_bucket(?string $lastSeenAt, ?int $now = null, ?array $level
  * is exactly the pre-#34 green/yellow/red (#30). Pure: pass $now to pin the
  * clock; pass $levels to pin the configuration.
  */
-function tb_activity_level(?string $lastSeenAt, ?int $now = null, ?array $levels = null): string {
+function tb_activity_level(int|string|null $lastSeenAt, ?int $now = null, ?array $levels = null): string {
     $levels = tb_activity_levels_current($levels);
     $bucket = tb_activity_bucket($lastSeenAt, $now, $levels);
     $color = is_array($levels[$bucket] ?? null) ? ($levels[$bucket]['color'] ?? null) : null;
@@ -1016,7 +1049,7 @@ function tb_activity_dot_for_bucket(int $bucket, ?array $levels = null): string 
  * request's configured periods (see tb_activity_levels_current()); with the
  * built-in ones in effect the markup is byte-identical to the #30 output.
  */
-function tb_activity_dot(?string $lastSeenAt, ?int $now = null, ?array $levels = null): string {
+function tb_activity_dot(int|string|null $lastSeenAt, ?int $now = null, ?array $levels = null): string {
     return tb_activity_dot_for_bucket(tb_activity_bucket($lastSeenAt, $now, $levels), $levels);
 }
 
@@ -1190,7 +1223,75 @@ function tb_user_with_activity(?array $user, ?int $now = null): string {
  * unconditionally). With this in place the first request recreates the
  * missing tables and column instead.
  */
+/**
+ * The datetime columns that #108 turned into epoch seconds: table => column
+ * => whether NULL is legal (a stamp that was never set). Fresh installs get
+ * BIGINT columns from schema.sql; existing boards are converted in place by
+ * tb_migrate_schema() below.
+ */
+function tb_epoch_columns(): array {
+    return [
+        'users' => ['created_at' => false, 'last_seen_at' => true],
+        'projects' => ['created_at' => false, 'updated_at' => false],
+        'tasks' => ['created_at' => false, 'updated_at' => false, 'archived_at' => true],
+        'comments' => ['created_at' => false],
+        'attachments' => ['created_at' => false],
+        'task_history' => ['created_at' => false],
+        'templates' => ['created_at' => false, 'updated_at' => false],
+        'saved_searches' => ['created_at' => false, 'updated_at' => false],
+        'documents' => ['created_at' => false, 'updated_at' => false],
+        'document_comments' => ['created_at' => false],
+        'document_attachments' => ['created_at' => false],
+        'messages' => ['created_at' => false],
+        'message_attachments' => ['created_at' => false],
+        'migrations' => ['applied_at' => false],
+        'notifications' => ['created_at' => false],
+    ];
+}
+
+/**
+ * The one-time datetime -> epoch conversion (#108) for a board that predates
+ * it: the columns still hold string datetimes written by the database clock
+ * (NOW()/CURRENT_TIMESTAMP under the server's timezone, UTC under SQLite).
+ * MySQL converts with UNIX_TIMESTAMP(), which parses each string in the
+ * session timezone - on the same server that wrote them this is exactly the
+ * clock the strings live in, so the conversion needs no configuration. A host
+ * whose database timezone CHANGED after the rows were written sets the
+ * optional legacy_db_timezone config offset ('+02:00' form) to re-interpret
+ * the strings through CONVERT_TZ instead. SQLite strings are always UTC
+ * (datetime('now')), so strftime('%s') converts them; the values update in
+ * place and the text affinity keeps storing the integers as digit strings,
+ * which compare and sort identically to integers at epoch lengths.
+ */
+function tb_migrate_epoch_columns(PDO $pdo): void {
+    $isMysql = $pdo->getAttribute(PDO::ATTR_DRIVER_NAME) === 'mysql';
+    $legacyOffset = $GLOBALS['TB_CONFIG']['legacy_db_timezone'] ?? null;
+    foreach (tb_epoch_columns() as $table => $columns) {
+        $info = $isMysql
+            ? array_column($pdo->query('SHOW COLUMNS FROM ' . $table)->fetchAll(PDO::FETCH_ASSOC), 'Type', 'Field')
+            : array_column($pdo->query('PRAGMA table_info(' . $table . ')')->fetchAll(PDO::FETCH_ASSOC), 'type', 'name');
+        foreach ($columns as $column => $nullable) {
+            if (!array_key_exists($column, $info)) continue;   // the table or column predates the feature; the column adds handle it
+            $type = strtolower((string)$info[$column]);
+            if (str_contains($type, 'int')) continue;   // already epoch (fresh install or converted earlier)
+            if ($isMysql) {
+                $expr = is_string($legacyOffset) && preg_match('/^[+-]\d{2}:\d{2}$/', $legacyOffset)
+                    ? 'UNIX_TIMESTAMP(CONVERT_TZ(' . $column . ', \'' . $legacyOffset . '\', \'+00:00\'))'
+                    : 'UNIX_TIMESTAMP(' . $column . ')';
+                $pdo->exec('UPDATE ' . $table . ' SET ' . $column . ' = ' . $expr);
+                $pdo->exec('ALTER TABLE ' . $table . ' MODIFY ' . $column . ' BIGINT' . ($nullable ? ' NULL DEFAULT NULL' : ' NOT NULL DEFAULT 0'));
+            } else {
+                $pdo->exec('UPDATE ' . $table . ' SET ' . $column . " = strftime('%s', " . $column . ') WHERE ' . $column . " IS NOT NULL AND TRIM(CAST(" . $column . " AS TEXT)) <> '' AND CAST(" . $column . " AS TEXT) GLOB '*[^0-9]*'");
+            }
+        }
+    }
+}
+
 function tb_migrate_schema(PDO $pdo): void {
+    // The epoch conversion (#108) runs before the column adds: it re-types the
+    // datetime columns of a pre-#108 board and converts every stored value, so
+    // the rest of the request (and every following one) sees pure integers.
+    tb_migrate_epoch_columns($pdo);
     $isMysql = $pdo->getAttribute(PDO::ATTR_DRIVER_NAME) === 'mysql';
     $taskColumns = $isMysql
         ? array_column($pdo->query('SHOW COLUMNS FROM tasks')->fetchAll(PDO::FETCH_ASSOC), 'Field')
@@ -1235,7 +1336,7 @@ function tb_migrate_schema(PDO $pdo): void {
     }
     if (!in_array('archived_at', $taskColumns, true)) {
         $pdo->exec($isMysql
-            ? 'ALTER TABLE tasks ADD COLUMN archived_at TIMESTAMP NULL DEFAULT NULL AFTER updated_at'
+            ? 'ALTER TABLE tasks ADD COLUMN archived_at BIGINT NULL DEFAULT NULL AFTER updated_at'
             : 'ALTER TABLE tasks ADD COLUMN archived_at TEXT NULL DEFAULT NULL');
     }
 
@@ -1265,8 +1366,8 @@ function tb_migrate_schema(PDO $pdo): void {
                 description TEXT NULL,
                 status_id INT UNSIGNED NOT NULL,
                 created_by INT UNSIGNED NOT NULL,
-                created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-                updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                created_at BIGINT NOT NULL DEFAULT 0,
+                updated_at BIGINT NOT NULL DEFAULT 0,
                 CONSTRAINT fk_project_status FOREIGN KEY (status_id) REFERENCES statuses(id),
                 CONSTRAINT fk_project_creator FOREIGN KEY (created_by) REFERENCES users(id)
             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4");
@@ -1284,8 +1385,8 @@ function tb_migrate_schema(PDO $pdo): void {
                 description TEXT NULL,
                 status_id INTEGER NOT NULL,
                 created_by INTEGER NOT NULL,
-                created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-                updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                created_at BIGINT NOT NULL DEFAULT 0,
+                updated_at BIGINT NOT NULL DEFAULT 0,
                 CONSTRAINT fk_project_status FOREIGN KEY (status_id) REFERENCES statuses(id),
                 CONSTRAINT fk_project_creator FOREIGN KEY (created_by) REFERENCES users(id)
             )");
@@ -1325,8 +1426,8 @@ function tb_migrate_schema(PDO $pdo): void {
                 user_id INT UNSIGNED NOT NULL,
                 name VARCHAR(200) NOT NULL,
                 query TEXT NOT NULL,
-                created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-                updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                created_at BIGINT NOT NULL DEFAULT 0,
+                updated_at BIGINT NOT NULL DEFAULT 0,
                 CONSTRAINT fk_saved_search_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4");
         } else {
@@ -1335,8 +1436,8 @@ function tb_migrate_schema(PDO $pdo): void {
                 user_id INTEGER NOT NULL,
                 name TEXT NOT NULL,
                 query TEXT NOT NULL,
-                created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-                updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                created_at BIGINT NOT NULL DEFAULT 0,
+                updated_at BIGINT NOT NULL DEFAULT 0,
                 CONSTRAINT fk_saved_search_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
             )");
         }
@@ -1362,7 +1463,7 @@ function tb_migrate_schema(PDO $pdo): void {
                 original_name VARCHAR(255) NOT NULL,
                 mime_type VARCHAR(120) NOT NULL,
                 file_size INT UNSIGNED NOT NULL,
-                created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                created_at BIGINT NOT NULL DEFAULT 0,
                 CONSTRAINT fk_message_attachment_message FOREIGN KEY (message_id) REFERENCES messages(id) ON DELETE CASCADE,
                 CONSTRAINT fk_message_attachment_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE SET NULL
             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4");
@@ -1375,7 +1476,7 @@ function tb_migrate_schema(PDO $pdo): void {
                 original_name TEXT NOT NULL,
                 mime_type TEXT NOT NULL,
                 file_size INTEGER NOT NULL,
-                created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                created_at BIGINT NOT NULL DEFAULT 0,
                 CONSTRAINT fk_message_attachment_message FOREIGN KEY (message_id) REFERENCES messages(id) ON DELETE CASCADE,
                 CONSTRAINT fk_message_attachment_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE SET NULL
             )");
@@ -1397,7 +1498,7 @@ function tb_migrate_schema(PDO $pdo): void {
             : array_column($pdo->query('PRAGMA table_info(users)')->fetchAll(PDO::FETCH_ASSOC), 'name');
         if (!in_array('last_seen_at', $userColumns, true)) {
             $pdo->exec($isMysql
-                ? 'ALTER TABLE users ADD COLUMN last_seen_at TIMESTAMP NULL DEFAULT NULL AFTER created_at'
+                ? 'ALTER TABLE users ADD COLUMN last_seen_at BIGINT NULL DEFAULT NULL AFTER created_at'
                 : 'ALTER TABLE users ADD COLUMN last_seen_at TEXT NULL DEFAULT NULL');
         }
         // Logged-out status (#106): the dot renderer reads users.logged_out
@@ -1471,8 +1572,8 @@ function tb_migrate_schema(PDO $pdo): void {
                 title VARCHAR(200) NOT NULL,
                 content TEXT NULL,
                 created_by INT UNSIGNED NULL,
-                created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-                updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                created_at BIGINT NOT NULL DEFAULT 0,
+                updated_at BIGINT NOT NULL DEFAULT 0,
                 CONSTRAINT fk_document_creator FOREIGN KEY (created_by) REFERENCES users(id) ON DELETE SET NULL
             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4");
             $pdo->exec("CREATE TABLE document_comments (
@@ -1480,7 +1581,7 @@ function tb_migrate_schema(PDO $pdo): void {
                 document_id INT UNSIGNED NOT NULL,
                 user_id INT UNSIGNED NULL,
                 body TEXT NOT NULL,
-                created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                created_at BIGINT NOT NULL DEFAULT 0,
                 FOREIGN KEY (document_id) REFERENCES documents(id) ON DELETE CASCADE,
                 FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE SET NULL
             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4");
@@ -1492,7 +1593,7 @@ function tb_migrate_schema(PDO $pdo): void {
                 original_name VARCHAR(255) NOT NULL,
                 mime_type VARCHAR(120) NOT NULL,
                 file_size INT UNSIGNED NOT NULL,
-                created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                created_at BIGINT NOT NULL DEFAULT 0,
                 FOREIGN KEY (document_id) REFERENCES documents(id) ON DELETE CASCADE,
                 FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE SET NULL
             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4");
@@ -1502,8 +1603,8 @@ function tb_migrate_schema(PDO $pdo): void {
                 title TEXT NOT NULL,
                 content TEXT NULL,
                 created_by INTEGER NULL,
-                created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-                updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                created_at BIGINT NOT NULL DEFAULT 0,
+                updated_at BIGINT NOT NULL DEFAULT 0,
                 CONSTRAINT fk_document_creator FOREIGN KEY (created_by) REFERENCES users(id) ON DELETE SET NULL
             )");
             $pdo->exec("CREATE TABLE document_comments (
@@ -1511,7 +1612,7 @@ function tb_migrate_schema(PDO $pdo): void {
                 document_id INTEGER NOT NULL,
                 user_id INTEGER NULL,
                 body TEXT NOT NULL,
-                created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                created_at BIGINT NOT NULL DEFAULT 0,
                 FOREIGN KEY (document_id) REFERENCES documents(id) ON DELETE CASCADE,
                 FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE SET NULL
             )");
@@ -1523,7 +1624,7 @@ function tb_migrate_schema(PDO $pdo): void {
                 original_name TEXT NOT NULL,
                 mime_type TEXT NOT NULL,
                 file_size INTEGER NOT NULL,
-                created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                created_at BIGINT NOT NULL DEFAULT 0,
                 FOREIGN KEY (document_id) REFERENCES documents(id) ON DELETE CASCADE,
                 FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE SET NULL
             )");
@@ -1545,7 +1646,7 @@ function tb_migrate_schema(PDO $pdo): void {
                 recipient_id INT UNSIGNED NULL,
                 body TEXT NOT NULL,
                 is_read TINYINT UNSIGNED NOT NULL DEFAULT 0,
-                created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                created_at BIGINT NOT NULL DEFAULT 0,
                 FOREIGN KEY (sender_id) REFERENCES users(id) ON DELETE SET NULL,
                 FOREIGN KEY (recipient_id) REFERENCES users(id) ON DELETE SET NULL
             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4");
@@ -1556,7 +1657,7 @@ function tb_migrate_schema(PDO $pdo): void {
                 recipient_id INTEGER NULL,
                 body TEXT NOT NULL,
                 is_read INTEGER NOT NULL DEFAULT 0,
-                created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                created_at BIGINT NOT NULL DEFAULT 0,
                 FOREIGN KEY (sender_id) REFERENCES users(id) ON DELETE SET NULL,
                 FOREIGN KEY (recipient_id) REFERENCES users(id) ON DELETE SET NULL
             )");
@@ -1580,7 +1681,7 @@ function tb_migrate_schema(PDO $pdo): void {
                 history_id INT UNSIGNED NULL,
                 event VARCHAR(100) NOT NULL,
                 is_seen TINYINT UNSIGNED NOT NULL DEFAULT 0,
-                created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                created_at BIGINT NOT NULL DEFAULT 0,
                 FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
                 FOREIGN KEY (task_id) REFERENCES tasks(id) ON DELETE CASCADE,
                 FOREIGN KEY (history_id) REFERENCES task_history(id) ON DELETE SET NULL
@@ -1593,7 +1694,7 @@ function tb_migrate_schema(PDO $pdo): void {
                 history_id INTEGER NULL,
                 event TEXT NOT NULL,
                 is_seen INTEGER NOT NULL DEFAULT 0,
-                created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                created_at BIGINT NOT NULL DEFAULT 0,
                 FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
                 FOREIGN KEY (task_id) REFERENCES tasks(id) ON DELETE CASCADE,
                 FOREIGN KEY (history_id) REFERENCES task_history(id) ON DELETE SET NULL
@@ -1615,13 +1716,13 @@ function tb_migrate_schema(PDO $pdo): void {
             $pdo->exec("CREATE TABLE migrations (
                 id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
                 version VARCHAR(64) NOT NULL UNIQUE,
-                applied_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+                applied_at BIGINT NOT NULL DEFAULT 0
             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4");
         } else {
             $pdo->exec("CREATE TABLE migrations (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 version TEXT NOT NULL UNIQUE,
-                applied_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+                applied_at BIGINT NOT NULL DEFAULT 0
             )");
         }
     }
@@ -1741,7 +1842,7 @@ function tb_apply_pending_migrations(PDO $pdo, ?string $dir = null): array {
             $result['failed'][$entry['version']] = $e->getMessage();
             break;
         }
-        $pdo->prepare('INSERT INTO migrations(version) VALUES(?)')->execute([$entry['version']]);
+        $pdo->prepare('INSERT INTO migrations(version,applied_at) VALUES(?,?)')->execute([$entry['version'], time()]);
         $result['applied'][] = $entry['version'];
     }
     return $result;
@@ -1961,9 +2062,9 @@ function tb_user_pref_set(PDO $pdo, int $userId, string $key, string $value): vo
 function tb_notify_task_assignees(PDO $pdo, int $taskId, int $actorId, string $event, int $historyId): void {
     $s = $pdo->prepare('SELECT user_id FROM task_assignees WHERE task_id=? AND user_id<>?');
     $s->execute([$taskId, $actorId]);
-    $ins = $pdo->prepare('INSERT INTO notifications(user_id,task_id,history_id,event) VALUES(?,?,?,?)');
+    $ins = $pdo->prepare('INSERT INTO notifications(user_id,task_id,history_id,event,created_at) VALUES(?,?,?,?,?)');
     foreach ($s->fetchAll() as $row) {
-        $ins->execute([(int)$row['user_id'], $taskId, $historyId, $event]);
+        $ins->execute([(int)$row['user_id'], $taskId, $historyId, $event, time()]);
     }
 }
 

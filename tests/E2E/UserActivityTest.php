@@ -25,23 +25,19 @@ final class UserActivityTest extends E2eTestCase
         return (int)$id;
     }
 
-    private function lastSeen(int $userId): ?string
+    private function lastSeen(int $userId): ?int
     {
         $s = TestServer::pdo()->prepare('SELECT last_seen_at FROM users WHERE id=?');
         $s->execute([$userId]);
         $v = $s->fetchColumn();
-        return $v === false ? null : $v;
+        return ($v === false || $v === null) ? null : (int)$v;
     }
 
-    /** Ages the stamp on the database's own clock, like tb_touch_last_seen does. */
+    /** Ages the stamp by writing an epoch second directly (#108). */
     private function backdateMinutes(int $userId, int $minutes): void
     {
         $pdo = TestServer::pdo();
-        $isMysql = $pdo->getAttribute(PDO::ATTR_DRIVER_NAME) === 'mysql';
-        $sql = $isMysql
-            ? 'UPDATE users SET last_seen_at = NOW() - INTERVAL ' . $minutes . ' MINUTE WHERE id = ?'
-            : "UPDATE users SET last_seen_at = datetime('now', '-" . $minutes . " minutes') WHERE id = ?";
-        $pdo->prepare($sql)->execute([$userId]);
+        $pdo->prepare('UPDATE users SET last_seen_at = ? WHERE id = ?')->execute([time() - $minutes * 60, $userId]);
     }
 
     public function test_an_authenticated_request_stamps_last_seen_and_a_fresh_install_starts_empty(): void
@@ -52,7 +48,7 @@ final class UserActivityTest extends E2eTestCase
 
         $page = $admin->get('/?page=tasks');
         $this->assertSame(200, $page->status);
-        $this->assertNotNull($this->lastSeen($id), 'The first authenticated request must stamp last_seen_at.');
+        $this->assertGreaterThan(0, (int)$this->lastSeen($id), 'The first authenticated request must stamp last_seen_at.');
     }
 
     public function test_the_refresh_is_throttled_to_the_minimum_interval(): void

@@ -21,9 +21,9 @@ final class ActivityLevelsTest extends TestCase
 {
     private const NOW = 1700000000;
 
-    private function stamp(int $secondsAgo): string
+    private function stamp(int $secondsAgo): int
     {
-        return date('Y-m-d H:i:s', self::NOW - $secondsAgo);
+        return self::NOW - $secondsAgo;
     }
 
     protected function setUp(): void
@@ -52,7 +52,7 @@ final class ActivityLevelsTest extends TestCase
         $this->assertSame('yellow', tb_activity_level($this->stamp(60 * 60), self::NOW));
         $this->assertSame('red', tb_activity_level($this->stamp(60 * 60 + 1), self::NOW));
         $this->assertSame('red', tb_activity_level(null, self::NOW));
-        $this->assertSame('red', tb_activity_level('not a date', self::NOW));
+        $this->assertSame('red', tb_activity_level(0, self::NOW));
     }
 
     public function test_with_the_defaults_the_dot_markup_is_byte_identical_to_30(): void
@@ -98,7 +98,7 @@ final class ActivityLevelsTest extends TestCase
 
     public function test_a_future_stamp_never_reads_negative_and_lands_in_the_first_period(): void
     {
-        $this->assertSame('green', tb_activity_level(date('Y-m-d H:i:s', self::NOW + 3600), self::NOW, $this->fourLevels()));
+        $this->assertSame('green', tb_activity_level(self::NOW + 3600, self::NOW, $this->fourLevels()));
     }
 
     // ── rendering: colours and characters ──

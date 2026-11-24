@@ -19,15 +19,18 @@ final class AttachmentDateTest extends E2eTestCase
         $first = $this->uploadTextFile($admin, $id, 'dated-one.txt', 'first payload');
         $second = $this->uploadTextFile($admin, $id, 'dated-two.txt', 'second payload');
 
-        $firstStamp = (string)TestServer::pdo()->query('SELECT created_at FROM attachments WHERE id=' . $first)->fetchColumn();
-        $secondStamp = (string)TestServer::pdo()->query('SELECT created_at FROM attachments WHERE id=' . $second)->fetchColumn();
-        $this->assertNotSame('', $firstStamp);
+        // #108: the stored stamp is an epoch second and the page renders it
+        // in the viewer's timezone through tb_dt() - compare against the same
+        // helper output the markup pipeline produces.
+        $firstStamp = (int)TestServer::pdo()->query('SELECT created_at FROM attachments WHERE id=' . $first)->fetchColumn();
+        $secondStamp = (int)TestServer::pdo()->query('SELECT created_at FROM attachments WHERE id=' . $second)->fetchColumn();
+        $this->assertGreaterThan(0, $firstStamp);
 
         $page = $admin->taskPage($id);
         // Both attachments render their own upload stamp, in the board's usual
         // "YYYY-MM-DD HH:MM:SS" format, right after the size.
-        $this->assertTrue($page->contains('KB · ' . $firstStamp), 'First attachment misses its upload date.');
-        $this->assertTrue($page->contains('KB · ' . $secondStamp), 'Second attachment misses its upload date.');
+        $this->assertTrue($page->contains('KB · ' . (new \DateTime('@' . $firstStamp))->format('Y-m-d H:i:s')), 'First attachment misses its upload date.');
+        $this->assertTrue($page->contains('KB · ' . (new \DateTime('@' . $secondStamp))->format('Y-m-d H:i:s')), 'Second attachment misses its upload date.');
     }
 
     public function test_attachment_date_stays_visible_for_other_users(): void
@@ -36,13 +39,13 @@ final class AttachmentDateTest extends E2eTestCase
         $this->createUser($admin, 'viewer', 'Viewer User', 'ViewerPass12345');
         $id = $admin->createTask('Shared attachment task');
         $attachmentId = $this->uploadTextFile($admin, $id, 'shared.txt', 'shared payload');
-        $stamp = (string)TestServer::pdo()->query('SELECT created_at FROM attachments WHERE id=' . $attachmentId)->fetchColumn();
+        $stamp = (int)TestServer::pdo()->query('SELECT created_at FROM attachments WHERE id=' . $attachmentId)->fetchColumn();
 
         // The upload date is task information, not uploader-private: a plain
         // user who cannot delete the attachment still sees the stamp.
         $viewer = new AppSession('viewer', 'ViewerPass12345');
         $page = $viewer->taskPage($id);
-        $this->assertTrue($page->contains('KB · ' . $stamp));
+        $this->assertTrue($page->contains('KB · ' . (new \DateTime('@' . $stamp))->format('Y-m-d H:i:s')));
         $this->assertFalse($page->contains('delete_attachment'));
     }
 

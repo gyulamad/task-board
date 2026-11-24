@@ -20,14 +20,17 @@ final class SettingsPageTest extends E2eTestCase
         $this->assertTrue($page->contains('href="?page=settings">Settings</a>'), 'The navbar must carry the Settings link.');
     }
 
-    public function test_the_settings_page_shows_the_under_development_notice(): void
+    public function test_the_settings_page_carries_the_timezone_preference(): void
     {
         $admin = $this->adminSession();
         $page = $admin->get('/?page=settings');
         $this->assertSame(200, $page->status);
-        $this->assertTrue($page->contains('under development'), 'The page must show the under-development notice.');
         $this->assertTrue($page->contains('Settings'), 'The page must carry its title.');
-        $this->assertTrue($page->contains('personal preferences'), 'The page must explain what will live here.');
+        $this->assertTrue($page->contains('Personal preferences'), 'The page must explain what lives here.');
+        // #108: the timezone select renders the IANA list and defaults to UTC.
+        $this->assertTrue($page->contains('id="timezone-select"'), 'The timezone select renders.');
+        $this->assertTrue($page->contains('<option value="UTC" selected>UTC</option>'), 'The default zone is UTC (the storage zone).');
+        $this->assertTrue($page->contains('value="Europe/Budapest"'), 'The IANA zone list renders.');
     }
 
     public function test_anonymous_users_are_pushed_to_sign_in(): void

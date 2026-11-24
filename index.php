@@ -48,16 +48,13 @@ require __DIR__ . '/src/helpers.php';
 require __DIR__ . '/src/crud.php';
 ensure_users_theme_column($pdo);
 
-// Capture the database's wall clock once per request (#14): every last_seen_at
-// stamp is written with CURRENT_TIMESTAMP on this clock, so the activity dot
-// and the 'active: ...' label must age them against it — comparing with PHP's
-// time() makes a PHP/database timezone difference render every user as hours
-// stale (the "the dot is always red" report on #30). One tiny read per request.
-try {
-    $GLOBALS['TB_DB_NOW_TS'] = strtotime((string) $pdo->query('SELECT CURRENT_TIMESTAMP')->fetchColumn());
-} catch (Throwable $e) {
-    $GLOBALS['TB_DB_NOW_TS'] = null;   // a database that cannot tell time falls back to PHP's clock
-}
+// The render layer's request handle (#108): every datetime render goes through
+// tb_dt()/tb_user_timezone(), which need the connection to read the viewer's
+// timezone preference. Since #108 the stamps themselves are epoch seconds
+// written with PHP's time(), so the old database-clock capture (#14, the
+// "dot is always red" fix) is structurally obsolete - one clock, no skew.
+$GLOBALS['TB_PDO'] = $pdo;
+$GLOBALS['TB_CONFIG'] = $config;   // the render/migration layers read settings from here too (#108)
 
 // Basic response hardening for every page (including CSRF/403 rejections).
 header('X-Content-Type-Options: nosniff');
@@ -214,8 +211,8 @@ if ($page === 'install' && $_SERVER['REQUEST_METHOD'] === 'POST') {
     elseif (tb_char_length(trim((string)($_POST['username'] ?? ''))) > 80) $error = 'Username must be 80 characters or fewer.';
     else {
         try {
-            $s = $pdo->prepare("INSERT INTO users(username,password_hash,display_name,role) VALUES(?,?,?,'admin')");
-            $s->execute([trim($_POST['username']), password_hash($_POST['password'], PASSWORD_DEFAULT), trim($_POST['display_name'])]);
+            $s = $pdo->prepare("INSERT INTO users(username,password_hash,display_name,role,created_at) VALUES(?,?,?,'admin',?)");
+            $s->execute([trim($_POST['username']), password_hash($_POST['password'], PASSWORD_DEFAULT), trim($_POST['display_name']), time()]);
             flash('Administrator created. Please sign in.'); redirect('?page=login');
         } catch (PDOException $e) {
             // Duplicate username or database trouble: never leak driver details.
@@ -317,7 +314,7 @@ if (user()) {
                           .implode('; ',array_map(fn(array $a): string => $a[1].' changed from "'.$a[2].'" to "'.$a[3].'"',$audit)).'.'
                         : 'No fields were changed.'];
                 } else {
-                    $pdo->prepare('INSERT INTO tasks(title,description,status_id,complexity,priority,parent_id,schedule_period,schedule_status_id,schedule_assignees,project_id,created_by) VALUES(?,?,?,?,?,?,?,?,?,?,?)')->execute([$title,$description,$statusId,$complexity,$priority,$parentId,$schedulePeriod,$scheduleStatusId,$scheduleAssigneesCsv,$projectId,user()['id']]);
+                    $pdo->prepare('INSERT INTO tasks(title,description,status_id,complexity,priority,parent_id,schedule_period,schedule_status_id,schedule_assignees,project_id,created_by,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)')->execute([$title,$description,$statusId,$complexity,$priority,$parentId,$schedulePeriod,$scheduleStatusId,$scheduleAssigneesCsv,$projectId,user()['id'],time(),time()]);
                     $id = (int)$pdo->lastInsertId();
                     $saveEvent = ['Task created', $title];
                 }
@@ -338,7 +335,7 @@ if (user()) {
                 $t = find_task($pdo, $id);
                 if (!$t) throw new RuntimeException('Task not found.');
                 if (!is_admin() && (int)$t['created_by'] !== (int)user()['id']) throw new RuntimeException('Only an administrator or task creator can archive this task.');
-                $pdo->prepare('UPDATE tasks SET archived_at=CURRENT_TIMESTAMP WHERE id=? AND archived_at IS NULL')->execute([$id]);
+                $pdo->prepare('UPDATE tasks SET archived_at=?, updated_at=? WHERE id=? AND archived_at IS NULL')->execute([time(),time(),$id]);
                 history($pdo, $id, 'Task archived', 'The task was moved to the archive. Restore it from the archive page.');
                 flash('Task archived. Find it under Archive.');
                 $returnUrl = $_POST['return'] ?? '';
@@ -346,7 +343,7 @@ if (user()) {
             }
             if ($action === 'restore_task') {
                 $id = (int)$_POST['id'];
-                $pdo->prepare('UPDATE tasks SET archived_at=NULL, updated_at=CURRENT_TIMESTAMP WHERE id=? AND archived_at IS NOT NULL')->execute([$id]);
+                $pdo->prepare('UPDATE tasks SET archived_at=NULL, updated_at=? WHERE id=? AND archived_at IS NOT NULL')->execute([time(),$id]);
                 history($pdo, $id, 'Task restored', 'The task was restored from the archive.');
                 flash('Task restored.');
                 redirect('?page=task&id=' . $id);
@@ -378,7 +375,8 @@ if (user()) {
                     $pdo,
                     $ids,
                     'SELECT created_by FROM tasks WHERE id=?',
-                    'UPDATE tasks SET archived_at=CURRENT_TIMESTAMP WHERE id=? AND archived_at IS NULL'
+                    'UPDATE tasks SET archived_at=?, updated_at=? WHERE id=? AND archived_at IS NULL',
+                    [time(), time()]
                 );
                 flash(tb_bulk_flash($result['done'], $result['skipped'], 'task', 'archived', 'only administrators or the task creator can archive a task.'));
                 redirect($returnUrl);
@@ -396,7 +394,7 @@ if (user()) {
                     $pdo->prepare('UPDATE templates SET type=?,name=?,description=? WHERE id=?')->execute([$type,$name,$description,$id]);
                     flash('Template updated.');
                 } else {
-                    $pdo->prepare('INSERT INTO templates(type,name,description,created_by) VALUES(?,?,?,?)')->execute([$type,$name,$description,user()['id']]);
+                    $pdo->prepare('INSERT INTO templates(type,name,description,created_by,created_at,updated_at) VALUES(?,?,?,?,?,?)')->execute([$type,$name,$description,user()['id'],time(),time()]);
                     flash('Template created.');
                 }
                 redirect('?page=templates-v2');
@@ -420,7 +418,7 @@ if (user()) {
                 if (tb_char_length($name) > 200) throw new RuntimeException('Search name must be 200 characters or fewer.');
                 $query = tb_saved_search_query($_POST);
                 if ($query === null) throw new RuntimeException('Set at least one filter before saving a search.');
-                $pdo->prepare('INSERT INTO saved_searches(user_id,name,query) VALUES(?,?,?)')->execute([user()['id'],$name,$query]);
+                $pdo->prepare('INSERT INTO saved_searches(user_id,name,query,created_at,updated_at) VALUES(?,?,?,?,?)')->execute([user()['id'],$name,$query,time(),time()]);
                 flash('Search saved. Find it in the Saved searches dropdown.');
                 // #43: a search saved from the kanban board returns there; the
                 // task list stays the default for every other caller. The v2
@@ -446,7 +444,7 @@ if (user()) {
             if ($action === 'comment') {
                 $id = (int)$_POST['task_id']; $body = trim($_POST['body'] ?? '');
                 if (!task_exists($pdo,$id) || $body === '') throw new RuntimeException('Comment cannot be empty.');
-                $pdo->prepare('INSERT INTO comments(task_id,user_id,body) VALUES(?,?,?)')->execute([$id,user()['id'],$body]);
+                $pdo->prepare('INSERT INTO comments(task_id,user_id,body,created_at) VALUES(?,?,?,?)')->execute([$id,user()['id'],$body,time()]);
                 // #54 v2 feedback: the history entry carries the comment itself,
                 // so the audit shows what was written, not just that something was.
                 history($pdo,$id,'Comment added',$body); redirect('?page=task&id='.$id.'#comments');
@@ -499,10 +497,10 @@ if (user()) {
                     $storedName = bin2hex(random_bytes(20));
                     if (!move_uploaded_file($_FILES['attachment']['tmp_name'], $dir . '/' . $storedName)) throw new RuntimeException('Could not save uploaded file.');
                 }
-                $pdo->prepare('INSERT INTO messages(sender_id,recipient_id,body) VALUES(?,?,?)')->execute([(int)user()['id'],$recipientId,$msgBody]);
+                $pdo->prepare('INSERT INTO messages(sender_id,recipient_id,body,created_at) VALUES(?,?,?,?)')->execute([(int)user()['id'],$recipientId,$msgBody,time()]);
                 if ($storedName !== null) {
-                    $pdo->prepare('INSERT INTO message_attachments(message_id,user_id,stored_name,original_name,mime_type,file_size) VALUES(?,?,?,?,?,?)')
-                        ->execute([(int)$pdo->lastInsertId(),(int)user()['id'],$storedName,$attachment['name'],$attachment['mime'],$attachment['size']]);
+                    $pdo->prepare('INSERT INTO message_attachments(message_id,user_id,stored_name,original_name,mime_type,file_size,created_at) VALUES(?,?,?,?,?,?,?)')
+                        ->execute([(int)$pdo->lastInsertId(),(int)user()['id'],$storedName,$attachment['name'],$attachment['mime'],$attachment['size'],time()]);
                 }
                 tb_message_send_token_rotate();
                 flash('Message sent.');
@@ -542,7 +540,7 @@ if (user()) {
                 $dir=__DIR__.'/uploads'; if (!is_dir($dir)) mkdir($dir,0750,true);
                 $stored=bin2hex(random_bytes(20));
                 if (!move_uploaded_file($file['tmp_name'],$dir.'/'.$stored)) throw new RuntimeException('Could not save uploaded file.');
-                $pdo->prepare('INSERT INTO attachments(task_id,user_id,stored_name,original_name,mime_type,file_size) VALUES(?,?,?,?,?,?)')->execute([$id,user()['id'],$stored,basename($file['name']),$mime,$file['size']]);
+                $pdo->prepare('INSERT INTO attachments(task_id,user_id,stored_name,original_name,mime_type,file_size,created_at) VALUES(?,?,?,?,?,?,?)')->execute([$id,user()['id'],$stored,basename($file['name']),$mime,$file['size'],time()]);
                 history($pdo,$id,'Attachment added',basename($file['name'])); redirect('?page=task&id='.$id);
             }
             if ($action === 'delete_attachment') {
@@ -574,16 +572,16 @@ if (user()) {
                     $s=$pdo->prepare('SELECT * FROM documents WHERE id=?'); $s->execute([$id]); $doc=$s->fetch();
                     if (!$doc) throw new RuntimeException('Document not found.');
                     if (!document_can_edit($doc)) throw new RuntimeException('Only an administrator or the creator can edit a know-how.');
-                    $pdo->prepare('UPDATE documents SET title=?,content=?,updated_at=CURRENT_TIMESTAMP WHERE id=?')->execute([$title,$content,$id]);
+                    $pdo->prepare('UPDATE documents SET title=?,content=?,updated_at=? WHERE id=?')->execute([$title,$content,time(),$id]);
                     flash('Know-how updated.'); redirect('?page=document&id='.$id);
                 }
-                $pdo->prepare('INSERT INTO documents(title,content,created_by) VALUES(?,?,?)')->execute([$title,$content,user()['id']]);
+                $pdo->prepare('INSERT INTO documents(title,content,created_by,created_at,updated_at) VALUES(?,?,?,?,?)')->execute([$title,$content,user()['id'],time(),time()]);
                 flash('Know-how saved.'); redirect('?page=documents-v2');
             }
             if ($action === 'doc_comment') {
                 $id=(int)($_POST['document_id'] ?? 0); $body=trim((string)($_POST['body'] ?? ''));
                 if (!document_exists($pdo,$id) || $body === '') throw new RuntimeException('Comment cannot be empty.');
-                $pdo->prepare('INSERT INTO document_comments(document_id,user_id,body) VALUES(?,?,?)')->execute([$id,user()['id'],$body]);
+                $pdo->prepare('INSERT INTO document_comments(document_id,user_id,body,created_at) VALUES(?,?,?,?)')->execute([$id,user()['id'],$body,time()]);
                 flash('Comment added.'); redirect('?page=document&id='.$id.'#comments');
             }
             if ($action === 'doc_upload') {
@@ -599,7 +597,7 @@ if (user()) {
                 $dir=__DIR__.'/uploads'; if (!is_dir($dir)) mkdir($dir,0750,true);
                 $stored=bin2hex(random_bytes(20));
                 if (!move_uploaded_file($file['tmp_name'],$dir.'/'.$stored)) throw new RuntimeException('Could not save uploaded file.');
-                $pdo->prepare('INSERT INTO document_attachments(document_id,user_id,stored_name,original_name,mime_type,file_size) VALUES(?,?,?,?,?,?)')->execute([$id,user()['id'],$stored,basename($file['name']),$mime,$file['size']]);
+                $pdo->prepare('INSERT INTO document_attachments(document_id,user_id,stored_name,original_name,mime_type,file_size,created_at) VALUES(?,?,?,?,?,?,?)')->execute([$id,user()['id'],$stored,basename($file['name']),$mime,$file['size'],time()]);
                 flash('Attachment added.'); redirect('?page=document&id='.$id);
             }
             if ($action === 'doc_delete_attachment') {
@@ -633,6 +631,17 @@ if (user()) {
                 $pdo->prepare('DELETE FROM document_attachments WHERE document_id=?')->execute([$id]);
                 $pdo->prepare('DELETE FROM documents WHERE id=?')->execute([$id]);
                 flash('Know-how deleted.'); redirect('?page=documents-v2');
+            }
+            if ($action === 'save_timezone') {
+                // Timezone preference (#108): the viewer's IANA zone for every
+                // datetime render. Stored with the #66 user_preferences
+                // discipline; the render helper re-validates the name on every
+                // read, so a stale or crafted value can never break a page.
+                $tz = trim((string)($_POST['timezone'] ?? ''));
+                if (!in_array($tz, DateTimeZone::listIdentifiers(), true)) throw new RuntimeException('Unknown timezone.');
+                tb_user_pref_set($pdo, (int)user()['id'], 'timezone', $tz);
+                flash('Timezone saved.');
+                redirect('?page=settings');
             }
             if ($action === 'save_theme') {
                 $theme = $_POST['theme'] ?? '';
@@ -776,7 +785,7 @@ if (user()) {
                 $name=trim($_POST['username'] ?? ''); $display=trim($_POST['display_name'] ?? ''); $pass=$_POST['password'] ?? '';
                 if ($name==='' || $display==='' || strlen($pass)<10) throw new RuntimeException('Enter username, display name and a password of at least 10 characters.');
                 if (tb_char_length($name) > 80 || tb_char_length($display) > 120) throw new RuntimeException('Username is limited to 80 and display name to 120 characters.');
-                $pdo->prepare('INSERT INTO users(username,password_hash,display_name,role) VALUES(?,?,?,?)')->execute([$name,password_hash($pass,PASSWORD_DEFAULT),$display,$_POST['role']==='admin'?'admin':'user']);
+                $pdo->prepare('INSERT INTO users(username,password_hash,display_name,role,created_at) VALUES(?,?,?,?,?)')->execute([$name,password_hash($pass,PASSWORD_DEFAULT),$display,$_POST['role']==='admin'?'admin':'user',time()]);
                 flash('User created.'); redirect('?page=users-v2');
             }
             if ($action === 'edit_user' && is_admin()) {
@@ -837,7 +846,7 @@ if (user()) {
                     if (!project_exists($pdo, $id)) throw new RuntimeException('Project not found.');
                     $pdo->prepare('UPDATE projects SET name=?,description=?,status_id=? WHERE id=?')->execute([$name,$description,$statusId,$id]);
                 } else {
-                    $pdo->prepare('INSERT INTO projects(name,description,status_id,created_by) VALUES(?,?,?,?)')->execute([$name,$description,$statusId,user()['id']]);
+                    $pdo->prepare('INSERT INTO projects(name,description,status_id,created_by,created_at,updated_at) VALUES(?,?,?,?,?,?)')->execute([$name,$description,$statusId,user()['id'],time(),time()]);
                     $id = (int)$pdo->lastInsertId();
                 }
                 $pdo->prepare('DELETE FROM project_assignees WHERE project_id=?')->execute([$id]);
@@ -942,16 +951,10 @@ function schedule_periods(): array {
     ];
 }
 
-/** SQL expression (per driver) that computes the database clock minus the period. */
-function schedule_interval_sql(string $driver, string $period): ?string {
-    switch ($period) {
-        case 'hourly':   return $driver === 'mysql' ? 'NOW() - INTERVAL 1 HOUR'  : "datetime('now','-1 hour')";
-        case 'daily':    return $driver === 'mysql' ? 'NOW() - INTERVAL 1 DAY'   : "datetime('now','-1 day')";
-        case 'weekly':   return $driver === 'mysql' ? 'NOW() - INTERVAL 1 WEEK'  : "datetime('now','-7 days')";
-        case 'biweekly': return $driver === 'mysql' ? 'NOW() - INTERVAL 2 WEEK'  : "datetime('now','-14 days')";
-        case 'monthly':  return $driver === 'mysql' ? 'NOW() - INTERVAL 1 MONTH' : "datetime('now','-1 month')";
-    }
-    return null;
+/** The epoch cutoff (#108) a schedule period reopens before: now minus the period. */
+function schedule_cutoff_ts(string $period): ?int {
+    $seconds = ['hourly' => 3600, 'daily' => 86400, 'weekly' => 604800, 'biweekly' => 1209600, 'monthly' => 2592000][$period] ?? null;
+    return $seconds === null ? null : time() - $seconds;
 }
 
 /** The id of the status used to reopen tasks: the "TODO" status, or the first non-completion one. */
@@ -986,11 +989,10 @@ function reopen_due_tasks(PDO $pdo): array {
     $reopened = [];
     $todoId = null;
     foreach (array_keys(schedule_periods()) as $period) {
-        $cutoff = schedule_interval_sql($driver, $period);
+        $cutoff = schedule_cutoff_ts($period);
         if ($cutoff === null) continue;
-        // $cutoff only ever comes from schedule_interval_sql(), never from user input.
-        $find = $pdo->prepare('SELECT t.id, t.title, t.created_by, t.status_id, t.schedule_status_id, t.schedule_assignees, (SELECT GROUP_CONCAT(ax.user_id) FROM task_assignees ax WHERE ax.task_id=t.id) assignee_ids FROM tasks t WHERE t.schedule_period=? AND t.archived_at IS NULL AND t.updated_at < ' . $cutoff);
-        $find->execute([$period]);
+        $find = $pdo->prepare('SELECT t.id, t.title, t.created_by, t.status_id, t.schedule_status_id, t.schedule_assignees, (SELECT GROUP_CONCAT(ax.user_id) FROM task_assignees ax WHERE ax.task_id=t.id) assignee_ids FROM tasks t WHERE t.schedule_period=? AND t.archived_at IS NULL AND t.updated_at < ?');
+        $find->execute([$period, $cutoff]);
         foreach ($find->fetchAll() as $task) {
             // The reopen target (#31): what the task edit form stored. A task
             // without an explicit scheduled status goes to TODO (the #18
@@ -1007,7 +1009,7 @@ function reopen_due_tasks(PDO $pdo): array {
             // A task that already sits in its target state would not change:
             // leave it (and its comment stream) alone instead of pinging it every run.
             if ((int)$task['status_id'] === $targetStatusId && $currentAssignees === $targetAssignees) continue;
-            $pdo->prepare('UPDATE tasks SET status_id=?, updated_at=CURRENT_TIMESTAMP WHERE id=?')->execute([$targetStatusId, (int)$task['id']]);
+            $pdo->prepare('UPDATE tasks SET status_id=?, updated_at=? WHERE id=?')->execute([$targetStatusId, time(), (int)$task['id']]);
             $pdo->prepare('DELETE FROM task_assignees WHERE task_id=?')->execute([(int)$task['id']]);
             if ($targetAssignees) {
                 $ins = $pdo->prepare('INSERT IGNORE INTO task_assignees(task_id,user_id) VALUES(?,?)');
@@ -1023,7 +1025,7 @@ function reopen_due_tasks(PDO $pdo): array {
                 $s->execute($targetAssignees);
                 $targetNames = array_column($s->fetchAll(), 'display_name');
             }
-            $pdo->prepare('INSERT INTO comments(task_id,user_id,body) VALUES(?,?,?)')->execute([(int)$task['id'], (int)$task['created_by'], 'Reopen by auto-scheduler']);
+            $pdo->prepare('INSERT INTO comments(task_id,user_id,body,created_at) VALUES(?,?,?,?)')->execute([(int)$task['id'], (int)$task['created_by'], 'Reopen by auto-scheduler', time()]);
             $pdo->prepare('INSERT INTO task_history(task_id,user_id,event,details) VALUES(?,?,?,?)')->execute([
                 (int)$task['id'], (int)$task['created_by'], 'Reopened by auto-scheduler',
                 'Not updated within the schedule period ('.$period.'). Status set to '.$statusName
@@ -1203,7 +1205,7 @@ if (in_array($page, ['archive', 'archive-v2'], true)) {
         ['label'=>'Task','sortKey'=>'task','sort'=>$list['sort'],'url'=>$archiveUrl,'cell'=>fn(array $t): string => '<td class="ps-3"><a class="fw-semibold text-decoration-none" href="?page=task&id='.$t['id'].'">#'.$t['id'].' · '.h($t['title']).'</a></td>'],
         ['label'=>'Status','sortKey'=>'status','sort'=>$list['sort'],'url'=>$archiveUrl,'cell'=>fn(array $t): string => '<td>'.tb_status_badge((string)$t['status_name'], $t['status_color'] ?? null).'</td>'],
         ['label'=>'Creator','sortKey'=>'creator','sort'=>$list['sort'],'url'=>$archiveUrl,'cell'=>fn(array $t): string => '<td>'.tb_user_with_activity(['display_name'=>$t['creator'],'last_seen_at'=>$t['creator_last_seen']??null]).'</td>'],
-        ['label'=>'Archived','sortKey'=>'archived','sort'=>$list['sort'],'url'=>$archiveUrl,'cell'=>fn(array $t): string => '<td class="small muted">'.h($t['archived_at']).'</td>'],
+        ['label'=>'Archived','sortKey'=>'archived','sort'=>$list['sort'],'url'=>$archiveUrl,'cell'=>fn(array $t): string => '<td class="small muted">'.h(tb_dt($t['archived_at'])).'</td>'],
         ['label'=>'Actions','cell'=>function(array $t) use ($archivePage): string {
             $canDelete=is_admin()||(int)$t['created_by']===(int)user()['id'];
             return '<td class="text-nowrap"><form method="post" class="d-inline">'.csrf_field().'<input type="hidden" name="action" value="restore_task"><input type="hidden" name="id" value="'.$t['id'].'"><button class="btn btn-sm btn-outline-primary">Restore</button></form>'.($canDelete?' <form method="post" class="d-inline" onsubmit="return confirm(\'Delete task #'.$t['id'].' permanently? This cannot be undone.\')">'.csrf_field().'<input type="hidden" name="action" value="delete_task"><input type="hidden" name="id" value="'.$t['id'].'"><input type="hidden" name="return" value="?page='.$archivePage.'"><button class="btn btn-sm btn-outline-danger">Delete</button></form>':'').'</td>';
@@ -1633,7 +1635,7 @@ if (in_array($page, ['notifications', 'notifications-v2'], true)) {
     render_header('Notifications',$config,$error); ?>
     <div class="d-flex justify-content-between align-items-center mb-3"><div><h1 class="h3 mb-0">Notifications</h1><div class="muted">Everything that happened on the tasks you are assigned to. Opening this page marks everything seen - the red flag disappears until new ones arrive; clicking a single one opens the task it came from, and the button clears them all in one click.</div></div><div class="d-flex gap-2 align-items-center"><form method="post" class="d-inline-flex align-items-center gap-1" title="Shows or hides the red notification counter in the top menu"><?=csrf_field()?><input type="hidden" name="action" value="toggle_notification_flag"><div class="form-check form-switch mb-0"><input class="form-check-input" type="checkbox" role="switch" id="notification-flag-toggle" aria-label="Red flag in the top menu"<?=$flagOn?' checked':''?> onchange="this.form.submit()"><label class="form-check-label small muted" for="notification-flag-toggle">Red flag in the top menu</label></div><noscript><button class="btn btn-sm btn-outline-secondary">Apply</button></noscript></form><span class="badge text-bg-danger fs-6"><?=$newCount?> new notification<?=$newCount===1?'':'s'?></span><?php if($newCount): ?><form method="post" class="d-inline"><?=csrf_field()?><input type="hidden" name="action" value="mark_all_seen"><button class="btn btn-outline-primary btn-sm" title="Mark every notification as seen">Mark all as seen</button></form><?php endif; ?></div></div>
     <form method="get" class="d-flex gap-2 mb-3"><input type="hidden" name="page" value="<?=$listPage?>"><input class="form-control" type="search" name="q" value="<?=h($nq)?>" placeholder="Search task and event..." aria-label="Search notifications"><button class="btn btn-outline-secondary">Search</button><?php if($nq!==''): ?><a class="btn btn-link" href="<?=h($notifUrl())?>">Clear</a><?php endif; ?></form>
-    <div class="card p-4"><h2 class="h5">Stream</h2><?php foreach($items as $n): ?><div class="border-bottom py-2<?=$n['is_seen']?'':' fw-semibold'?>"><div><a class="fw-semibold text-decoration-none" href="?page=notification_seen&id=<?=$n['id']?>">#<?=$n['task_id']?> · <?=h($n['task_title'])?></a> <strong><?=h($n['event'])?></strong> <span class="small muted"><?=h($n['created_at'])?></span><?php if(!$n['is_seen']): ?> <span class="badge text-bg-danger">new</span><?php endif; ?></div></div><?php endforeach; if(!$items): ?><div class="small muted"><?=$nq!==''?'No notifications match the search.':'No notifications yet. Assign yourself to a task and follow its history.'?></div><?php endif; ?></div>
+    <div class="card p-4"><h2 class="h5">Stream</h2><?php foreach($items as $n): ?><div class="border-bottom py-2<?=$n['is_seen']?'':' fw-semibold'?>"><div><a class="fw-semibold text-decoration-none" href="?page=notification_seen&id=<?=$n['id']?>">#<?=$n['task_id']?> · <?=h($n['task_title'])?></a> <strong><?=h($n['event'])?></strong> <span class="small muted"><?=h(tb_dt($n['created_at']))?></span><?php if(!$n['is_seen']): ?> <span class="badge text-bg-danger">new</span><?php endif; ?></div></div><?php endforeach; if(!$items): ?><div class="small muted"><?=$nq!==''?'No notifications match the search.':'No notifications yet. Assign yourself to a task and follow its history.'?></div><?php endif; ?></div>
     <?=tb_crud_pagination(['ariaLabel'=>'Notification list pages','page'=>$notifList['page'],'pages'=>$notifList['pages'],'url'=>$notifUrl])?>
     <?php render_footer(); exit;
 }
@@ -1668,7 +1670,7 @@ if ($page==='task_history') {
     if(!$entry){ http_response_code(404); exit('History entry not found.'); }
     render_header('Change details',$config,$error); ?>
     <div class="d-flex justify-content-between align-items-center mb-3"><div><h1 class="h3 mb-0">Change details</h1><div class="muted">On task <a class="fw-semibold text-decoration-none" href="?page=task&id=<?=$entry['task_id']?>">#<?=$entry['task_id']?> · <?=h($entry['task_title'])?></a></div></div><a class="btn btn-outline-secondary" href="?page=task&id=<?=$entry['task_id']?>">Back to the task</a></div>
-    <div class="card p-4 mb-4"><h2 class="h5"><?=h($entry['event'])?></h2><div class="small muted mb-2">by <?=tb_user_with_activity(['display_name'=>$entry['actor'],'last_seen_at'=>$entry['actor_last_seen']??null])?> · <?=h($entry['created_at'])?></div><?php if($entry['details']): ?><div class="prewrap"><?=h($entry['details'])?></div><?php endif; ?><?php if($entry['field']): ?><table class="table table-bordered align-middle mt-3 mb-0"><tbody><tr><th class="w-25" scope="row">Field</th><td class="fw-semibold"><?=h((string)$entry['field'])?></td></tr><tr><th scope="row">From</th><td><div class="prewrap"><?=h((string)($entry['old_value'] ?? '—'))?></div></td></tr><tr><th scope="row">To</th><td><div class="prewrap"><?=h((string)($entry['new_value'] ?? '—'))?></div></td></tr></tbody></table><?php endif; ?><?php if($entry['event']==='Comment added'): ?><a class="small text-decoration-none" href="?page=task&id=<?=$entry['task_id']?>#comments">Open the comment on the task page</a><?php endif; ?><?php if($entry['event']==='Task updated' && !$entry['field']):
+    <div class="card p-4 mb-4"><h2 class="h5"><?=h($entry['event'])?></h2><div class="small muted mb-2">by <?=tb_user_with_activity(['display_name'=>$entry['actor'],'last_seen_at'=>$entry['actor_last_seen']??null])?> · <?=h(tb_dt($entry['created_at']))?></div><?php if($entry['details']): ?><div class="prewrap"><?=h($entry['details'])?></div><?php endif; ?><?php if($entry['field']): ?><table class="table table-bordered align-middle mt-3 mb-0"><tbody><tr><th class="w-25" scope="row">Field</th><td class="fw-semibold"><?=h((string)$entry['field'])?></td></tr><tr><th scope="row">From</th><td><div class="prewrap"><?=h((string)($entry['old_value'] ?? '—'))?></div></td></tr><tr><th scope="row">To</th><td><div class="prewrap"><?=h((string)($entry['new_value'] ?? '—'))?></div></td></tr></tbody></table><?php endif; ?><?php if($entry['event']==='Comment added'): ?><a class="small text-decoration-none" href="?page=task&id=<?=$entry['task_id']?>#comments">Open the comment on the task page</a><?php endif; ?><?php if($entry['event']==='Task updated' && !$entry['field']):
     // #54 v2 feedback: the generic save entry lists the changed fields of
     // exactly this save in one From/To table - the field rows of the save sit
     // directly after it in the write order, up to the next event-level row.
@@ -1742,7 +1744,7 @@ if (in_array($page, ['users', 'users-v2'], true) && is_admin()) {
     $list=tb_crud_list([
         'pdo'=>$pdo,
         'table'=>'users u',
-        'select'=>'u.id,u.username,u.display_name,u.role,u.created_at,u.last_seen_at,u.logged_out,CURRENT_TIMESTAMP AS db_now',
+        'select'=>'u.id,u.username,u.display_name,u.role,u.created_at,u.last_seen_at,u.logged_out',
         'where'=>$conds,
         'params'=>$params,
         'sortColumns'=>[
@@ -1755,17 +1757,14 @@ if (in_array($page, ['users', 'users-v2'], true) && is_admin()) {
         'defaultSort'=>'name',
     ]);
     $users=$list['rows'];
-    // The Last active label (#30) still ages the stamps against the
-    // database's own clock, read from the first row of the page.
-    $dbNowTs=null;
-    if ($users!==[] && ($t=strtotime((string)$users[0]['db_now']))!==false) $dbNowTs=$t;
     $usersUrl=tb_crud_url_builder($usersPage,['q','role']);
     $userColumns=[
         ['label'=>'Display name','sortKey'=>'name','sort'=>$list['sort'],'url'=>$usersUrl,'cell'=>fn(array $u): string => '<td class="fw-semibold">'.tb_user_with_activity($u).'</td>'],
         ['label'=>'Username','sortKey'=>'username','sort'=>$list['sort'],'url'=>$usersUrl,'cell'=>fn(array $u): string => '<td>'.h($u['username']).'</td>'],
         ['label'=>'Role','sortKey'=>'role','sort'=>$list['sort'],'url'=>$usersUrl,'cell'=>fn(array $u): string => '<td><span class="badge text-bg-secondary">'.h($u['role']).'</span></td>'],
-        ['label'=>'Created','sortKey'=>'created','sort'=>$list['sort'],'url'=>$usersUrl,'cell'=>fn(array $u): string => '<td class="small muted">'.h($u['created_at']).'</td>'],
-        ['label'=>'Last active','sortKey'=>'activity','sort'=>$list['sort'],'url'=>$usersUrl,'cell'=>fn(array $u): string => '<td class="small muted">'.h($u['last_seen_at']===null?'never':'active: '.tb_last_seen_label($u['last_seen_at'],$dbNowTs)).'</td>'],
+        // #108: the stamps are epoch seconds and every render goes through tb_dt().
+        ['label'=>'Created','sortKey'=>'created','sort'=>$list['sort'],'url'=>$usersUrl,'cell'=>fn(array $u): string => '<td class="small muted">'.h(tb_dt($u['created_at'])).'</td>'],
+        ['label'=>'Last active','sortKey'=>'activity','sort'=>$list['sort'],'url'=>$usersUrl,'cell'=>fn(array $u): string => '<td class="small muted">'.h($u['last_seen_at']===null||((int)$u['last_seen_at'])===0?'never':'active: '.tb_last_seen_label($u['last_seen_at'])).'</td>'],
         ['label'=>'Actions','cell'=>function(array $u): string {
             // The message shortcut (#98): jumps to the messenger with this
             // user's conversation already selected (?u=<id>). The own row
@@ -1844,7 +1843,7 @@ if ($page==='user' && is_admin()) {
     $s=$pdo->prepare('SELECT id,username,display_name,role,created_at FROM users WHERE id=?'); $s->execute([$id]); $u=$s->fetch();
     if(!$u){ http_response_code(404); exit('User not found.'); }
     render_header('Edit user',$config); ?>
-    <div class="row justify-content-center"><div class="col-md-6"><div class="card p-4"><h2 class="h4">Edit user</h2><p class="muted small mb-3">Account created <?=h($u['created_at'])?>.</p><form method="post"><?=csrf_field()?><input type="hidden" name="action" value="edit_user"><input type="hidden" name="id" value="<?=$u['id']?>"><div class="mb-3"><label class="form-label">Username</label><input class="form-control" name="username" maxlength="80" value="<?=h($u['username'])?>" required></div><div class="mb-3"><label class="form-label">Display name</label><input class="form-control" name="display_name" maxlength="120" value="<?=h($u['display_name'])?>" required></div><div class="mb-3"><label class="form-label">Role</label><select class="form-select" name="role"><option value="user" <?=$u['role']==='user'?'selected':''?>>User</option><option value="admin" <?=$u['role']==='admin'?'selected':''?>>Administrator</option></select><div class="form-text">At least one administrator must remain on the board.</div></div><div class="mb-3"><label class="form-label">New password (leave empty to keep the current one)</label><input class="form-control" type="password" name="password" autocomplete="new-password"><div class="form-text">Minimum 10 characters.</div></div><button class="btn btn-primary">Save user</button> <a class="btn btn-outline-secondary" href="?page=users-v2">Cancel</a></form></div></div></div>
+    <div class="row justify-content-center"><div class="col-md-6"><div class="card p-4"><h2 class="h4">Edit user</h2><p class="muted small mb-3">Account created <?=h(tb_dt($u['created_at']))?>.</p><form method="post"><?=csrf_field()?><input type="hidden" name="action" value="edit_user"><input type="hidden" name="id" value="<?=$u['id']?>"><div class="mb-3"><label class="form-label">Username</label><input class="form-control" name="username" maxlength="80" value="<?=h($u['username'])?>" required></div><div class="mb-3"><label class="form-label">Display name</label><input class="form-control" name="display_name" maxlength="120" value="<?=h($u['display_name'])?>" required></div><div class="mb-3"><label class="form-label">Role</label><select class="form-select" name="role"><option value="user" <?=$u['role']==='user'?'selected':''?>>User</option><option value="admin" <?=$u['role']==='admin'?'selected':''?>>Administrator</option></select><div class="form-text">At least one administrator must remain on the board.</div></div><div class="mb-3"><label class="form-label">New password (leave empty to keep the current one)</label><input class="form-control" type="password" name="password" autocomplete="new-password"><div class="form-text">Minimum 10 characters.</div></div><button class="btn btn-primary">Save user</button> <a class="btn btn-outline-secondary" href="?page=users-v2">Cancel</a></form></div></div></div>
     <?php render_footer(); exit;
 }
 
@@ -1926,10 +1925,10 @@ if ($page==='task') {
     $isArchived=task_is_archived($t);
     render_header('Task #'.$id,$config,$error); ?>
     <div class="d-flex justify-content-between align-items-start mb-3"><div><div class="muted">Task #<?=$id?> · <?=tb_status_badge((string)$t['status_name'], $t['status_color'] ?? null)?><?php if($isArchived): ?> <span class="badge text-bg-secondary">Archived</span><?php endif; ?></div><h1 class="h3"><?=h($t['title'])?></h1></div><?php if(!$isArchived): ?><a class="btn btn-primary" href="?page=edit&id=<?=$id?>">Edit task</a><?php endif; ?></div>
-    <div class="row g-4"><div class="col-lg-8"><div class="card p-4 mb-4"><div class="prewrap"><?=h($t['description'])?></div><hr><div class="small muted">Created by <?=tb_user_with_activity(['display_name'=>$t['creator'],'last_seen_at'=>$t['creator_last_seen']??null])?> · <?=h($t['created_at'])?> · Updated <?=h($t['updated_at'])?></div><div class="mt-2"><strong>Assignees:</strong> <?php $assigneeHtml=[];foreach($assignees as $au){$assigneeHtml[]=tb_user_with_activity($au);}echo implode(', ',$assigneeHtml)?:'Unassigned';?></div><div><strong>Priority:</strong> <?=h((string)max(1,min(1000,(int)($t['priority'] ?? 1))))?></div><div><strong>Complexity:</strong> <?=h((string)max(1,min(1000,(int)($t['complexity'] ?? 1))))?><?php if((int)($t['complexity'] ?? 1)>1): ?> <span class="small muted">(drives the block width on the <a href="?page=waterflow">waterflow chart</a>)</span><?php endif; ?></div><?php if(!empty($t['schedule_period'])): $schStatusId=(int)($t['schedule_status_id']??0); $schAssignees=schedule_existing_assignees($pdo, schedule_target_assignees($t['schedule_assignees']??null)); $schNames=[]; if($schAssignees){$ph=implode(',',array_fill(0,count($schAssignees),'?'));$sq=$pdo->prepare('SELECT display_name FROM users WHERE id IN ('.$ph.') ORDER BY display_name');$sq->execute($schAssignees);$schNames=array_column($sq->fetchAll(),'display_name');} if($schStatusId){$sq=$pdo->prepare('SELECT name FROM statuses WHERE id=?');$sq->execute([$schStatusId]);$schStatusName=(string)$sq->fetchColumn(); if($schStatusName===''){$schStatusName='TODO';}}else{$schStatusName='TODO';} ?><div><strong>Schedule:</strong> <?=h(schedule_periods()[$t['schedule_period']] ?? $t['schedule_period'])?> <span class="badge text-bg-info">auto-reopen</span> <span class="small muted">· reopens to <?=h($schStatusName)?>, assignees: <?=$schNames?implode(', ', array_map(fn(string $n): string => '<span class="text-nowrap">'.h($n).'</span>', $schNames)):'none'?></span></div><?php endif; ?><?php if($t['parent_id']): ?><div><strong>Parent:</strong> <a href="?page=task&id=<?=$t['parent_id']?>">Task #<?=$t['parent_id']?></a></div><?php endif; ?><?php if($t['project_id']): ?><div><strong>Project:</strong> <a href="?page=project&id=<?=$t['project_id']?>"><?=h($t['project_name'])?></a></div><?php endif; ?></div>
-    <div class="card p-4 mb-4" id="comments"><h2 class="h5">Comments</h2><?php foreach($comments as $c): ?><div class="border-bottom py-3" id="comment-<?=$c['id']?>"><strong><?=tb_user_with_activity($c)?></strong> <span class="small muted"><?=h($c['created_at'])?></span><div class="prewrap mt-1"><?=h($c['body'])?></div></div><?php endforeach; ?><form method="post" class="mt-3"><?=csrf_field()?><input type="hidden" name="action" value="comment"><input type="hidden" name="task_id" value="<?=$id?>"><textarea class="form-control mb-2" name="body" rows="3" placeholder="Write a comment..." required></textarea><button class="btn btn-primary">Add comment</button></form></div>
-    <div class="card p-4 mb-4"><h2 class="h5">Attachments</h2><?php foreach($attachments as $a): ?><div class="d-flex justify-content-between border-bottom py-2"><a href="?page=download&id=<?=$a['id']?>"><?=h($a['original_name'])?></a><span class="small muted"><?=tb_user_with_activity($a)?> · <?=number_format($a['file_size']/1024,1)?> KB · <?=h($a['created_at'])?></span><?php if(is_admin()||(int)$a['user_id']===(int)user()['id']): ?><form method="post" class="d-inline" onsubmit="return confirm('Delete this attachment permanently?')"><?=csrf_field()?><input type="hidden" name="action" value="delete_attachment"><input type="hidden" name="attachment_id" value="<?=$a['id']?>"><button class="btn btn-sm btn-link text-danger p-0" title="Delete this attachment">delete</button></form><?php endif; ?></div><?php endforeach; ?><form method="post" enctype="multipart/form-data" class="mt-3"><?=csrf_field()?><input type="hidden" name="action" value="upload"><input type="hidden" name="task_id" value="<?=$id?>"><div class="input-group"><input class="form-control" type="file" name="file" required><button class="btn btn-outline-primary">Upload</button></div><div class="form-text">Max <?=round($config['max_upload_bytes']/1024/1024)?> MB. Allowed: common images, PDF, TXT, ZIP, DOCX and XLSX.</div></form></div>
-    <div class="card p-4"><h2 class="h5">History</h2><?php foreach($historyRows as $r): ?><div class="border-bottom py-2"><strong><?=h($r['event'])?></strong> <span class="small muted">by <?=tb_user_with_activity($r)?> · <?=h($r['created_at'])?></span> <a class="small text-decoration-none" href="?page=task_history&id=<?=$r['id']?>" title="Full audit of this entry (#54)">details</a><?php if($r['details']): ?><div class="small"><?=h(tb_excerpt((string)$r['details'], 100))?></div><?php endif; ?><?php if($r['field']): ?><div class="small muted">Field &quot;<?=h((string)$r['field']) ?>&quot;: from &quot;<?=h(tb_excerpt((string)($r['old_value'] ?? '—'), 100)) ?>&quot; to &quot;<?=h(tb_excerpt((string)($r['new_value'] ?? '—'), 100)) ?>&quot;</div><?php endif; ?></div><?php endforeach; ?></div></div>
+    <div class="row g-4"><div class="col-lg-8"><div class="card p-4 mb-4"><div class="prewrap"><?=h($t['description'])?></div><hr><div class="small muted">Created by <?=tb_user_with_activity(['display_name'=>$t['creator'],'last_seen_at'=>$t['creator_last_seen']??null])?> · <?=h(tb_dt($t['created_at']))?> · Updated <?=h(tb_dt($t['updated_at']))?></div><div class="mt-2"><strong>Assignees:</strong> <?php $assigneeHtml=[];foreach($assignees as $au){$assigneeHtml[]=tb_user_with_activity($au);}echo implode(', ',$assigneeHtml)?:'Unassigned';?></div><div><strong>Priority:</strong> <?=h((string)max(1,min(1000,(int)($t['priority'] ?? 1))))?></div><div><strong>Complexity:</strong> <?=h((string)max(1,min(1000,(int)($t['complexity'] ?? 1))))?><?php if((int)($t['complexity'] ?? 1)>1): ?> <span class="small muted">(drives the block width on the <a href="?page=waterflow">waterflow chart</a>)</span><?php endif; ?></div><?php if(!empty($t['schedule_period'])): $schStatusId=(int)($t['schedule_status_id']??0); $schAssignees=schedule_existing_assignees($pdo, schedule_target_assignees($t['schedule_assignees']??null)); $schNames=[]; if($schAssignees){$ph=implode(',',array_fill(0,count($schAssignees),'?'));$sq=$pdo->prepare('SELECT display_name FROM users WHERE id IN ('.$ph.') ORDER BY display_name');$sq->execute($schAssignees);$schNames=array_column($sq->fetchAll(),'display_name');} if($schStatusId){$sq=$pdo->prepare('SELECT name FROM statuses WHERE id=?');$sq->execute([$schStatusId]);$schStatusName=(string)$sq->fetchColumn(); if($schStatusName===''){$schStatusName='TODO';}}else{$schStatusName='TODO';} ?><div><strong>Schedule:</strong> <?=h(schedule_periods()[$t['schedule_period']] ?? $t['schedule_period'])?> <span class="badge text-bg-info">auto-reopen</span> <span class="small muted">· reopens to <?=h($schStatusName)?>, assignees: <?=$schNames?implode(', ', array_map(fn(string $n): string => '<span class="text-nowrap">'.h($n).'</span>', $schNames)):'none'?></span></div><?php endif; ?><?php if($t['parent_id']): ?><div><strong>Parent:</strong> <a href="?page=task&id=<?=$t['parent_id']?>">Task #<?=$t['parent_id']?></a></div><?php endif; ?><?php if($t['project_id']): ?><div><strong>Project:</strong> <a href="?page=project&id=<?=$t['project_id']?>"><?=h($t['project_name'])?></a></div><?php endif; ?></div>
+    <div class="card p-4 mb-4" id="comments"><h2 class="h5">Comments</h2><?php foreach($comments as $c): ?><div class="border-bottom py-3" id="comment-<?=$c['id']?>"><strong><?=tb_user_with_activity($c)?></strong> <span class="small muted"><?=h(tb_dt($c['created_at']))?></span><div class="prewrap mt-1"><?=h($c['body'])?></div></div><?php endforeach; ?><form method="post" class="mt-3"><?=csrf_field()?><input type="hidden" name="action" value="comment"><input type="hidden" name="task_id" value="<?=$id?>"><textarea class="form-control mb-2" name="body" rows="3" placeholder="Write a comment..." required></textarea><button class="btn btn-primary">Add comment</button></form></div>
+    <div class="card p-4 mb-4"><h2 class="h5">Attachments</h2><?php foreach($attachments as $a): ?><div class="d-flex justify-content-between border-bottom py-2"><a href="?page=download&id=<?=$a['id']?>"><?=h($a['original_name'])?></a><span class="small muted"><?=tb_user_with_activity($a)?> · <?=number_format($a['file_size']/1024,1)?> KB · <?=h(tb_dt($a['created_at']))?></span><?php if(is_admin()||(int)$a['user_id']===(int)user()['id']): ?><form method="post" class="d-inline" onsubmit="return confirm('Delete this attachment permanently?')"><?=csrf_field()?><input type="hidden" name="action" value="delete_attachment"><input type="hidden" name="attachment_id" value="<?=$a['id']?>"><button class="btn btn-sm btn-link text-danger p-0" title="Delete this attachment">delete</button></form><?php endif; ?></div><?php endforeach; ?><form method="post" enctype="multipart/form-data" class="mt-3"><?=csrf_field()?><input type="hidden" name="action" value="upload"><input type="hidden" name="task_id" value="<?=$id?>"><div class="input-group"><input class="form-control" type="file" name="file" required><button class="btn btn-outline-primary">Upload</button></div><div class="form-text">Max <?=round($config['max_upload_bytes']/1024/1024)?> MB. Allowed: common images, PDF, TXT, ZIP, DOCX and XLSX.</div></form></div>
+    <div class="card p-4"><h2 class="h5">History</h2><?php foreach($historyRows as $r): ?><div class="border-bottom py-2"><strong><?=h($r['event'])?></strong> <span class="small muted">by <?=tb_user_with_activity($r)?> · <?=h(tb_dt($r['created_at']))?></span> <a class="small text-decoration-none" href="?page=task_history&id=<?=$r['id']?>" title="Full audit of this entry (#54)">details</a><?php if($r['details']): ?><div class="small"><?=h(tb_excerpt((string)$r['details'], 100))?></div><?php endif; ?><?php if($r['field']): ?><div class="small muted">Field &quot;<?=h((string)$r['field']) ?>&quot;: from &quot;<?=h(tb_excerpt((string)($r['old_value'] ?? '—'), 100)) ?>&quot; to &quot;<?=h(tb_excerpt((string)($r['new_value'] ?? '—'), 100)) ?>&quot;</div><?php endif; ?></div><?php endforeach; ?></div></div>
     <div class="col-lg-4"><div class="card p-4"><h2 class="h5">Relationships</h2><?php foreach($links as $l): ?><div class="border-bottom py-2"><span class="badge text-bg-secondary"><?=h($l['link_type'])?></span> <a href="?page=task&id=<?=$l['related_task_id']?>">#<?=$l['related_task_id']?> <?=h($l['title'])?></a><form method="post" class="d-inline"><?=csrf_field()?><input type="hidden" name="action" value="unlink_task"><input type="hidden" name="task_id" value="<?=$id?>"><input type="hidden" name="related_task_id" value="<?=$l['related_task_id']?>"><input type="hidden" name="link_type" value="<?=h($l['link_type'])?>"><button class="btn btn-sm btn-link text-danger">remove</button></form></div><?php endforeach; ?><form method="post" class="mt-3"><?=csrf_field()?><input type="hidden" name="action" value="link_task"><input type="hidden" name="task_id" value="<?=$id?>"><label class="form-label">Link type</label><select class="form-select mb-2" name="link_type"><?php foreach(TASK_BOARD_LINK_TYPES as $linkTypeValue=>$linkTypeLabel): ?><option value="<?=h($linkTypeValue)?>"><?=h($linkTypeLabel)?></option><?php endforeach; ?></select><label class="form-label">Task</label><select class="form-select mb-2" name="related_task_id" required><?php foreach($all->fetchAll() as $a): ?><option value="<?=$a['id']?>">#<?=$a['id']?> - <?=h($a['title'])?></option><?php endforeach; ?></select><button class="btn btn-outline-primary w-100">Add relationship</button></form></div>
     <div class="card p-4 mt-4"><h2 class="h5">Actions</h2><?php if($isArchived): ?><p class="small muted">This task is archived and hidden from the task list.</p><form method="post" class="mb-2"><?=csrf_field()?><input type="hidden" name="action" value="restore_task"><input type="hidden" name="id" value="<?=$id?>"><button class="btn btn-outline-primary w-100">Restore task</button></form><form method="post" onsubmit="return confirm('Delete this task permanently? This cannot be undone.')"><?=csrf_field()?><input type="hidden" name="action" value="delete_task"><input type="hidden" name="id" value="<?=$id?>"><input type="hidden" name="return" value="?"><button class="btn btn-outline-danger w-100">Delete permanently</button></form><?php else: ?><form method="post" onsubmit="return confirm('Archive this task? It will be hidden from the task list but can be restored from the archive.')"><?=csrf_field()?><input type="hidden" name="action" value="archive_task"><input type="hidden" name="id" value="<?=$id?>"><button class="btn btn-outline-danger w-100">Archive task</button></form><?php endif; ?></div></div></div>
     <?php render_footer(); exit;
@@ -1966,7 +1965,7 @@ if ($page==='project') {
     $s=$pdo->prepare('SELECT t.id,t.title,t.updated_at,s.name status_name,s.color status_color FROM tasks t JOIN statuses s ON s.id=t.status_id WHERE t.project_id=? ORDER BY t.updated_at DESC');$s->execute([$id]);$projectTasks=$s->fetchAll();
     render_header('Project #'.$id,$config,$error); ?>
     <div class="d-flex justify-content-between align-items-start mb-3"><div><div class="muted">Project #<?=$id?> · <?=tb_status_badge((string)$pr['status_name'], $pr['status_color'] ?? null)?></div><h1 class="h3"><?=h($pr['name'])?></h1></div><a class="btn btn-primary" href="?page=project_edit&id=<?=$id?>">Edit project</a></div>
-    <div class="row g-4"><div class="col-lg-8"><div class="card p-4 mb-4"><div class="prewrap"><?=h($pr['description'])?></div><hr><div class="small muted">Created by <?=tb_user_with_activity(['display_name'=>$pr['creator'],'last_seen_at'=>$pr['creator_last_seen']??null])?> · <?=h($pr['created_at'])?> · Updated <?=h($pr['updated_at'])?></div><div class="mt-2"><strong>Assignees:</strong> <?php $assigneeHtml=[];foreach($projectAssignees as $au){$assigneeHtml[]=tb_user_with_activity($au);}echo implode(', ',$assigneeHtml)?:'Unassigned';?></div></div>
+    <div class="row g-4"><div class="col-lg-8"><div class="card p-4 mb-4"><div class="prewrap"><?=h($pr['description'])?></div><hr><div class="small muted">Created by <?=tb_user_with_activity(['display_name'=>$pr['creator'],'last_seen_at'=>$pr['creator_last_seen']??null])?> · <?=h(tb_dt($pr['created_at']))?> · Updated <?=h(tb_dt($pr['updated_at']))?></div><div class="mt-2"><strong>Assignees:</strong> <?php $assigneeHtml=[];foreach($projectAssignees as $au){$assigneeHtml[]=tb_user_with_activity($au);}echo implode(', ',$assigneeHtml)?:'Unassigned';?></div></div>
     <div class="card p-4 mb-4"><h2 class="h5">Tasks in this project</h2><?php foreach($projectTasks as $pt): ?><div class="border-bottom py-2 d-flex justify-content-between"><a class="text-decoration-none" href="?page=task&id=<?=$pt['id']?>">#<?=$pt['id']?> · <?=h($pt['title'])?></a><?=tb_status_badge((string)$pt['status_name'], $pt['status_color'] ?? null)?></div><?php endforeach; ?><?php if(!$projectTasks): ?><p class="muted mb-0">No tasks in this project yet.</p><?php endif; ?><div class="mt-3"><a class="btn btn-sm btn-outline-primary" href="?page=tasks-v2&project=<?=$id?>">Tasks…</a> <span class="small muted">Opens the task list filtered to this project.</span></div></div></div>
     <div class="col-lg-4"><div class="card p-4"><h2 class="h5">Actions</h2><form method="post" onsubmit="return confirm('Delete this project permanently? The tasks will be kept but lose their project.')"><?=csrf_field()?><input type="hidden" name="action" value="delete_project"><input type="hidden" name="id" value="<?=$id?>"><input type="hidden" name="return" value="?page=projects"><button class="btn btn-outline-danger w-100">Delete project</button></form></div></div></div>
     <?php render_footer(); exit;
@@ -2012,7 +2011,7 @@ if (in_array($page, ['projects', 'projects-v2'], true)) {
             return '<td>'.(implode(', ',$puHtml)?:'—').'</td>';
         }],
         ['label'=>'Tasks','sortKey'=>'tasks','sort'=>$projectSort,'url'=>$projectsUrl,'cell'=>fn(array $pr): string => '<td class="text-nowrap"><span class="me-2">'.$pr['task_count'].' task'.($pr['task_count']===1?'':'s').'</span><a class="btn btn-sm btn-outline-primary" href="?page=tasks-v2&project='.$pr['id'].'">Tasks…</a></td>'],
-        ['label'=>'Updated','sortKey'=>'updated','sort'=>$projectSort,'url'=>$projectsUrl,'cell'=>fn(array $pr): string => '<td class="small muted">'.h($pr['updated_at']).'</td>'],
+        ['label'=>'Updated','sortKey'=>'updated','sort'=>$projectSort,'url'=>$projectsUrl,'cell'=>fn(array $pr): string => '<td class="small muted">'.h(tb_dt($pr['updated_at'])).'</td>'],
         ['label'=>'Actions','cell'=>function(array $pr): string {
             $canDelete=is_admin()||(int)$pr['created_by']===(int)user()['id'];
             return '<td class="text-nowrap"><a class="btn btn-sm btn-outline-secondary" href="?page=project_edit&id='.$pr['id'].'">Edit</a>'.($canDelete ? ' <button type="submit" class="btn btn-sm btn-outline-danger" form="delete-project-'.$pr['id'].'">Delete</button>' : '').'</td>';
@@ -2084,7 +2083,7 @@ if (in_array($page, ['templates', 'templates-v2'], true)) {
             $desc=(string)$tp['description']; $short=preg_replace('/^(.{0,140}).*$/su','$1',$desc);
             return '<td class="small muted" style="max-width:32rem">'.h($short).(strlen($desc)>strlen($short)?'&hellip;':'').'</td>';
         }],
-        ['label'=>'Updated','sortKey'=>'updated','sort'=>$templateSort,'url'=>$templatesUrl,'cell'=>fn(array $tp): string => '<td class="small muted">'.h($tp['updated_at']).'</td>'],
+        ['label'=>'Updated','sortKey'=>'updated','sort'=>$templateSort,'url'=>$templatesUrl,'cell'=>fn(array $tp): string => '<td class="small muted">'.h(tb_dt($tp['updated_at'])).'</td>'],
         ['label'=>'Actions','cell'=>function(array $tp): string {
             $canDelete=is_admin()||(int)$tp['created_by']===(int)user()['id'];
             return '<td class="text-nowrap"><a class="btn btn-sm btn-outline-secondary" href="?page=template_edit&id='.$tp['id'].'">Edit</a>'.($canDelete ? ' <form method="post" class="d-inline" onsubmit="return confirm(\'Delete this template permanently?\')">'.csrf_field().'<input type="hidden" name="action" value="delete_template"><input type="hidden" name="id" value="'.$tp['id'].'"><button class="btn btn-sm btn-outline-danger">Delete</button></form>' : '').'</td>';
@@ -2115,8 +2114,15 @@ $projectOptions=$pdo->query('SELECT id,name FROM projects ORDER BY name')->fetch
 // The personal settings page: deliberately minimal for now ("under
 // development") - it is the base the future preference screens will build on.
 if ($page==='settings') {
+    // Timezone preference (#108): every datetime on the board renders in this
+    // zone from the stored epoch seconds; the default is UTC (the storage
+    // zone), so a fresh user sees exactly the classic board until they pick.
+    $tzPref = tb_user_pref_get($pdo, (int)user()['id'], 'timezone', 'UTC');
+    if (!in_array($tzPref, DateTimeZone::listIdentifiers(), true)) $tzPref = 'UTC';
     render_header('Settings',$config,$error); ?>
-    <div class="row justify-content-center"><div class="col-lg-7"><div class="card p-4"><h1 class="h4 mb-3">Settings</h1><p class="mb-2">This page is <span class="badge text-bg-secondary">under development</span> — the personal preferences will live here.</p><p class="small muted mb-0">Planned for this space: profile details, notification and display preferences, and everything else that today is configured per page. The theme switch already works from the navbar; everything else will be gathered here as it arrives.</p></div></div></div>
+    <div class="row justify-content-center"><div class="col-lg-7"><div class="card p-4"><h1 class="h4 mb-3">Settings</h1><p class="mb-3">Personal preferences. The theme switch already works from the navbar; everything else gathers here as it arrives.</p>
+    <form method="post" class="row g-2 align-items-end" action="?page=settings"><?=csrf_field()?><input type="hidden" name="action" value="save_timezone"><div class="col-md-8"><label class="form-label small muted mb-1" for="timezone-select">Timezone - every date and time on the board shows in this zone (stored times are UTC)</label><select class="form-select" id="timezone-select" name="timezone"><?php foreach (DateTimeZone::listIdentifiers() as $tzName): ?><option value="<?=h($tzName)?>" <?=$tzPref===$tzName?'selected':''?>><?=h($tzName)?></option><?php endforeach; ?></select><div class="form-text">The board stores every moment as a UTC timestamp and renders it in your zone; your current zone renders as <strong><?=h((new DateTime('now', new DateTimeZone($tzPref)))->format('Y-m-d H:i:s'))?></strong>.</div></div><div class="col-md-4 d-grid"><button class="btn btn-outline-primary">Save timezone</button></div></form>
+    </div></div></div>
     <?php render_footer(); exit;
 }
 
@@ -2180,7 +2186,7 @@ if (in_array($page, ['documents', 'documents-v2'], true)) {
     $docsUrl=tb_crud_url_builder($listPage,['q']);
     $documentColumns=[
         ['header'=>'<th class="ps-3">Title</th>','cell'=>fn(array $d): string => '<td class="ps-3"><a class="fw-semibold text-decoration-none" href="?page=document&id='.$d['id'].'">'.h($d['title']).'</a><div class="small muted">'.h(tb_excerpt((string)$d['content'])).'</div></td>'],
-        ['label'=>'Updated','cell'=>fn(array $d): string => '<td class="small muted">'.h($d['updated_at']).'</td>'],
+        ['label'=>'Updated','cell'=>fn(array $d): string => '<td class="small muted">'.h(tb_dt($d['updated_at'])).'</td>'],
         ['label'=>'Created by','cell'=>fn(array $d): string => '<td>'.tb_user_with_activity(['display_name'=>$d['creator'],'last_seen_at'=>$d['creator_last_seen']??null]).'</td>'],
         ['label'=>'Comments','cell'=>fn(array $d): string => '<td>'.h((string)$d['comments']).'</td>'],
         ['label'=>'Attachments','cell'=>fn(array $d): string => '<td>'.h((string)$d['attachments']).'</td>'],
@@ -2201,10 +2207,10 @@ if ($page==='document') {
     $cs=$pdo->prepare('SELECT dc.*, u.display_name author, u.last_seen_at author_last_seen, u.logged_out author_logged_out FROM document_comments dc LEFT JOIN users u ON u.id=dc.user_id WHERE dc.document_id=? ORDER BY dc.created_at, dc.id'); $cs->execute([$id]); $docComments=$cs->fetchAll();
     $as=$pdo->prepare('SELECT da.*, u.display_name uploader, u.last_seen_at uploader_last_seen, u.logged_out uploader_logged_out FROM document_attachments da LEFT JOIN users u ON u.id=da.user_id WHERE da.document_id=? ORDER BY da.created_at, da.id'); $as->execute([$id]); $docAttachments=$as->fetchAll();
     render_header('Know-how',$config,$error); ?>
-    <div class="d-flex justify-content-between align-items-center mb-3"><div><h1 class="h3 mb-0"><?=h($doc['title'])?></h1><div class="muted">Created by <?=tb_user_with_activity(['display_name'=>$doc['creator'],'last_seen_at'=>$doc['creator_last_seen']??null])?> · <?=h($doc['created_at'])?> · Updated <?=h($doc['updated_at'])?></div></div><div class="d-flex gap-2"><a class="btn btn-outline-secondary" href="?page=documents-v2">All know-hows</a><?php if(document_can_edit($doc)): ?><a class="btn btn-outline-primary" href="?page=document_edit&id=<?=$doc['id']?>">Edit</a><form method="post" class="d-inline" onsubmit="return confirm('Delete this know-how permanently? Its comments and attachments go with it.')"><?=csrf_field()?><input type="hidden" name="action" value="doc_delete"><input type="hidden" name="id" value="<?=$doc['id']?>"><button class="btn btn-outline-danger">Delete</button></form><?php endif; ?></div></div>
+    <div class="d-flex justify-content-between align-items-center mb-3"><div><h1 class="h3 mb-0"><?=h($doc['title'])?></h1><div class="muted">Created by <?=tb_user_with_activity(['display_name'=>$doc['creator'],'last_seen_at'=>$doc['creator_last_seen']??null])?> · <?=h(tb_dt($doc['created_at']))?> · Updated <?=h(tb_dt($doc['updated_at']))?></div></div><div class="d-flex gap-2"><a class="btn btn-outline-secondary" href="?page=documents-v2">All know-hows</a><?php if(document_can_edit($doc)): ?><a class="btn btn-outline-primary" href="?page=document_edit&id=<?=$doc['id']?>">Edit</a><form method="post" class="d-inline" onsubmit="return confirm('Delete this know-how permanently? Its comments and attachments go with it.')"><?=csrf_field()?><input type="hidden" name="action" value="doc_delete"><input type="hidden" name="id" value="<?=$doc['id']?>"><button class="btn btn-outline-danger">Delete</button></form><?php endif; ?></div></div>
     <div class="card p-4 mb-4"><div class="prewrap"><?php $docContent=(string)($doc['content'] ?? ''); if(trim($docContent)===''): ?><span class="muted">No content - see the attachments below.</span><?php else: ?><?=h($docContent)?><?php endif; ?></div></div>
-    <div class="card p-4 mb-4"><h2 class="h5">Attachments</h2><?php foreach($docAttachments as $a): ?><div class="d-flex justify-content-between border-bottom py-2"><a href="?page=doc_download&id=<?=$a['id']?>"><?=h($a['original_name'])?></a><span class="small muted"><?=tb_user_with_activity(['display_name'=>$a['uploader'],'last_seen_at'=>$a['uploader_last_seen']??null])?> · <?=number_format($a['file_size']/1024,1)?> KB · <?=h($a['created_at'])?></span><?php if(is_admin()||(int)$a['user_id']===(int)user()['id']): ?><form method="post" class="d-inline" onsubmit="return confirm('Delete this attachment permanently?')"><?=csrf_field()?><input type="hidden" name="action" value="doc_delete_attachment"><input type="hidden" name="attachment_id" value="<?=$a['id']?>"><input type="hidden" name="document_id" value="<?=$doc['id']?>"><button class="btn btn-sm btn-link text-danger p-0" title="Delete this attachment">delete</button></form><?php endif; ?></div><?php endforeach; if(!$docAttachments): ?><div class="small muted">No attachments yet.</div><?php endif; ?><form method="post" enctype="multipart/form-data" class="mt-3"><?=csrf_field()?><input type="hidden" name="action" value="doc_upload"><input type="hidden" name="document_id" value="<?=$doc['id']?>"><div class="input-group"><input class="form-control" type="file" name="file" required><button class="btn btn-outline-primary">Upload</button></div><div class="form-text">Max <?=round($config['max_upload_bytes']/1024/1024)?> MB. Allowed: common images, PDF, TXT, ZIP, DOCX and XLSX.</div></form></div>
-    <div class="card p-4 mb-4" id="comments"><h2 class="h5">Comments</h2><?php foreach($docComments as $c): ?><div class="border-bottom py-3"><strong><?=tb_user_with_activity(['display_name'=>$c['author'],'last_seen_at'=>$c['author_last_seen']??null])?></strong> <span class="small muted"><?=h($c['created_at'])?></span><div class="prewrap mt-1"><?=h($c['body'])?></div></div><?php endforeach; if(!$docComments): ?><div class="small muted">No comments yet.</div><?php endif; ?><form method="post" class="mt-3"><?=csrf_field()?><input type="hidden" name="action" value="doc_comment"><input type="hidden" name="document_id" value="<?=$doc['id']?>"><textarea class="form-control mb-2" name="body" rows="3" placeholder="Write a comment..." required></textarea><button class="btn btn-primary">Add comment</button></form></div>
+    <div class="card p-4 mb-4"><h2 class="h5">Attachments</h2><?php foreach($docAttachments as $a): ?><div class="d-flex justify-content-between border-bottom py-2"><a href="?page=doc_download&id=<?=$a['id']?>"><?=h($a['original_name'])?></a><span class="small muted"><?=tb_user_with_activity(['display_name'=>$a['uploader'],'last_seen_at'=>$a['uploader_last_seen']??null])?> · <?=number_format($a['file_size']/1024,1)?> KB · <?=h(tb_dt($a['created_at']))?></span><?php if(is_admin()||(int)$a['user_id']===(int)user()['id']): ?><form method="post" class="d-inline" onsubmit="return confirm('Delete this attachment permanently?')"><?=csrf_field()?><input type="hidden" name="action" value="doc_delete_attachment"><input type="hidden" name="attachment_id" value="<?=$a['id']?>"><input type="hidden" name="document_id" value="<?=$doc['id']?>"><button class="btn btn-sm btn-link text-danger p-0" title="Delete this attachment">delete</button></form><?php endif; ?></div><?php endforeach; if(!$docAttachments): ?><div class="small muted">No attachments yet.</div><?php endif; ?><form method="post" enctype="multipart/form-data" class="mt-3"><?=csrf_field()?><input type="hidden" name="action" value="doc_upload"><input type="hidden" name="document_id" value="<?=$doc['id']?>"><div class="input-group"><input class="form-control" type="file" name="file" required><button class="btn btn-outline-primary">Upload</button></div><div class="form-text">Max <?=round($config['max_upload_bytes']/1024/1024)?> MB. Allowed: common images, PDF, TXT, ZIP, DOCX and XLSX.</div></form></div>
+    <div class="card p-4 mb-4" id="comments"><h2 class="h5">Comments</h2><?php foreach($docComments as $c): ?><div class="border-bottom py-3"><strong><?=tb_user_with_activity(['display_name'=>$c['author'],'last_seen_at'=>$c['author_last_seen']??null])?></strong> <span class="small muted"><?=h(tb_dt($c['created_at']))?></span><div class="prewrap mt-1"><?=h($c['body'])?></div></div><?php endforeach; if(!$docComments): ?><div class="small muted">No comments yet.</div><?php endif; ?><form method="post" class="mt-3"><?=csrf_field()?><input type="hidden" name="action" value="doc_comment"><input type="hidden" name="document_id" value="<?=$doc['id']?>"><textarea class="form-control mb-2" name="body" rows="3" placeholder="Write a comment..." required></textarea><button class="btn btn-primary">Add comment</button></form></div>
     <?php render_footer(); exit;
 }
 
@@ -2380,7 +2386,7 @@ $filters=tb_task_filters_where();
         ['label'=>'Parent','sortKey'=>'parent','sort'=>$sort,'url'=>$listUrl,'cell'=>fn(array $t): string => '<td>'.($t['parent_id'] ? '<a class="text-decoration-none" href="?page=task&id='.$t['parent_id'].'">#'.$t['parent_id'].(($t['parent_title']??'')!==''&&$t['parent_title']!==null?' · '.h($t['parent_title']):'').'</a>' : '<span class="muted">—</span>').'</td>'],
         ['label'=>'Project','sortKey'=>'project','sort'=>$sort,'url'=>$listUrl,'cell'=>fn(array $t): string => '<td>'.($t['project_id'] ? '<a class="text-decoration-none" href="?page=project&id='.$t['project_id'].'">#'.$t['project_id'].' · '.h($t['project_name']).'</a>' : '<span class="muted">—</span>').'</td>'],
         ['label'=>'Priority','sortKey'=>'priority','sort'=>$sort,'url'=>$listUrl,'cell'=>fn(array $t): string => '<td><span class="badge text-bg-light border">&times;'.h((string)max(1,min(1000,(int)($t['priority'] ?? 1)))).'</span></td>'],
-        ['label'=>'Updated','sortKey'=>'updated','sort'=>$sort,'url'=>$listUrl,'cell'=>fn(array $t): string => '<td class="small muted">'.h($t['updated_at']).'</td>'],
+        ['label'=>'Updated','sortKey'=>'updated','sort'=>$sort,'url'=>$listUrl,'cell'=>fn(array $t): string => '<td class="small muted">'.h(tb_dt($t['updated_at'])).'</td>'],
         ['label'=>'Actions','cell'=>function(array $t): string {
             $canArchive=is_admin()||(int)$t['created_by']===(int)user()['id'];
             return '<td class="text-nowrap"><a class="btn btn-sm btn-outline-secondary" href="?page=edit&id='.$t['id'].'">Edit</a>'.($canArchive ? ' <button type="submit" class="btn btn-sm btn-outline-danger" form="archive-'.$t['id'].'">Archive</button>' : '').'</td>';

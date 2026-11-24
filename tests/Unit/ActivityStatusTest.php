@@ -22,14 +22,14 @@ final class ActivityStatusTest extends TestCase
 {
     private const NOW = 1700000000;
 
-    private function level(?string $lastSeen): string
+    private function level(int|string|null $lastSeen): string
     {
         return tb_activity_level($lastSeen, self::NOW);
     }
 
-    private function stamp(int $secondsAgo): string
+    private function stamp(int $secondsAgo): int
     {
-        return date('Y-m-d H:i:s', self::NOW - $secondsAgo);
+        return self::NOW - $secondsAgo;
     }
 
     public function test_within_fifteen_minutes_is_green(): void
@@ -56,12 +56,12 @@ final class ActivityStatusTest extends TestCase
     {
         $this->assertSame('red', $this->level(null));
         $this->assertSame('red', $this->level(''));
-        $this->assertSame('red', $this->level('not a date'));
+        $this->assertSame('red', $this->level(0));
     }
 
     public function test_a_stamp_in_the_future_never_reads_negative(): void
     {
-        $this->assertSame('green', $this->level(date('Y-m-d H:i:s', self::NOW + 3600)));
+        $this->assertSame('green', $this->level(self::NOW + 3600));
     }
 
     public function test_the_dot_carries_its_level_class_and_a_title(): void
@@ -107,12 +107,12 @@ final class ActivityStatusTest extends TestCase
             $stored = $s->fetchColumn();
             $this->assertNotNull($stored, 'The first touch must stamp the column.');
             // The session learns the fresh stamp; the column and the session
-            // copy come from two CURRENT_TIMESTAMP reads, so allow a second
-            // boundary straddle instead of demanding byte equality.
-            $this->assertNotFalse(strtotime((string)$_SESSION['user']['last_seen_at']), 'The session copy must learn the fresh stamp.');
+            // copy come from two time() reads, so allow a second boundary
+            // straddle instead of demanding byte equality.
+            $this->assertGreaterThan(0, (int)$_SESSION['user']['last_seen_at'], 'The session copy must learn the fresh stamp.');
             $this->assertLessThanOrEqual(
                 2,
-                abs(strtotime((string)$_SESSION['user']['last_seen_at']) - strtotime((string)$stored)),
+                abs((int)$_SESSION['user']['last_seen_at'] - (int)$stored),
                 'The session copy must be the stamp the touch just wrote.'
             );
         } finally {

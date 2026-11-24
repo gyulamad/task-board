@@ -34,15 +34,11 @@ final class SchedulerTest extends E2eTestCase
         'monthly'  => '-2 months',
     ];
 
-    /** Sets tasks.updated_at back to twice the period so the task is overdue. */
+    /** Sets tasks.updated_at back to twice the period so the task is overdue (#108: epoch seconds). */
     private function backdateTask(int $taskId, string $period): void
     {
-        $pdo = TestServer::pdo();
-        if (TestServer::dbMode() === 'mysql') {
-            $pdo->exec('UPDATE tasks SET updated_at = DATE_SUB(NOW(), INTERVAL ' . self::MYSQL_INTERVALS[$period] . ') WHERE id=' . $taskId);
-        } else {
-            $pdo->exec("UPDATE tasks SET updated_at = datetime('now', '" . self::SQLITE_MODIFIERS[$period] . "') WHERE id=" . $taskId);
-        }
+        $seconds = 2 * ['hourly' => 3600, 'daily' => 86400, 'weekly' => 604800, 'biweekly' => 1209600, 'monthly' => 2592000][$period];
+        TestServer::pdo()->prepare('UPDATE tasks SET updated_at = ? WHERE id = ?')->execute([time() - $seconds, $taskId]);
     }
 
     /** Creates a task, then schedules it through the real edit form. */

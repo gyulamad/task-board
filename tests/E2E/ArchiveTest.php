@@ -29,9 +29,10 @@ final class ArchiveTest extends E2eTestCase
         return $session->post('/?page=task&id=' . $taskId, ['action' => 'restore_task', 'id' => (string)$taskId]);
     }
 
-    private function archivedAt(int $taskId): ?string
+    private function archivedAt(int $taskId): ?int
     {
-        return TestServer::pdo()->query('SELECT archived_at FROM tasks WHERE id=' . $taskId)->fetchColumn();
+        $v = TestServer::pdo()->query('SELECT archived_at FROM tasks WHERE id=' . $taskId)->fetchColumn();
+        return ($v === false || $v === null) ? null : (int)$v;
     }
 
     private function createScheduledDoneTask(AppSession $admin, string $title, string $period): int

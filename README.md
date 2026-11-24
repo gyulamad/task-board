@@ -473,6 +473,34 @@ private copies of the mechanics:
    `data-tb-refresh` region and emit the swap event so checkbox selections
    survive the 10-second re-render; the users/tasks pages show the pattern.
 
+## Datetimes as timestamps with a per-user timezone (#108)
+Every `*_at` column in the database stores a **unix timestamp (epoch
+seconds)** and nothing else — writes stamp with PHP's `time()` (a clock that
+has no timezone and can never disagree with the database the way the old
+string datetimes could), comparisons and sorts run on the integers, and the
+database never formats a date.
+
+- **Rendering**: one helper, `tb_dt($ts)` in `src/helpers.php`, converts a
+  stored timestamp into the **signed-in viewer's timezone** exactly where the
+  value is displayed. New lists call it instead of echoing a datetime column;
+  NULL/0 stamps render as `never`.
+- **Preference**: the viewer's timezone is an IANA-name select on the Settings
+  page (`?page=settings`), stored with the #66 `user_preferences` discipline
+  (key `timezone`). The default is UTC — the storage zone — so a fresh user
+  sees the classic board until they pick; the value is re-validated against
+  PHP's timezone list on every read, so a stale or crafted preference falls
+  back to UTC instead of breaking a page.
+- **Upgrading an existing installation**: the schema self-heal converts the
+  legacy string columns in place on the first request — values through
+  `UNIX_TIMESTAMP()`, which reads each string in the database server's own
+  clock (correct while the server timezone stayed put; typical shared hosting
+  runs UTC). The optional `legacy_db_timezone` config offset (see
+  `config.example.php`) re-interprets the strings instead when a host's
+  database timezone changed after old rows were written. SQLite boards
+  convert via `strftime('%s')` (their strings were always UTC). The relative
+  "15 minutes ago" display and a per-user date/time format preference are the
+  follow-up task #110.
+
 ## Requirements
 - PHP 8.2+ recommended
 - PDO MySQL extension

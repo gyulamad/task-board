@@ -115,7 +115,7 @@ final class LoggedOutStatusTest extends E2eTestCase
     {
         // A fresh stamp would render green; the logged-out flag must replace
         // it completely, not stack next to it.
-        $recent = date('Y-m-d H:i:s', time() - 30);
+        $recent = time() - 30;
         $rendered = tb_user_with_activity(['display_name' => 'Bob', 'last_seen_at' => $recent, 'logged_out' => 1]);
         $this->assertSame('<span class="text-nowrap"><span class="tb-activity-empty" title="Signed out">&#9675;</span>Bob</span>', $rendered);
         $this->assertStringNotContainsString('tb-activity-dot', $rendered, 'The activity dot must not render next to the logged-out indicator.');
@@ -126,7 +126,7 @@ final class LoggedOutStatusTest extends E2eTestCase
     {
         // Rows that predate the column (or synthetic arrays) render exactly
         // the pre-#106 markup: no caller has to know about the feature.
-        $recent = date('Y-m-d H:i:s', time() - 30);
+        $recent = time() - 30;
         $rendered = tb_user_with_activity(['display_name' => 'Bob', 'last_seen_at' => $recent]);
         $this->assertSame('<span class="text-nowrap"><span class="tb-activity-dot tb-activity-green" title="Active in the last 15 minutes"></span>Bob</span>', $rendered);
     }

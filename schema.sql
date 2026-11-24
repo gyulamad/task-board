@@ -5,8 +5,8 @@ CREATE TABLE users (
     display_name VARCHAR(120) NOT NULL,
     role ENUM('admin','user') NOT NULL DEFAULT 'user',
     theme VARCHAR(20) NOT NULL DEFAULT 'light',
-    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    last_seen_at TIMESTAMP NULL DEFAULT NULL,
+    created_at BIGINT NOT NULL DEFAULT 0,
+    last_seen_at BIGINT NULL DEFAULT NULL,
     -- Logged-out status (#106): 1 from the moment the user signs out through
     -- the board's own sign-out button until their next successful sign-in.
     -- The activity dot renders the configured logged-out indicator instead of
@@ -34,8 +34,8 @@ CREATE TABLE projects (
     -- Nullable since user management (task #17): deleting a user keeps their
     -- projects and clears the creator (rendered as "Deleted user").
     created_by INT UNSIGNED NULL,
-    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    created_at BIGINT NOT NULL DEFAULT 0,
+    updated_at BIGINT NOT NULL DEFAULT 0,
     CONSTRAINT fk_project_status FOREIGN KEY (status_id) REFERENCES statuses(id),
     CONSTRAINT fk_project_creator FOREIGN KEY (created_by) REFERENCES users(id) ON DELETE SET NULL
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
@@ -68,9 +68,9 @@ CREATE TABLE tasks (
     -- Nullable since user management (task #17): deleting a user keeps their
     -- tasks and clears the creator (rendered as "Deleted user").
     created_by INT UNSIGNED NULL,
-    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-    archived_at TIMESTAMP NULL DEFAULT NULL,
+    created_at BIGINT NOT NULL DEFAULT 0,
+    updated_at BIGINT NOT NULL DEFAULT 0,
+    archived_at BIGINT NULL DEFAULT NULL,
     CONSTRAINT fk_task_status FOREIGN KEY (status_id) REFERENCES statuses(id),
     CONSTRAINT fk_task_parent FOREIGN KEY (parent_id) REFERENCES tasks(id) ON DELETE SET NULL,
     CONSTRAINT fk_task_project FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE SET NULL,
@@ -92,7 +92,7 @@ CREATE TABLE comments (
     -- comments and clears the author (rendered as "Deleted user").
     user_id INT UNSIGNED NULL,
     body TEXT NOT NULL,
-    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    created_at BIGINT NOT NULL DEFAULT 0,
     FOREIGN KEY (task_id) REFERENCES tasks(id) ON DELETE CASCADE,
     FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE SET NULL
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
@@ -107,7 +107,7 @@ CREATE TABLE attachments (
     original_name VARCHAR(255) NOT NULL,
     mime_type VARCHAR(120) NOT NULL,
     file_size INT UNSIGNED NOT NULL,
-    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    created_at BIGINT NOT NULL DEFAULT 0,
     FOREIGN KEY (task_id) REFERENCES tasks(id) ON DELETE CASCADE,
     FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE SET NULL
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
@@ -127,7 +127,7 @@ CREATE TABLE task_history (
     field VARCHAR(40) NULL DEFAULT NULL,
     old_value TEXT NULL DEFAULT NULL,
     new_value TEXT NULL DEFAULT NULL,
-    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    created_at BIGINT NOT NULL DEFAULT 0,
     FOREIGN KEY (task_id) REFERENCES tasks(id) ON DELETE CASCADE,
     FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE SET NULL
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
@@ -148,8 +148,8 @@ CREATE TABLE templates (
     name VARCHAR(120) NOT NULL,
     description TEXT NULL,
     created_by INT UNSIGNED NOT NULL,
-    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    created_at BIGINT NOT NULL DEFAULT 0,
+    updated_at BIGINT NOT NULL DEFAULT 0,
     CONSTRAINT fk_template_creator FOREIGN KEY (created_by) REFERENCES users(id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
@@ -165,8 +165,8 @@ CREATE TABLE saved_searches (
     -- http_build_query() at save time (no page number: a saved search opens
     -- on page 1).
     query TEXT NOT NULL,
-    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    created_at BIGINT NOT NULL DEFAULT 0,
+    updated_at BIGINT NOT NULL DEFAULT 0,
     CONSTRAINT fk_saved_search_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
@@ -189,8 +189,8 @@ CREATE TABLE documents (
     -- Nullable since user management (task #17): deleting a user keeps their
     -- documents and clears the creator (rendered as "Deleted user").
     created_by INT UNSIGNED NULL,
-    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    created_at BIGINT NOT NULL DEFAULT 0,
+    updated_at BIGINT NOT NULL DEFAULT 0,
     CONSTRAINT fk_document_creator FOREIGN KEY (created_by) REFERENCES users(id) ON DELETE SET NULL
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
@@ -199,7 +199,7 @@ CREATE TABLE document_comments (
     document_id INT UNSIGNED NOT NULL,
     user_id INT UNSIGNED NULL,
     body TEXT NOT NULL,
-    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    created_at BIGINT NOT NULL DEFAULT 0,
     FOREIGN KEY (document_id) REFERENCES documents(id) ON DELETE CASCADE,
     FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE SET NULL
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
@@ -212,7 +212,7 @@ CREATE TABLE document_attachments (
     original_name VARCHAR(255) NOT NULL,
     mime_type VARCHAR(120) NOT NULL,
     file_size INT UNSIGNED NOT NULL,
-    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    created_at BIGINT NOT NULL DEFAULT 0,
     FOREIGN KEY (document_id) REFERENCES documents(id) ON DELETE CASCADE,
     FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE SET NULL
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
@@ -227,7 +227,7 @@ CREATE TABLE messages (
     recipient_id INT UNSIGNED NULL,
     body TEXT NOT NULL,
     is_read TINYINT UNSIGNED NOT NULL DEFAULT 0,
-    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    created_at BIGINT NOT NULL DEFAULT 0,
     FOREIGN KEY (sender_id) REFERENCES users(id) ON DELETE SET NULL,
     FOREIGN KEY (recipient_id) REFERENCES users(id) ON DELETE SET NULL
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
@@ -244,7 +244,7 @@ CREATE TABLE message_attachments (
     original_name VARCHAR(255) NOT NULL,
     mime_type VARCHAR(120) NOT NULL,
     file_size INT UNSIGNED NOT NULL,
-    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    created_at BIGINT NOT NULL DEFAULT 0,
     FOREIGN KEY (message_id) REFERENCES messages(id) ON DELETE CASCADE,
     FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE SET NULL
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
@@ -257,7 +257,7 @@ CREATE TABLE message_attachments (
 CREATE TABLE migrations (
     id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
     version VARCHAR(64) NOT NULL UNIQUE,
-    applied_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+    applied_at BIGINT NOT NULL DEFAULT 0
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 -- Notifications (#58): the board drops one row per task-history event into
@@ -272,7 +272,7 @@ CREATE TABLE notifications (
     history_id INT UNSIGNED NULL,
     event VARCHAR(100) NOT NULL,
     is_seen TINYINT UNSIGNED NOT NULL DEFAULT 0,
-    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    created_at BIGINT NOT NULL DEFAULT 0,
     FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
     FOREIGN KEY (task_id) REFERENCES tasks(id) ON DELETE CASCADE,
     FOREIGN KEY (history_id) REFERENCES task_history(id) ON DELETE SET NULL

@@ -279,4 +279,29 @@ final class QueryHelpersTest extends TestCase
         $this->assertNull(filter_query_value('blank', ['blank' => '']));
         unset($_GET['status']);
     }
+
+    public function test_task_filters_where_reports_the_selected_status_ids(): void
+    {
+        // #105: statusIds is the exact id list the WHERE clause filtered on,
+        // so a view can align its presentation with the query (the kanban
+        // board renders only the selected status columns from it).
+        // The file's earlier tests leave $_GET dirty, so this one starts from
+        // a clean slate to pin the status ids on their own.
+        $_GET = [];
+        $_GET['status'] = ['3', 'garbage', '1', '3'];
+        $filters = tb_task_filters_where();
+        $this->assertSame([3, 1], $filters['statusIds'], 'Only the valid, de-duplicated status ids are reported, in first-seen order.');
+        $this->assertContains('t.status_id IN (?,?)', $filters['where'], 'The WHERE clause filters on the same ids.');
+        $this->assertSame([3, 1], $filters['params'], 'The same ids are bound as parameters.');
+
+        $_GET = [];
+        $this->assertSame([], tb_task_filters_where()['statusIds'], 'An empty status filter reports no ids - every status stays visible.');
+
+        $_GET['status'] = ['garbage'];
+        $this->assertSame([], tb_task_filters_where()['statusIds'], 'A garbage value is ignored, exactly like the WHERE clause ignores it.');
+
+        $_GET['status'] = ['0', '-2', '99999999999999'];
+        $this->assertSame([], tb_task_filters_where()['statusIds'], 'Non-positive and out-of-range values are ignored like the WHERE clause does.');
+        unset($_GET['status']);
+    }
 }

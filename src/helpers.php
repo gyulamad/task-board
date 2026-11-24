@@ -472,8 +472,12 @@ function tb_in_placeholders(int $count): string {
  * Returns the SQL fragment (starting with a condition, no leading WHERE)
  * plus the normalized filter values, so the shared filter card can mark the
  * selected options and the page can build links that keep the filters.
+ * statusIds carries the same validated status ids the WHERE clause filtered
+ * on (empty when no status filter is active), so a view can align its
+ * presentation with the query - the kanban board renders only the selected
+ * status columns (#105).
  *
- * @return array{where: string[], params: array<int,string|int>, fAssignees: string[], fStatuses: string[], fParents: string[], fProjects: string[], projectIds: int[]}
+ * @return array{where: string[], params: array<int,string|int>, fAssignees: string[], fStatuses: string[], fParents: string[], fProjects: string[], projectIds: int[], statusIds: int[]}
  */
 function tb_task_filters_where(): array {
     $where = ['t.archived_at IS NULL']; // archived tasks (#12) are shown only in the archive
@@ -526,7 +530,7 @@ function tb_task_filters_where(): array {
         $params[] = '%' . $tbTerm . '%';
         $params[] = '%' . $tbTerm . '%';
     }
-    return ['where' => $where, 'params' => $params, 'fAssignees' => $fAssignees, 'fStatuses' => $fStatuses, 'fParents' => $fParents, 'fProjects' => $fProjects, 'projectIds' => $projectIds];
+    return ['where' => $where, 'params' => $params, 'fAssignees' => $fAssignees, 'fStatuses' => $fStatuses, 'fParents' => $fParents, 'fProjects' => $fProjects, 'projectIds' => $projectIds, 'statusIds' => $statusIds];
 }
 
 /**

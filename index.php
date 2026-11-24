@@ -2158,8 +2158,16 @@ if ($page==='kanban') {
     // group, which keeps its card body with the "No tasks" placeholder.
     $kanbanCollapsed = array_map('intval', array_filter(explode(',', tb_user_pref_get($pdo, (int)user()['id'], 'kanban_collapsed_statuses'))));
     // One column per status in display order; tasks are grouped into it.
+    // #105: the status filter is a selection of which groups stay visible -
+    // when statuses are picked, only those columns render (the same ids the
+    // WHERE clause filtered on, so the board and the task list can never
+    // disagree); with no status filter every status column stays, as before.
+    $kanbanSelected=$filters['statusIds'] ? array_flip($filters['statusIds']) : null;
     $kanbanColumns=[];
-    foreach ($statuses as $st) $kanbanColumns[(int)$st['id']]=['status'=>$st,'tasks'=>[]];
+    foreach ($statuses as $st) {
+        if ($kanbanSelected!==null && !isset($kanbanSelected[(int)$st['id']])) continue;
+        $kanbanColumns[(int)$st['id']]=['status'=>$st,'tasks'=>[]];
+    }
     // The collapsed flags are applied AFTER the columns are rebuilt - the
     // 66v2 merge computed them on the array right before this rebuild wiped
     // them, so a closed column never rendered closed (#65 CI fix run).

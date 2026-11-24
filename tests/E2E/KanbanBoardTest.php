@@ -95,6 +95,47 @@ final class KanbanBoardTest extends E2eTestCase
         $this->assertStringContainsString('No tasks', $body, 'The TODO column renders empty.');
     }
 
+    public function test_the_status_filter_shows_only_the_selected_columns(): void
+    {
+        // #105: the status filter acts as a selection of which groups stay
+        // visible - a status that is not picked disappears from the board
+        // together with its empty "No tasks" group, instead of rendering a
+        // column that can never hold a task under the current filter.
+        $admin = $this->adminSession();
+        $todo = $admin->createTask('Todo item');
+        $progress = $admin->createTask('Progress item', ['status_id' => '2']);
+        $done = $admin->createTask('Done item', ['status_id' => '3']);
+
+        // One picked status: only that column renders, with its task inside.
+        $todoOnly = $this->board($admin, '&status[]=1');
+        $this->assertStringContainsString($this->columnHeader('TODO'), $todoOnly, 'The selected status column renders.');
+        $this->assertStringContainsString($this->taskCardLink($todo, 'Todo item'), $todoOnly);
+        $this->assertStringNotContainsString($this->columnHeader('IN PROGRESS'), $todoOnly, 'The unselected IN PROGRESS column is gone from the board.');
+        $this->assertStringNotContainsString($this->columnHeader('DONE'), $todoOnly, 'The unselected DONE column is gone from the board.');
+        $this->assertStringNotContainsString($this->taskCardLink($progress, 'Progress item'), $todoOnly, 'Tasks of unselected statuses are not on the board.');
+        $this->assertStringNotContainsString($this->taskCardLink($done, 'Done item'), $todoOnly, 'Tasks of unselected statuses are not on the board.');
+        $this->assertStringContainsString('across 1 status column', $todoOnly, 'The header counts only the rendered columns.');
+        $this->assertStringContainsString('value="1" selected', $todoOnly, 'The picked status stays marked in the filter dropdown.');
+
+        // Two picked statuses: both columns render in display order, the third stays hidden.
+        $two = $this->board($admin, '&status[]=1&status[]=3');
+        $this->assertStringContainsString($this->columnHeader('TODO'), $two);
+        $this->assertStringContainsString($this->columnHeader('DONE'), $two);
+        $this->assertStringNotContainsString($this->columnHeader('IN PROGRESS'), $two);
+        $this->assertTrue(
+            strpos($two, $this->columnHeader('TODO')) < strpos($two, $this->columnHeader('DONE')),
+            'The rendered columns keep the status display order.'
+        );
+        $this->assertStringContainsString('across 2 status columns', $two, 'The header counts only the rendered columns.');
+
+        // Without a status filter every column is back, as before.
+        $all = $this->board($admin);
+        foreach (['TODO', 'IN PROGRESS', 'DONE'] as $status) {
+            $this->assertStringContainsString($this->columnHeader($status), $all, 'The ' . $status . ' column is back without a status filter.');
+        }
+        $this->assertStringContainsString($this->taskCardLink($progress, 'Progress item'), $all);
+    }
+
     public function test_kanban_filters_narrow_the_cards(): void
     {
         $admin = $this->adminSession();

@@ -322,6 +322,26 @@ Fresh installs get the `saved_searches` table from `schema.sql`; existing boards
 upgraded automatically on the first request after deployment (the idempotent
 self-heal in `tb_migrate_schema()` recreates the table if it is missing).
 
+## List view selection in the session (#113)
+The task list is still fully URL-driven, but since #113 the view selection is
+mirrored into the signed-in user's session on every view page (task list, kanban,
+waterflow, users, archive, know-hows, notifications, messages):
+
+- **Coming back restores it**: apply filters, a saved search or sort — walk to a
+  task, another page, anywhere — and the next bare visit to the list (navbar
+  link, browser back) shows the stored selection again: the search box, the
+  dropdowns, the rows and even the pagination links carry the remembered filters.
+- **Consecutive requests of the same list page never replay**: sorting, paging,
+  filtering and a second click on the same navbar link behave exactly like
+  before — they ride their explicit URL params, so the plain list is one
+  repeated navigation away.
+- **Clearing is explicit**: the **Clear search** button next to the search box
+  (task list / kanban / waterflow) and the **- Not selected -** entry at the top
+  of the saved searches dropdown drop the stored selection; the per-list Clear
+  links (archive, know-hows, notifications, messages, users) drop it too while
+  keeping their rendered view through their own params. The pagination position
+  is never stored — returning starts at page 1 of the remembered filters.
+
 ## Administration pages (#42)
 The admin areas live on focused pages instead of one long Administration page:
 

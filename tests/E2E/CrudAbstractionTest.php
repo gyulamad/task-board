@@ -524,7 +524,7 @@ final class CrudAbstractionTest extends E2eTestCase
         $this->assertTrue($page->contains('WiFi relay guide'));
         $this->assertFalse($page->contains('Billing rules'), 'The search must filter the list.');
         $this->assertTrue($page->contains('value="relay"'), 'The search term stays in the input.');
-        $this->assertTrue($page->contains('href="?page=documents-v2&amp;q=relay">Clear</a>'), 'The clear link stays on the requested page name and keeps the search term.');
+        $this->assertTrue($page->contains('href="?page=documents-v2&amp;q=relay&amp;clear_search=1">Clear</a>'), 'The clear link stays on the requested page name, keeps the search term and drops the stored selection (#113).');
 
         $page = $admin->get('/?page=documents-v2&q=invoices');
         $this->assertTrue($page->contains('Billing rules'), 'The content is searched too.');
@@ -960,7 +960,7 @@ final class CrudAbstractionTest extends E2eTestCase
         $this->assertFalse($page->contains('Otherpeer Name'), 'The rows outside the search are filtered out.');
         $this->assertTrue($page->contains('Conversation with Searchpeer Name'), 'The conversation pane stays open on the searched view.');
         $this->assertTrue($page->contains('value="Searchpeer"'), 'The search term stays in the input.');
-        $this->assertTrue($page->contains('href="?page=messages-v2&amp;u=' . $peerId . '">Clear</a>'), 'The clear link stays on the requested page and keeps the conversation.');
+        $this->assertTrue($page->contains('href="?page=messages-v2&amp;u=' . $peerId . '&amp;clear_search=1">Clear</a>'), 'The clear link stays on the requested page, keeps the conversation and drops the stored selection (#113).');
 
         // A literal % must not act as a wildcard (the task search discipline).
         $percent = $admin->get('/?page=messages-v2&q=%25');
@@ -1091,7 +1091,7 @@ final class CrudAbstractionTest extends E2eTestCase
         $this->assertTrue($byTitle->contains('Relay notes task'), 'The task title is searched.');
         $this->assertFalse($byTitle->contains('Billing rules task'), 'The rows outside the search are filtered out.');
         $this->assertTrue($byTitle->contains('value="Relay"'), 'The search term stays in the input.');
-        $this->assertTrue($byTitle->contains('href="?page=notifications-v2&amp;q=Relay">Clear</a>'), 'The clear link stays on the requested page and keeps the search term.');
+        $this->assertTrue($byTitle->contains('href="?page=notifications-v2&amp;q=Relay&amp;clear_search=1">Clear</a>'), 'The clear link stays on the requested page, keeps the search term and drops the stored selection (#113).');
 
         $byEvent = $notified->get('/?page=notifications-v2&q=Comment');
         $this->assertFalse($byEvent->contains('Relay notes task'), 'Creation events are not comment events.');

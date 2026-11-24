@@ -271,6 +271,125 @@ final class CrudAbstractionTest extends E2eTestCase
         $this->assertTrue($page->contains('tb-list-region:swapped'), 'The bulk buttons must re-sync after every swap.');
     }
 
+    // --- archive-v2: the restorable task list (#57-D) ------------------------
+    //
+    // The archive joins the CRUD engine with the search/sort/pagination
+    // mechanics of the other lists; the restorable rows, the access model and
+    // the empty state stay the ones ArchiveTest pins on ?page=archive.
+
+    private function archiveTask(AppSession $admin, int $taskId): void
+    {
+        $response = $admin->post('/?page=task&id=' . $taskId, ['action' => 'archive_task', 'id' => (string)$taskId]);
+        $this->assertSame(302, $response->status);
+    }
+
+    public function test_archive_v2_searches_title_and_description(): void
+    {
+        $admin = $this->adminSession();
+        $byTitle = $admin->createTask('Findable archive payload');
+        $byDescription = $admin->createTask('Ordinary archive task', ['description' => 'unique-marker-84']);
+        $active = $admin->createTask('Findable but active');
+        $this->archiveTask($admin, $byTitle);
+        $this->archiveTask($admin, $byDescription);
+
+        $title = $admin->get('/?page=archive-v2&q=Findable+archive');
+        $this->assertTrue($title->contains('Findable archive payload'), 'The title search finds the archived task.');
+        $this->assertFalse($title->contains('Ordinary archive task'), 'The rows outside the search are filtered out.');
+
+        $description = $admin->get('/?page=archive-v2&q=unique-marker-84');
+        $this->assertTrue($description->contains('Ordinary archive task'), 'The description search finds the archived task.');
+        $this->assertFalse($description->contains('Findable archive payload'));
+
+        $empty = $admin->get('/?page=archive-v2&q=nothing-matches-this');
+        $this->assertTrue($empty->contains('No archived tasks match the search.'), 'The filtered empty state renders.');
+
+        // A literal % must not act as a wildcard (the shared search discipline).
+        $percent = $admin->get('/?page=archive-v2&q=%25');
+        $this->assertTrue($percent->contains('No archived tasks match the search.'));
+        $this->assertFalse($percent->contains('Findable but active'), 'Active tasks never leak into the archive list.');
+    }
+
+    public function test_archive_v2_columns_sort(): void
+    {
+        $admin = $this->adminSession();
+        $first = $admin->createTask('A-archive task');
+        $second = $admin->createTask('B-archive task');
+        $this->archiveTask($admin, $first);
+        $this->archiveTask($admin, $second);
+
+        $asc = $admin->get('/?page=archive-v2&sort=task&dir=asc');
+        $this->assertGreaterThan(
+            strpos($asc->body, 'A-archive task'),
+            strpos($asc->body, 'B-archive task'),
+            'Ascending title order puts A before B.'
+        );
+        $this->assertTrue($asc->contains('aria-sort="ascending"'), 'The active column exposes the direction.');
+
+        // The default order is archived DESC (then id DESC): the newest
+        // archived task sits on top, exactly how the hand-built page ordered.
+        $default = $admin->get('/?page=archive-v2');
+        $this->assertGreaterThan(
+            strpos($default->body, 'B-archive task'),
+            strpos($default->body, 'A-archive task'),
+            'Default order puts the newest archived task first.'
+        );
+
+        // The unknown sort key falls back to the default; the crafted value
+        // can never reach the SQL (the same allowlist discipline as the other
+        // lists).
+        $crafted = $admin->get('/?page=archive-v2&sort=task;DROP%20TABLE%20tasks&dir=desc');
+        $this->assertSame(200, $crafted->status);
+        $this->assertTrue($crafted->contains('A-archive task'), 'The crafted sort is ignored and the list renders.');
+    }
+
+    public function test_archive_v2_paginates(): void
+    {
+        $admin = $this->adminSession();
+        for ($i = 1; $i <= 21; $i++) {
+            $id = $admin->createTask('archpage' . str_pad((string)$i, 2, '0', STR_PAD_LEFT));
+            $this->archiveTask($admin, $id);
+        }
+
+        $page1 = $admin->get('/?page=archive-v2');
+        $this->assertTrue($page1->contains('21 archived tasks'), 'The header counts all archived tasks.');
+        $this->assertTrue($page1->contains('Page 1 of 2'));
+        $this->assertTrue($page1->contains('archpage21'), 'The newest archived task renders on page 1.');
+        $this->assertTrue($page1->contains('page=archive-v2&amp;p=2'), 'The pagination links stay on the v2 page.');
+
+        $page2 = $admin->get('/?page=archive-v2&p=2');
+        $this->assertTrue($page2->contains('archpage01'), 'The oldest archived row lands on page 2.');
+        $this->assertFalse($page2->contains('archpage21'), 'Page 1 rows stay on page 1.');
+    }
+
+    public function test_archive_v2_keeps_the_restore_and_delete_actions(): void
+    {
+        $admin = $this->adminSession();
+        $own = $admin->createTask('Restorable payload');
+        $this->archiveTask($admin, $own);
+
+        $page = $admin->get('/?page=archive-v2');
+        $this->assertTrue($page->contains('value="restore_task"'), 'The per-row restore form renders.');
+        $this->assertTrue($page->contains('value="delete_task"'), 'The per-row delete form renders for the administrator.');
+        $this->assertTrue($page->contains('value="?page=archive-v2"'), 'The delete returns to the v2 page.');
+
+        // The alias serves the same engine: its generated links keep the
+        // requested page name so the classic URL stays fully functional.
+        $alias = $admin->get('/?page=archive');
+        $this->assertTrue($alias->contains('value="restore_task"'));
+        $this->assertTrue($alias->contains('value="?page=archive"'), 'The alias delete returns to the alias.');
+        $this->assertTrue($alias->contains('value="archive"'), 'The alias search form posts back to the alias.');
+    }
+
+    public function test_archive_v2_access_model(): void
+    {
+        $admin = $this->adminSession();
+        $this->createUser($admin, 'regular84');
+        $user = new AppSession('regular84', 'regular84Pass12345');
+
+        $this->assertSame(200, $user->get('/?page=archive-v2')->status, 'The v2 archive stays visible to every signed-in user like ?page=archive.');
+        $this->assertSame(302, (new AppSession())->get('/?page=archive-v2')->status, 'Anonymous visitors are pushed to the sign-in page.');
+    }
+
     // --- parity: the v2 pages render exactly what the originals render ------
 
     public function test_users_v2_page_matches_the_users_page(): void

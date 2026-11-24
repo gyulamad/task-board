@@ -332,7 +332,7 @@ if (user()) {
                 tb_unlink_stored_files($storedNames);
                 $returnUrl = $_POST['return'] ?? '';
                 flash('Task deleted permanently.');
-                redirect(is_string($returnUrl) && (str_starts_with($returnUrl, '?page=tasks') || str_starts_with($returnUrl, '?page=archive')) ? $returnUrl : '?page=archive');
+                redirect(is_string($returnUrl) && (str_starts_with($returnUrl, '?page=tasks') || str_starts_with($returnUrl, '?page=archive')) ? $returnUrl : '?page=archive-v2');
             }
             if ($action === 'bulk_archive_tasks') {
                 $ids = array_values(array_unique(array_filter(array_map('intval', (array)($_POST['task_ids'] ?? [])), fn($v) => $v > 0)));
@@ -1088,14 +1088,63 @@ if ($page === 'updates') {
     exit;
 }
 
-// ---- Task archive (#12) -------------------------------------------------------------------
+// ---- Task archive (#12; #57-D list v2 on the shared CRUD engine) -----------
 // Archived (soft-deleted) tasks: view, restore or delete them permanently.
-if ($page==='archive') {
-    $archivedTasks=$pdo->query('SELECT t.id,t.title,t.archived_at,t.updated_at,t.created_by,s.name status_name,s.color status_color,u.display_name creator,u.last_seen_at creator_last_seen FROM tasks t JOIN statuses s ON s.id=t.status_id LEFT JOIN users u ON u.id=t.created_by WHERE t.archived_at IS NOT NULL ORDER BY t.archived_at DESC')->fetchAll();
+// The #57-D rebuild runs the restorable table through the shared CRUD engine
+// (src/crud.php): the rows render exactly what the hand-built table rendered,
+// and the page gains the search/sort/pagination mechanics of the other lists.
+// ?page=archive keeps working as an alias - the generated links (search form,
+// pagination, sort headers, the per-row delete returns) carry the requested
+// page name, so bookmarks and saved links survive.
+if (in_array($page, ['archive', 'archive-v2'], true)) {
+    // Generated links keep the requested page name, so both the classic and
+    // the -v2 URL stay fully functional.
+    $archivePage = $page === 'archive-v2' ? 'archive-v2' : 'archive';
+    // The search of the task list, narrowed to the archived rows: a literal
+    // %, _ or | never acts as a wildcard, and the values reach the query only
+    // as bound parameters.
+    $conds=['t.archived_at IS NOT NULL']; $params=[];
+    $q = trim((string)($_GET['q'] ?? ''));
+    if ($q !== '') {
+        $term = str_replace(['|','%','_'],['||','|%','|_'],$q);
+        $conds[] = "(t.title LIKE ? ESCAPE '|' OR t.description LIKE ? ESCAPE '|')";
+        $params[] = '%'.$term.'%'; $params[] = '%'.$term.'%';
+    }
+    $list=tb_crud_list([
+        'pdo'=>$pdo,
+        'table'=>'tasks t JOIN statuses s ON s.id=t.status_id LEFT JOIN users u ON u.id=t.created_by',
+        'select'=>'t.id,t.title,t.archived_at,t.updated_at,t.created_by,s.name status_name,s.color status_color,u.display_name creator,u.last_seen_at creator_last_seen',
+        'where'=>$conds,
+        'params'=>$params,
+        'sortColumns'=>[
+            'task'=>'t.title {dir}',
+            'status'=>'s.sort_order {dir}, s.name {dir}',
+            'creator'=>'u.display_name {dir}',
+            'archived'=>'t.archived_at {dir}',
+        ],
+        // The order of the hand-built page: newest archived first.
+        'defaultSort'=>'archived',
+        'defaultDir'=>'desc',
+        'orderBySuffix'=>'t.id {dir}',
+    ]);
+    $archivedTasks=$list['rows'];
+    $archiveUrl=tb_crud_url_builder($archivePage,['q']);
+    $archiveColumns=[
+        ['label'=>'Task','sortKey'=>'task','sort'=>$list['sort'],'url'=>$archiveUrl,'cell'=>fn(array $t): string => '<td class="ps-3"><a class="fw-semibold text-decoration-none" href="?page=task&id='.$t['id'].'">#'.$t['id'].' · '.h($t['title']).'</a></td>'],
+        ['label'=>'Status','sortKey'=>'status','sort'=>$list['sort'],'url'=>$archiveUrl,'cell'=>fn(array $t): string => '<td>'.tb_status_badge((string)$t['status_name'], $t['status_color'] ?? null).'</td>'],
+        ['label'=>'Creator','sortKey'=>'creator','sort'=>$list['sort'],'url'=>$archiveUrl,'cell'=>fn(array $t): string => '<td>'.tb_user_with_activity(['display_name'=>$t['creator'],'last_seen_at'=>$t['creator_last_seen']??null]).'</td>'],
+        ['label'=>'Archived','sortKey'=>'archived','sort'=>$list['sort'],'url'=>$archiveUrl,'cell'=>fn(array $t): string => '<td class="small muted">'.h($t['archived_at']).'</td>'],
+        ['label'=>'Actions','cell'=>function(array $t) use ($archivePage): string {
+            $canDelete=is_admin()||(int)$t['created_by']===(int)user()['id'];
+            return '<td class="text-nowrap"><form method="post" class="d-inline">'.csrf_field().'<input type="hidden" name="action" value="restore_task"><input type="hidden" name="id" value="'.$t['id'].'"><button class="btn btn-sm btn-outline-primary">Restore</button></form>'.($canDelete?' <form method="post" class="d-inline" onsubmit="return confirm(\'Delete task #'.$t['id'].' permanently? This cannot be undone.\')">'.csrf_field().'<input type="hidden" name="action" value="delete_task"><input type="hidden" name="id" value="'.$t['id'].'"><input type="hidden" name="return" value="?page='.$archivePage.'"><button class="btn btn-sm btn-outline-danger">Delete</button></form>':'').'</td>';
+        }],
+    ];
     render_header('Archive',$config,$error); ?>
-    <div class="d-flex justify-content-between align-items-center mb-3"><div><h1 class="h3 mb-0">Archive</h1><div class="muted"><?=count($archivedTasks)?> archived task<?=count($archivedTasks)===1?'':'s'?></div></div><a class="btn btn-outline-secondary" href="?">Back to tasks</a></div>
+    <div class="d-flex justify-content-between align-items-center mb-3"><div><h1 class="h3 mb-0">Archive</h1><div class="muted"><?=$list['total']?> archived task<?=$list['total']===1?'':'s'?></div></div><a class="btn btn-outline-secondary" href="?">Back to tasks</a></div>
     <p class="small muted">Archived tasks are hidden from the task list but kept here. Restore brings a task back unchanged; Delete removes it and its comments, attachments, history and links permanently.</p>
-    <div class="card"><div class="table-responsive"><table class="table table-hover align-middle mb-0"><thead><tr><th class="ps-3">Task</th><th>Status</th><th>Creator</th><th>Archived</th><th>Actions</th></tr></thead><tbody><?php foreach($archivedTasks as $t): $canDelete=is_admin()||(int)$t['created_by']===(int)user()['id']; ?><tr><td class="ps-3"><a class="fw-semibold text-decoration-none" href="?page=task&id=<?=$t['id']?>">#<?=$t['id']?> · <?=h($t['title'])?></a></td><td><?=tb_status_badge((string)$t['status_name'], $t['status_color'] ?? null)?></td><td><?=tb_user_with_activity(['display_name'=>$t['creator'],'last_seen_at'=>$t['creator_last_seen']??null])?></td><td class="small muted"><?=h($t['archived_at'])?></td><td class="text-nowrap"><form method="post" class="d-inline"><?=csrf_field()?><input type="hidden" name="action" value="restore_task"><input type="hidden" name="id" value="<?=$t['id']?>"><button class="btn btn-sm btn-outline-primary">Restore</button></form><?php if($canDelete): ?> <form method="post" class="d-inline" onsubmit="return confirm('Delete task #<?=$t['id']?> permanently? This cannot be undone.')"><?=csrf_field()?><input type="hidden" name="action" value="delete_task"><input type="hidden" name="id" value="<?=$t['id']?>"><input type="hidden" name="return" value="?page=archive"><button class="btn btn-sm btn-outline-danger">Delete</button></form><?php endif; ?></td></tr><?php endforeach; if(!$archivedTasks): ?><tr><td colspan="5" class="text-center muted py-4">The archive is empty.</td></tr><?php endif; ?></tbody></table></div></div>
+    <form method="get" class="d-flex gap-2 mb-3"><input type="hidden" name="page" value="<?=$archivePage?>"><input class="form-control" type="search" name="q" value="<?=h($q)?>" placeholder="Search title and description..." aria-label="Search archived tasks"><button class="btn btn-outline-secondary">Search</button><?php if($q!==''): ?><a class="btn btn-link" href="?page=<?=$archivePage?>">Clear</a><?php endif; ?></form>
+    <div class="card"><?=tb_crud_table(['columns'=>$archiveColumns,'rows'=>$archivedTasks,'emptyText'=>$q!==''?'No archived tasks match the search.':'The archive is empty.','emptyColspan'=>5])?></div>
+    <?php echo tb_crud_pagination(['ariaLabel'=>'Archive list pages','page'=>$list['page'],'pages'=>$list['pages'],'url'=>$archiveUrl]), "\n"; ?>
     <?php render_footer(); exit;
 }
 
@@ -1660,7 +1709,7 @@ if ($page==='edit' || $page==='new') {
     // Archived tasks (#12) must be restored before they can be edited again.
     if(!empty($task['id']) && task_is_archived($task)) {
         render_header('Edit task',$config,$error); ?>
-        <div class="card p-4"><h2 class="h4">This task is archived</h2><p class="muted mb-3">Archived tasks are read-only. Restore task #<?=$task['id']?> from the archive first if you want to edit it.</p><div class="d-flex gap-2"><a class="btn btn-outline-secondary" href="?page=task&id=<?=$task['id']?>">View the task</a><a class="btn btn-outline-primary" href="?page=archive">Open the archive</a><form method="post" class="d-inline"><?=csrf_field()?><input type="hidden" name="action" value="restore_task"><input type="hidden" name="id" value="<?=$task['id']?>"><button class="btn btn-primary">Restore now</button></form></div></div>
+        <div class="card p-4"><h2 class="h4">This task is archived</h2><p class="muted mb-3">Archived tasks are read-only. Restore task #<?=$task['id']?> from the archive first if you want to edit it.</p><div class="d-flex gap-2"><a class="btn btn-outline-secondary" href="?page=task&id=<?=$task['id']?>">View the task</a><a class="btn btn-outline-primary" href="?page=archive-v2">Open the archive</a><form method="post" class="d-inline"><?=csrf_field()?><input type="hidden" name="action" value="restore_task"><input type="hidden" name="id" value="<?=$task['id']?>"><button class="btn btn-primary">Restore now</button></form></div></div>
         <?php render_footer(); exit;
     }
     $users=user_options($pdo);$statuses=all_statuses($pdo);$tasks=$pdo->prepare('SELECT id,title FROM tasks WHERE id<>? AND archived_at IS NULL ORDER BY id DESC LIMIT 200');$tasks->execute([$id]);$projects=$pdo->query('SELECT id,name FROM projects ORDER BY name')->fetchAll();$tpls=$id?[]:$pdo->query("SELECT id,name,description FROM templates WHERE type='task' ORDER BY name")->fetchAll();
@@ -2117,7 +2166,7 @@ $filters=tb_task_filters_where();
 <div class="d-flex align-items-center gap-2 flex-wrap ms-auto"><select class="form-select" name="project_id" id="bulk-move-project" aria-label="Target project for the selected tasks"><option value="">Choose project&hellip;</option><?php foreach($projectOptions as $po): ?><option value="<?=$po['id']?>">#<?=$po['id']?> &middot; <?=h($po['name'])?></option><?php endforeach; ?></select><button type="submit" class="btn btn-outline-primary" name="action" value="bulk_move_tasks" id="bulk-move-btn" disabled data-confirm="Move all selected tasks to the chosen project?">Move to project</button><button type="submit" class="btn btn-outline-danger" name="action" value="bulk_archive_tasks" id="bulk-delete-btn" disabled data-confirm="Archive all selected tasks? They can be restored from the archive.">Archive selected (<span id="bulk-count">0</span>)</button></div>
     <?php $bulkControls=trim(ob_get_clean());
     render_header('Tasks',$config,$error); ?>
-<div class="d-flex justify-content-between align-items-center mb-3"><div><h1 class="h3 mb-0">Tasks</h1><div class="muted"><?=$totalTasks?> task<?=$totalTasks===1?'':'s'?></div><?php if($projectFilterNames): ?><div class="mt-1"><span class="badge text-bg-info">Project<?=count($projectFilterNames)===1?'':'s'?>: <?=h(implode(', ',$projectFilterNames))?></span> <a class="small" href="<?=h($listUrl(['project'=>null]))?>">Show all tasks</a></div><?php endif; ?></div><div class="d-flex gap-2"><a class="btn btn-outline-secondary" href="?page=archive">Archive</a><a class="btn btn-primary" href="?page=new">+ New task</a></div></div>
+<div class="d-flex justify-content-between align-items-center mb-3"><div><h1 class="h3 mb-0">Tasks</h1><div class="muted"><?=$totalTasks?> task<?=$totalTasks===1?'':'s'?></div><?php if($projectFilterNames): ?><div class="mt-1"><span class="badge text-bg-info">Project<?=count($projectFilterNames)===1?'':'s'?>: <?=h(implode(', ',$projectFilterNames))?></span> <a class="small" href="<?=h($listUrl(['project'=>null]))?>">Show all tasks</a></div><?php endif; ?></div><div class="d-flex gap-2"><a class="btn btn-outline-secondary" href="?page=archive-v2">Archive</a><a class="btn btn-primary" href="?page=new">+ New task</a></div></div>
     <?php tb_render_task_filter_card(['page'=>$listPage,'users'=>$users,'statuses'=>$statuses,'parents'=>$parents,'projectOptions'=>$projectOptions,'savedSearches'=>$savedSearches,'fAssignees'=>$fAssignees,'fStatuses'=>$fStatuses,'fParents'=>$fParents,'fProjects'=>$fProjects,'returnUrl'=>$listUrl()]); ?>
 <form method="post" id="bulk-form" onsubmit="return confirm((event.submitter&&event.submitter.dataset.confirm)||'Apply this bulk action to all selected tasks?')"><?=csrf_field()?><input type="hidden" name="return" value="<?=h($listUrl(['p'=>$taskPage]))?>"><?php foreach (['q','assignee','status','parent','project','sort','dir'] as $fk): foreach (filter_values($fk) as $fv): ?><input type="hidden" name="<?=$fk?>[]" value="<?=h($fv)?>"><?php endforeach; endforeach; ?>
 <div id="tb-list-region" data-tb-refresh="10"><div class="card"><?=tb_crud_table(['columns'=>$taskColumns,'rows'=>$tasks,'emptyText'=>'No tasks found.','emptyColspan'=>9])?></div>

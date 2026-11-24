@@ -141,15 +141,15 @@ final class SessionListViewTest extends E2eTestCase
             'role' => 'user',
         ]);
 
-        $filtered = $admin->get('/?page=users-v2&q=worker');
+        $filtered = $admin->get('/?page=users&q=worker');
         $this->assertTrue($filtered->contains('Worker'));
         $admin->taskPage(1);
-        $back = $admin->get('/?page=users-v2');
+        $back = $admin->get('/?page=users');
         $this->assertTrue($back->contains('value="worker"'), 'The users search carries the remembered term.');
         $this->assertTrue($back->contains('Clear search'), 'The users page offers the clear button.');
-        $admin->get('/?page=users-v2&clear_search=1');
+        $admin->get('/?page=users&clear_search=1');
         $admin->taskPage(1);
-        $plain = $admin->get('/?page=users-v2');
+        $plain = $admin->get('/?page=users');
         $this->assertFalse($plain->contains('value="worker"'), 'The clear dropped the users selection.');
     }
 

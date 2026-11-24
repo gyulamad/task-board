@@ -32,11 +32,11 @@ final class NavbarTest extends E2eTestCase
 
         // The whole menu lives inside the collapsible container.
         $this->assertTrue($page->contains('<div class="collapse navbar-collapse" id="tb-navbar">'));
-        $this->assertTrue($page->contains('href="?page=tasks-v2">Tasks</a>'));  // #57 v2: the menu entry opens the new canonical task list page.
-        $this->assertTrue($page->contains('href="?page=projects-v2">Projects</a>'));  // #81: the menu entry opens the new canonical projects page.
-        $this->assertTrue($page->contains('href="?page=templates-v2">Templates</a>'));  // #82: the menu entry opens the new canonical templates page.
-        $this->assertTrue($page->contains('href="?page=messages-v2">Messages</a>'));  // #85: the menu entry opens the new canonical messenger page.
-        $this->assertTrue($page->contains('href="?page=notifications-v2">Notifications</a>'));  // #85: the menu entry opens the new canonical notification stream.
+        $this->assertTrue($page->contains('href="?page=tasks">Tasks</a>'));  // #57: the menu entry opens the canonical task list page.
+        $this->assertTrue($page->contains('href="?page=projects">Projects</a>'));  // #81: the menu entry opens the projects page.
+        $this->assertTrue($page->contains('href="?page=templates">Templates</a>'));  // #82: the menu entry opens the templates page.
+        $this->assertTrue($page->contains('href="?page=messages">Messages</a>'));  // #85: the menu entry opens the messenger page.
+        $this->assertTrue($page->contains('href="?page=notifications">Notifications</a>'));  // #85: the menu entry opens the notification stream.
 
         // From lg up the bar must keep its always-expanded behaviour.
         $this->assertTrue($page->contains('navbar navbar-expand-lg navbar-dark bg-dark'));

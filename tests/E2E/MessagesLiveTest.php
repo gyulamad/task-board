@@ -62,7 +62,7 @@ final class MessagesLiveTest extends E2eTestCase
         $peerId = $this->userId('hookpeer');
 
         $body = $admin->get('/?page=messages&u=' . $peerId)->body;
-        $this->assertTrue(str_contains($body, 'data-tb-chat-live-url="?page=messages_live&amp;u=' . $peerId . '&amp;cp=messages"'), 'The chat root carries the live feed URL.');
+        $this->assertTrue(str_contains($body, 'data-tb-chat-live-url="?page=messages_live&amp;u=' . $peerId . '"'), 'The chat root carries the live feed URL (the retired cp parameter is gone).');
         $this->assertTrue(str_contains($body, 'data-tb-chat-people-rows'), 'The people rows sit in their own swap region.');
         $this->assertTrue(str_contains($body, 'data-tb-chat-live-people="1"'), 'The region opts in to live swaps.');
         $this->assertTrue(str_contains($body, 'data-tb-after="0"'), 'An empty thread starts the live cursor at zero.');
@@ -153,10 +153,12 @@ final class MessagesLiveTest extends E2eTestCase
         $data = json_decode((string)$foreign->body, true);
         $this->assertSame('', $data['html'], 'A foreign conversation renders nothing.');
 
-        // The v2 page name travels through cp and lands in the row links.
+        // The rows link the messenger's canonical page name; the retired
+        // cp parameter (#57's closing rename) is ignored - a crafted value
+        // cannot steer the links anywhere.
         $v2 = $admin->get('/?page=messages_live&u=' . $this->userId('fencepeer') . '&cp=messages-v2&after=0');
         $dataV2 = json_decode((string)$v2->body, true);
-        $this->assertTrue(str_contains($dataV2['peopleHtml'], '?page=messages-v2&u='), 'The v2 rows link the v2 page.');
+        $this->assertTrue(str_contains($dataV2['peopleHtml'], '?page=messages&u='), 'The rows link the canonical messenger page.');
     }
 
     public function test_the_feed_requires_a_signed_in_viewer(): void

@@ -245,7 +245,7 @@ final class ProjectsTest extends E2eTestCase
         $this->assertTrue($list->contains('page=project&id=' . $projectId));
         // [Tasks...] button per project row leading to the filtered task list
         // (the v2 task list since #57).
-        $this->assertTrue($list->contains('page=tasks-v2&project=' . $projectId));
+        $this->assertTrue($list->contains('page=tasks&project=' . $projectId));
         $this->assertTrue($list->contains('Tasks…'));
         $this->assertTrue($list->contains('1 task'));
         $this->assertTrue($list->contains('+ New project'));
@@ -392,7 +392,7 @@ final class ProjectsTest extends E2eTestCase
         $projectId = $this->createProject($admin, 'Nav project');
 
         $home = $admin->get('/?');
-        $this->assertTrue($home->contains('page=projects-v2">Projects</a>'));  // #81: the navbar entry opens the new canonical projects page.
+        $this->assertTrue($home->contains('page=projects">Projects</a>'));  // #81: the navbar entry opens the projects page.
 
         $form = $admin->get('/?page=new');
         $this->assertTrue($form->contains('<label class="form-label" for="task-project">Project</label>'));

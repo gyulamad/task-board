@@ -49,7 +49,7 @@ final class KnowledgeBaseTest extends E2eTestCase
         // #83: the navbar entry points at the v2 page now; ?page=documents
         // keeps working as the alias rendering the same engine under its own
         // name - same intent, new canonical target.
-        $this->assertTrue($page->contains('href="?page=documents-v2">Know-hows</a>'), 'The navbar must carry the Know-hows link.');
+        $this->assertTrue($page->contains('href="?page=documents">Know-hows</a>'), 'The navbar must carry the Know-hows link.');
     }
 
     public function test_a_know_how_round_trips_create_read_update_delete(): void
@@ -241,7 +241,7 @@ final class KnowledgeBaseTest extends E2eTestCase
     public function test_anonymous_users_are_pushed_to_sign_in(): void
     {
         $anonymous = new AppSession();
-        foreach (['/?page=documents', '/?page=documents-v2', '/?page=document_new', '/?page=document&id=1'] as $url) {
+        foreach (['/?page=documents', '/?page=document_new', '/?page=document&id=1'] as $url) {
             $this->assertSame(302, $anonymous->get($url)->status, "{$url} must require a signed-in user.");
         }
     }

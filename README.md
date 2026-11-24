@@ -481,14 +481,15 @@ private copies of the mechanics:
    and `tb_crud_bulk_select_script()` when the list has bulk actions. Build
    stateful URLs with `tb_crud_url_builder()` so search/filter/sort/page travel
    through header and page links.
-4. **Ship the page as a v1/v2 pair during a migration**: build the new
-   `?page=<name>-v2` page on the engine, keep the classic URL as an alias
-   rendering the same body under its own name (the generated links carry the
-   requested page name), pin both with byte-parity tests in
-   `tests/E2E/CrudAbstractionTest.php`, switch the entry links to the v2 URL,
-   and retire the replaced markup. Once every list is migrated (the #57-F
-   sweep), new lists land directly on the engine and the pair recipe only
-   applies when an existing page is rebuilt.
+4. **Migrate an existing page through a v1/v2 pair (the recipe #57 used)**:
+   build the new `?page=<name>-v2` page on the engine, keep the classic URL
+   as an alias rendering the same body under its own name (the generated
+   links carry the requested page name), pin both with byte-parity tests in
+   `tests/E2E/CrudAbstractionTest.php`, switch the entry links to the v2
+   URL, and retire the replaced markup. Once every list was migrated (the
+   #57-F sweep), the closing rename (#57) flipped the canonical names back:
+   the original URLs are the engine pages and the -v2 scaffolding names are
+   retired - new lists land directly on the engine under their final name.
 5. **Realtime lists** (#51) wrap the engine output in the
    `data-tb-refresh` region and emit the swap event so checkbox selections
    survive the 10-second re-render; the users/tasks pages show the pattern.

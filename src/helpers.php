@@ -717,11 +717,11 @@ function tb_saved_search_query(array $source): ?string {
 
 /** The pages whose list view selection persists in the session (#113). */
 const TB_LIST_VIEW_PAGES = [
-    'tasks', 'tasks-v2', 'kanban', 'waterflow',
-    'users', 'users-v2',
-    'archive', 'archive-v2',
-    'documents', 'documents-v2',
-    'notifications', 'notifications-v2',
+    'tasks', 'kanban', 'waterflow',
+    'users',
+    'archive',
+    'documents',
+    'notifications',
     'messages',
 ];
 

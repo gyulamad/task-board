@@ -106,7 +106,7 @@ final class BadgeFeedTest extends E2eTestCase
         // The poller swaps the badges into the navbar entries it looks up by
         // href - the canonical v2 entries since the #85 step-5 switch, so the
         // feed keeps moving the badges the navbar actually renders.
-        $this->assertTrue($page->contains("apply('messages-v2','New messages',d.messages|0);apply('notifications-v2','New notifications',d.notifications|0)"), 'The poller targets the canonical navbar entries.');
+        $this->assertTrue($page->contains("apply('messages','New messages',d.messages|0);apply('notifications','New notifications',d.notifications|0)"), 'The poller targets the canonical navbar entries.');
 
         // Anonymous visitors get the standard login guard, no counters leak.
         $response = $this->session->get('/?page=badges');

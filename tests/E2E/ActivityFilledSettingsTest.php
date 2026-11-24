@@ -89,7 +89,7 @@ final class ActivityFilledSettingsTest extends E2eTestCase
         // The board renders the shapes for real: a worker aged into the
         // second (last) period shows the solid grey dot on the users page.
         $this->backdateMinutes('worker', 60);
-        $usersPage = $this->admin->get('/?page=users-v2');
+        $usersPage = $this->admin->get('/?page=users');
         $this->assertSame(200, $usersPage->status);
         $this->assertTrue($usersPage->contains('<span class="tb-activity-dot tb-activity-grey" title="Last seen longer ago than every period above"></span>'), 'The aged worker renders the solid grey dot.');
     }
@@ -112,7 +112,7 @@ final class ActivityFilledSettingsTest extends E2eTestCase
         $this->assertSame(302, $response->status);
 
         $this->backdateMinutes('worker', 60);
-        $usersPage = $this->admin->get('/?page=users-v2');
+        $usersPage = $this->admin->get('/?page=users');
         $this->assertSame(200, $usersPage->status);
         $this->assertTrue($usersPage->contains('<span class="tb-activity-empty tb-activity-yellow" title="Last seen longer ago than every period above">&#9675;</span>'), 'The aged worker renders the hollow yellow circle.');
     }
@@ -133,7 +133,7 @@ final class ActivityFilledSettingsTest extends E2eTestCase
         $this->assertTrue($this->admin->get('/?page=activity_settings')->contains('id="lo-filled" name="filled" checked'), 'The form comes back with the toggle ticked.');
 
         $worker->logout();
-        $page = $this->admin->get('/?page=users-v2');
+        $page = $this->admin->get('/?page=users');
         $this->assertTrue($page->contains('<span class="tb-activity-dot tb-activity-grey" title="Signed out"></span>'), 'The signed-out worker renders the solid grey dot.');
 
         // Unticking falls back to the exact #106 hollow circle.
@@ -143,7 +143,7 @@ final class ActivityFilledSettingsTest extends E2eTestCase
             'character' => '',
             'filled' => '0',
         ]);
-        $page = $this->admin->get('/?page=users-v2');
+        $page = $this->admin->get('/?page=users');
         $this->assertTrue($page->contains('<span class="tb-activity-empty" title="Signed out">&#9675;</span>'), 'The unticked grey renders the exact #106 hollow circle.');
     }
 

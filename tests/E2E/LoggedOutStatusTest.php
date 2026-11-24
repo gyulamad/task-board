@@ -22,7 +22,7 @@ final class LoggedOutStatusTest extends E2eTestCase
     private function createOtherUser(string $username): AppSession
     {
         $this->adminSession();
-        $response = $this->admin->post('/?page=users-v2', [
+        $response = $this->admin->post('/?page=users', [
             'action' => 'add_user',
             'username' => $username,
             'display_name' => ucfirst($username),
@@ -228,7 +228,7 @@ final class LoggedOutStatusTest extends E2eTestCase
         $this->assertTrue($page->contains('title="Signed out"'), 'The signed-out assignee must show the indicator on the task page.');
         $this->assertMatchesRegularExpression('/tb-activity-empty[^>]*title="Signed out"/', $page->body);
         $this->assertMatchesRegularExpression('/<span class="text-nowrap"><span class="tb-activity-empty" title="Signed out">&#9675;<\/span>Bob<\/span>/', $page->body, 'The assignee dot is replaced, not stacked.');
-        $usersPage = $this->admin->get('/?page=users-v2');
+        $usersPage = $this->admin->get('/?page=users');
         $this->assertSame(200, $usersPage->status);
         $this->assertMatchesRegularExpression('/<span class="text-nowrap"><span class="tb-activity-empty" title="Signed out">&#9675;<\/span>Bob<\/span>/', $usersPage->body);
         $this->assertStringNotContainsString('title="Signed out"></span>Administrator', $usersPage->body, 'The signed-in admin keeps the activity dot.');
@@ -260,20 +260,20 @@ final class LoggedOutStatusTest extends E2eTestCase
         // A colour: the signed-out user renders the red disc.
         $save = $this->admin->post('/?page=activity_settings', ['action' => 'save_logged_out_indicator', 'style' => 'color:red', 'character' => '']);
         $this->assertSame(302, $save->status);
-        $page = $this->admin->get('/?page=users-v2');
+        $page = $this->admin->get('/?page=users');
         $this->assertMatchesRegularExpression('/<span class="text-nowrap"><span class="tb-activity-dot tb-activity-red" title="Signed out"><\/span>Bob<\/span>/', $page->body);
 
         // A character: the glyph renders literally (UTF-8, escaped for HTML only).
         $save = $this->admin->post('/?page=activity_settings', ['action' => 'save_logged_out_indicator', 'style' => 'character', 'character' => "\u{2717}"]);
         $this->assertSame(302, $save->status);
-        $page = $this->admin->get('/?page=users-v2');
+        $page = $this->admin->get('/?page=users');
         $this->assertMatchesRegularExpression('/<span class="text-nowrap"><span class="tb-activity-char" title="Signed out">' . preg_quote("\u{2717}", '/') . '<\/span>Bob<\/span>/', $page->body);
 
         // Disabling: the signed-out user falls back to the plain activity dot.
         $save = $this->admin->post('/?page=activity_settings', ['action' => 'save_logged_out_indicator', 'style' => '', 'character' => 'ignored']);
         $this->assertSame(302, $save->status);
         $this->assertNull(tb_load_logged_out_indicator(TestServer::pdo()));
-        $page = $this->admin->get('/?page=users-v2');
+        $page = $this->admin->get('/?page=users');
         $this->assertStringNotContainsString('title="Signed out"', $page->body, 'With the feature disabled no signed-out indicator renders.');
         $this->assertTrue($page->contains('Bob'), 'Bob still renders with the activity dot.');
     }

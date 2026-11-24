@@ -18,11 +18,13 @@ declare(strict_types=1);
  * renders - with the page as small closures. Each helper produces exactly the
  * markup the pages emitted before, so the rendered lists stay byte-for-byte
  * compatible with what the E2E suite pins; the parity tests
- * (tests/E2E/CrudAbstractionTest.php) prove the -v2 pages match the originals.
+ * (tests/E2E/CrudAbstractionTest.php) proved the engine pages match the
+ * originals they replaced.
  *
- * Step 6 of the plan (its own subtask) applies this engine to every remaining
+ * Step 6 of the plan (its own subtask) applied this engine to every remaining
  * entity page the same way: build the v2 page first, prove parity, then switch
- * the links.
+ * the links. The v2 scaffolding names are retired (#57's closing phase): the
+ * canonical URLs are the original page names.
  */
 
 /** Default rows per CRUD list page. Every list of the board shows 20. */
@@ -85,9 +87,9 @@ function tb_crud_list(array $config): array {
  * Builds the URL builder closure a CRUD list page hands to the table, the
  * pagination and the sort headers.
  *
- * $page is the page name the generated links point back to (the -v2 pages
- * pass their own name, so filters and pagination keep working on the new
- * URLs too). $keepKeys lists the request keys every generated link must
+ * $page is the page name the generated links point back to (each list passes
+ * its canonical name, so filters and pagination keep working on the list's
+ * own URLs). $keepKeys lists the request keys every generated link must
  * carry: each passes through filter_query_value(), so array filters survive
  * as arrays (?assignee[]=2&assignee[]=5) and missing or empty keys are
  * dropped. The returned closure merges $merge overrides on top ('p' for

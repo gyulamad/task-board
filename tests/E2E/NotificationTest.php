@@ -73,7 +73,7 @@ final class NotificationTest extends E2eTestCase
         $badge = $wanda->get('/?');
         // Creation with an assignee is already an event (#58), the comment adds
         // the second one - the badge counts both unseen notifications.
-        $this->assertTrue($badge->contains('<a class="nav-link" href="?page=notifications-v2">Notifications <span class="badge text-bg-danger" title="New notifications">2</span></a>'));  // #85: the menu entry opens the canonical v2 stream.
+        $this->assertTrue($badge->contains('<a class="nav-link" href="?page=notifications">Notifications <span class="badge text-bg-danger" title="New notifications">2</span></a>'));  // #85: the menu entry opens the canonical notification stream.
         // ...and the stream shows the event with a "new" marker. Every row
         // links through the per-item seen route (#73), carrying its own id.
         $stream = $wanda->get('/?page=notifications');
@@ -137,13 +137,13 @@ final class NotificationTest extends E2eTestCase
         // Another account gets bounced back to the stream, the row stays unseen.
         $response = $admin->get('/?page=notification_seen&id=' . $rows[0]['id']);
         $this->assertSame(302, $response->status);
-        $this->assertSame('?page=notifications-v2', (string)$response->header('location'), 'The bounce lands on the canonical stream (#85).');
+        $this->assertSame('?page=notifications', (string)$response->header('location'), 'The bounce lands on the canonical stream (#85).');
         $this->assertSame(1, $this->unseenCount($this->userId('wilma')), 'A foreign id must not mark anything seen.');
 
         // A nonexistent (or already cascaded-away) id behaves the same.
         $response = $wilma->get('/?page=notification_seen&id=99999999');
         $this->assertSame(302, $response->status);
-        $this->assertSame('?page=notifications-v2', (string)$response->header('location'), 'The bounce lands on the canonical stream (#85).');
+        $this->assertSame('?page=notifications', (string)$response->header('location'), 'The bounce lands on the canonical stream (#85).');
         $this->assertSame(1, $this->unseenCount($this->userId('wilma')));
     }
 

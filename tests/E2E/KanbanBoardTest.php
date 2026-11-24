@@ -216,4 +216,26 @@ final class KanbanBoardTest extends E2eTestCase
         $this->assertSame(200, $board->status, 'The board is a task view, not an admin page.');
         $this->assertStringContainsString('Worker item', $board->body);
     }
+
+    public function test_the_kanban_board_renders_without_php_warnings(): void
+    {
+        // #91: the 66v2 merge applied the collapsed-preference flags before the
+        // column rebuild defined $kanbanColumns, so every board view printed
+        // "Undefined variable $kanbanColumns" and "foreach() argument must be
+        // of type array|object, null given" above the page. The release fix
+        // (#65 ci-fix) builds the columns first; this pin keeps any future
+        // reordering of that section from leaking PHP warnings into the board.
+        $admin = $this->adminSession();
+        $taskId = $admin->createTask('Warning-free item');
+
+        $body = $this->board($admin);
+        $this->assertStringContainsString(
+            $this->taskCardLink($taskId, 'Warning-free item'),
+            $body,
+            'The board rendered with its cards - the pins below are not green on an empty page.'
+        );
+        $this->assertStringNotContainsString('Warning:', $body, 'No PHP warning may leak into the rendered board.');
+        $this->assertStringNotContainsString('Undefined variable', $body, 'The kanban variables must be defined before anything renders.');
+        $this->assertStringNotContainsString('foreach() argument', $body, 'A foreach over an undefined variable must never reach the page.');
+    }
 }

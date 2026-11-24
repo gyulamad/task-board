@@ -898,4 +898,261 @@ final class CrudAbstractionTest extends E2eTestCase
         $new = str_replace('templates-v2', 'templates', $new);
         $this->assertSame($old, $new, 'The v2 templates list must render the identical chrome to ?page=templates.');
     }
+
+    // --- messages-v2: the messenger people list on the engine (#57-E) --------
+
+    private function crudUserId(string $username): int
+    {
+        $s = TestServer::pdo()->prepare('SELECT id FROM users WHERE username=?');
+        $s->execute([$username]);
+        $rows = $s->fetchAll(\PDO::FETCH_COLUMN);
+        $s->closeCursor();
+        $this->assertNotEmpty($rows, 'User ' . $username . ' does not exist.');
+        return (int)$rows[0];
+    }
+
+    /** Sends through the composer rendered by the requested page, one-time
+     * send token included (#87). */
+    private function sendMessageVia(AppSession $sender, string $pageName, int $recipientId, string $body): void
+    {
+        $composer = $sender->get('/?page=' . $pageName . '&u=' . $recipientId);
+        $this->assertSame(1, preg_match('/name="send_token" value="([^"]+)"/', $composer->body, $m), 'The composer renders the one-time send token (#87).');
+        $this->assertSame(302, $sender->post('/?page=' . $pageName . '&u=' . $recipientId, [
+            'action' => 'send_message',
+            'recipient_id' => (string)$recipientId,
+            'body' => $body,
+            'send_token' => $m[1],
+        ])->status, 'The send redirects back to the thread.');
+    }
+
+    public function test_messages_v2_carries_the_chat_chrome(): void
+    {
+        $admin = $this->adminSession();
+        $this->createUser($admin, 'chatpeer');
+        $peerId = $this->crudUserId('chatpeer');
+
+        $page = $admin->get('/?page=messages-v2');
+        $this->assertSame(200, $page->status);
+        $this->assertTrue($page->contains('href="?page=messages-v2&u=' . $peerId . '"'), 'The people list links the other user on the v2 page.');
+        $this->assertTrue($page->contains('Chatpeer Name'), 'The people list shows the other users.');
+        $this->assertTrue($page->contains('name="recipient_id" value="' . $peerId . '"'), 'The thread form is bound to the auto-selected person.');
+        $this->assertTrue($page->contains('<input type="hidden" name="page" value="messages-v2">'), 'The people search form submits back to the requested page name.');
+        $this->assertTrue($page->contains('aria-label="Search people"'), 'The people search bar renders.');
+        // The #94 chat regions stay untouched: composer token, send form and
+        // scroll container hooks are exactly the contract points.
+        $this->assertTrue($page->contains('name="send_token"'), 'The composer carries the one-time send token (#87).');
+        $this->assertTrue($page->contains('data-tb-chat-send'), 'The composer keeps the chat JS hook.');
+        $this->assertTrue($page->contains('data-tb-chat-scroll'), 'The thread keeps the scroll container hook (#94).');
+        $this->assertTrue($page->contains('data-tb-more="?page=messages_more&amp;u='), 'The feed endpoint stays the messages_more JSON feed.');
+    }
+
+    public function test_messages_v2_people_search_filters_and_keeps_the_conversation(): void
+    {
+        $admin = $this->adminSession();
+        $this->createUser($admin, 'searchpeer');
+        $this->createUser($admin, 'otherpeer');
+        $peerId = $this->crudUserId('searchpeer');
+
+        $page = $admin->get('/?page=messages-v2&u=' . $peerId . '&q=Searchpeer');
+        $this->assertTrue($page->contains('Searchpeer Name'), 'The matching person renders.');
+        $this->assertFalse($page->contains('Otherpeer Name'), 'The rows outside the search are filtered out.');
+        $this->assertTrue($page->contains('Conversation with Searchpeer Name'), 'The conversation pane stays open on the searched view.');
+        $this->assertTrue($page->contains('value="Searchpeer"'), 'The search term stays in the input.');
+        $this->assertTrue($page->contains('href="?page=messages-v2&amp;u=' . $peerId . '">Clear</a>'), 'The clear link stays on the requested page and keeps the conversation.');
+
+        // A literal % must not act as a wildcard (the task search discipline).
+        $percent = $admin->get('/?page=messages-v2&q=%25');
+        $this->assertTrue($percent->contains('No people match the search.'));
+    }
+
+    public function test_messages_v2_people_paginate_and_keep_the_activity_order(): void
+    {
+        $admin = $this->adminSession();
+        for ($i = 1; $i <= 22; $i++) {
+            $this->createUser($admin, 'peopleuser' . str_pad((string)$i, 2, '0', STR_PAD_LEFT));
+        }
+
+        $page1 = $admin->get('/?page=messages-v2');
+        $this->assertTrue($page1->contains('Page 1 of 2'), 'The shared pagination counter renders.');
+        $this->assertTrue($page1->contains('page=messages-v2&amp;p=2'), 'The pagination links stay on the v2 page.');
+        $this->assertTrue($page1->contains('Peopleuser20 Name'), 'Twenty people land on page 1.');
+        $this->assertFalse($page1->contains('Peopleuser22 Name'), 'The rest stay behind the pagination.');
+
+        $page2 = $admin->get('/?page=messages-v2&p=2');
+        $this->assertTrue($page2->contains('Peopleuser22 Name'), 'Page 2 carries the remaining people.');
+        $this->assertFalse($page2->contains('Peopleuser01 Name'), 'Page 1 rows stay on page 1.');
+
+        // The #94 order survives the port: a brand-new conversation moves its
+        // person to the top of the (engine-ordered) list.
+        $this->sendMessageVia($admin, 'messages-v2', $this->crudUserId('peopleuser05'), 'Paging order check.');
+        $board = $admin->get('/?page=messages-v2');
+        $user05 = strpos($board->body, 'href="?page=messages-v2&u=' . $this->crudUserId('peopleuser05') . '"');
+        $user01 = strpos($board->body, 'href="?page=messages-v2&u=' . $this->crudUserId('peopleuser01') . '"');
+        $this->assertNotFalse($user05);
+        $this->assertNotFalse($user01);
+        $this->assertLessThan($user01, $user05, 'The newest conversation sits at the top of the people list.');
+    }
+
+    public function test_messages_v2_deep_links_reach_people_on_other_pages(): void
+    {
+        $admin = $this->adminSession();
+        for ($i = 1; $i <= 22; $i++) {
+            $this->createUser($admin, 'deepuser' . str_pad((string)$i, 2, '0', STR_PAD_LEFT));
+        }
+        $deepId = $this->crudUserId('deepuser22');
+
+        // The #98-style deep link targets a person whose people row sits on
+        // page 2: the conversation must open exactly that thread, not fall
+        // through to the auto-select.
+        $thread = $admin->get('/?page=messages-v2&u=' . $deepId);
+        $this->assertSame(200, $thread->status);
+        $this->assertTrue($thread->contains('Conversation with Deepuser22 Name'), 'The deep-linked conversation renders immediately.');
+        $this->assertTrue($thread->contains('name="recipient_id" value="' . $deepId . '"'), 'The composer is bound to the deep-linked person.');
+        $this->assertFalse($thread->contains('href="?page=messages-v2&u=' . $deepId . '"'), 'The person is not on the rendered people page 1.');
+
+        // An unknown peer id falls back to the auto-select like before.
+        $unknown = $admin->get('/?page=messages-v2&u=99999');
+        $this->assertSame(200, $unknown->status);
+        $this->assertFalse($unknown->contains('Conversation with Deleted user'), 'An unknown id does not open the orphan thread.');
+    }
+    public function test_messages_v2_self_deep_link_falls_back_like_the_classic_page(): void
+    {
+        $admin = $this->adminSession();
+        $this->createUser($admin, 'selflinkpeer');
+
+        // A crafted ?u=<own id> never opens a self-conversation: the people
+        // list has no own row (no self-conversation exists), so the visitor
+        // lands in the auto-selected conversation exactly like on the
+        // classic URL.
+        $page = $admin->get('/?page=messages-v2&u=' . $this->crudUserId('admin'));
+        $this->assertSame(200, $page->status);
+        $this->assertFalse($page->contains('Conversation with Administrator'), 'No self-conversation opens.');
+        $this->assertTrue($page->contains('Conversation with Selflinkpeer Name'), 'The auto-selected first person opens instead.');
+    }
+
+
+    public function test_messages_v2_page_matches_the_messages_page(): void
+    {
+        $admin = $this->adminSession();
+        $this->createUser($admin, 'paritychat');
+
+        // One throwaway request consumes the unread state (any board view
+        // marks the messages read), so both compared fetches render the same
+        // zero badge.
+        $admin->get('/?page=messages');
+
+        $old = $this->pageChrome($admin->get('/?page=messages')->body);
+        $new = $this->pageChrome($admin->get('/?page=messages-v2')->body);
+        // The navbar (and after the step-5 switch every entry link) points at
+        // the v2 page, so both bodies get the same page-name rewrite before
+        // the comparison.
+        $old = str_replace('messages-v2', 'messages', $old);
+        $new = str_replace('messages-v2', 'messages', $new);
+        $this->assertSame($old, $new, 'The v2 messenger must render the identical chrome to ?page=messages.');
+    }
+
+    // --- notifications-v2: the stream on the engine (#57-E) ------------------
+
+    private function notifyUser(AppSession $admin, int $userId, string $taskTitle): int
+    {
+        return $admin->createTask($taskTitle, ['assignees' => [$userId]]);
+    }
+
+    public function test_notifications_v2_carries_the_stream_chrome(): void
+    {
+        $admin = $this->adminSession();
+        $this->createUser($admin, 'streamuser');
+        $this->notifyUser($admin, $this->crudUserId('streamuser'), 'Stream chrome task');
+
+        // The stream belongs to the notified user: the assignee sees the rows.
+        $page = (new AppSession('streamuser', 'streamuserPass12345'))->get('/?page=notifications-v2');
+        $this->assertSame(200, $page->status);
+        $this->assertTrue($page->contains('Notifications</h1>'), 'The page header renders.');
+        $this->assertTrue($page->contains('notification-flag-toggle'), 'The #100 red-flag toggle stays on the stream.');
+        $this->assertTrue($page->contains('<input type="hidden" name="page" value="notifications-v2">'), 'The stream search form submits back to the requested page name.');
+        $this->assertTrue($page->contains('aria-label="Search notifications"'), 'The stream search bar renders.');
+        $this->assertTrue($page->contains('href="?page=notification_seen&id='), 'Every row links through the per-item seen route (#73).');
+        $this->assertTrue($page->contains('Stream chrome task'), 'The stream shows the task behind the notification.');
+        $this->assertTrue($page->contains('name="action" value="mark_all_seen"'), 'The bulk shortcut stays next to the counter.');
+    }
+
+    public function test_notifications_v2_searches_task_title_and_event(): void
+    {
+        $admin = $this->adminSession();
+        $this->createUser($admin, 'searchnotified');
+        $userId = $this->crudUserId('searchnotified');
+        $this->notifyUser($admin, $userId, 'Relay notes task');
+        $this->notifyUser($admin, $userId, 'Billing rules task');
+
+        $notified = new AppSession('searchnotified', 'searchnotifiedPass12345');
+        $byTitle = $notified->get('/?page=notifications-v2&q=Relay');
+        $this->assertTrue($byTitle->contains('Relay notes task'), 'The task title is searched.');
+        $this->assertFalse($byTitle->contains('Billing rules task'), 'The rows outside the search are filtered out.');
+        $this->assertTrue($byTitle->contains('value="Relay"'), 'The search term stays in the input.');
+        $this->assertTrue($byTitle->contains('href="?page=notifications-v2&amp;q=Relay">Clear</a>'), 'The clear link stays on the requested page and keeps the search term.');
+
+        $byEvent = $notified->get('/?page=notifications-v2&q=Comment');
+        $this->assertFalse($byEvent->contains('Relay notes task'), 'Creation events are not comment events.');
+        $admin->createTask('Commented task', ['assignees' => [$userId]]);
+        $taskId = (int)TestServer::pdo()->query("SELECT id FROM tasks WHERE title='Commented task'")->fetchColumn();
+        $admin->post('/?page=task&id=' . $taskId, ['action' => 'comment', 'task_id' => (string)$taskId, 'body' => 'event search payload']);
+        $byEvent = $notified->get('/?page=notifications-v2&q=Comment');
+        $this->assertTrue($byEvent->contains('Commented task'), 'The event text is searched too.');
+
+        // A literal % must not act as a wildcard (the task search discipline).
+        $percent = $notified->get('/?page=notifications-v2&q=%25');
+        $this->assertTrue($percent->contains('No notifications match the search.'));
+    }
+
+    public function test_notifications_v2_paginates(): void
+    {
+        $admin = $this->adminSession();
+        $this->createUser($admin, 'pagednotified');
+        $userId = $this->crudUserId('pagednotified');
+        for ($i = 1; $i <= 22; $i++) {
+            $this->notifyUser($admin, $userId, 'Paged notification ' . str_pad((string)$i, 2, '0', STR_PAD_LEFT));
+        }
+
+        $notified = new AppSession('pagednotified', 'pagednotifiedPass12345');
+        $page1 = $notified->get('/?page=notifications-v2');
+        $this->assertTrue($page1->contains('Page 1 of 2'), 'The shared pagination counter renders.');
+        $this->assertTrue($page1->contains('page=notifications-v2&amp;p=2'), 'The pagination links stay on the v2 page.');
+        $this->assertTrue($page1->contains('Paged notification 22'), 'The fixed newest-first order puts the newest first.');
+        $this->assertFalse($page1->contains('Paged notification 01'), 'Page 1 carries the newest twenty only.');
+
+        $page2 = $notified->get('/?page=notifications-v2&p=2');
+        $this->assertTrue($page2->contains('Paged notification 01'), 'The oldest rows land on page 2.');
+        $this->assertFalse($page2->contains('Paged notification 22'), 'Page 1 rows stay on page 1.');
+    }
+
+    public function test_notifications_v2_access_model(): void
+    {
+        $this->createUser($this->adminSession(), 'notifvisitor');
+        $this->assertSame(302, (new AppSession())->get('/?page=notifications-v2')->status, 'Anonymous visitors are pushed to the sign-in page.');
+        // The stream is self-scoped like the classic page: another account
+        // only ever sees their own rows.
+        $this->assertSame(200, (new AppSession('notifvisitor', 'notifvisitorPass12345'))->get('/?page=notifications-v2')->status);
+    }
+
+    public function test_notifications_v2_page_matches_the_notifications_page(): void
+    {
+        $admin = $this->adminSession();
+        $this->createUser($admin, 'paritynotified');
+        $this->notifyUser($admin, $this->crudUserId('paritynotified'), 'Parity notification task');
+        $notified = new AppSession('paritynotified', 'paritynotifiedPass12345');
+
+        // One throwaway request consumes the unseen state (opening the stream
+        // marks everything seen, #79), so both compared fetches render the
+        // same zero counter without the "new" markers.
+        $notified->get('/?page=notifications');
+
+        $old = $this->pageChrome($notified->get('/?page=notifications')->body);
+        $new = $this->pageChrome($notified->get('/?page=notifications-v2')->body);
+        // The navbar (and after the step-5 switch every entry link) points at
+        // the v2 page, so both bodies get the same page-name rewrite before
+        // the comparison.
+        $old = str_replace('notifications-v2', 'notifications', $old);
+        $new = str_replace('notifications-v2', 'notifications', $new);
+        $this->assertSame($old, $new, 'The v2 stream must render the identical chrome to ?page=notifications.');
+    }
 }

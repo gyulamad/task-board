@@ -1298,7 +1298,15 @@ if ($page==='message_download') {
 // Shift+Enter / Ctrl+Enter make a newline (5), the composer carries an
 // attachment button (6), the people list orders by latest conversation (7)
 // and on mobile only one pane shows at a time (8-10).
-if ($page==='messages') {
+if (in_array($page, ['messages', 'messages-v2'], true)) {
+    // The #57-E rebuild runs the messenger's people list through the shared
+    // CRUD engine (src/crud.php): the rows render exactly what the hand-built
+    // list rendered, and the page gains the search/pagination mechanics of the
+    // other lists while the #94 chat regions stay untouched. ?page=messages
+    // keeps working as an alias - the generated links (people rows, the back
+    // arrow, the search form, the pagination) carry the requested page name,
+    // so bookmarks and the #98 deep links survive.
+    $chatPage = $page === 'messages-v2' ? 'messages-v2' : 'messages';
     $me=(int)user()['id'];
     $newCount=tb_unread_message_count($pdo,$me);
     // The navbar badge renders after the mark-read below, so it reuses this
@@ -1316,54 +1324,83 @@ if ($page==='messages') {
     $orphansTotal=$pdo->prepare('SELECT COUNT(*) FROM messages WHERE (recipient_id=? AND sender_id IS NULL) OR (sender_id=? AND recipient_id IS NULL)');
     $orphansTotal->execute([$me,$me]);
     $orphanTotal=(int)$orphansTotal->fetchAll(PDO::FETCH_COLUMN)[0];
-    // People ordering (#94 point 7): latest conversation first. The order is
-    // stored in the messages themselves - MAX(m.id) per conversation is the
-    // activity cursor (ids are monotonic, so it has no clock-tie ambiguity) -
-    // so it survives sign-outs and devices without extra state to keep in
-    // sync, and a new message moves its conversation to the top on the very
-    // next load. People never written to sort after everyone, by name.
-    // #102: the ORDER BY must repeat the MAX(m.id) aggregate instead of the
-    // last_id alias - MariaDB (the production engine) rejects an aggregate
-    // alias referenced inside an ORDER BY expression ("Reference 'last_id'
-    // not supported (reference to group function)", the 2026-11-24 messages
-    // page outage), while the SQLite test suite accepts it. SqlAliasGuardTest
-    // keeps this hazard from coming back.
-    $people=$pdo->prepare('SELECT u.id, u.display_name, u.last_seen_at, u.logged_out, MAX(m.id) last_id FROM users u LEFT JOIN messages m ON (m.sender_id=u.id AND m.recipient_id=?) OR (m.recipient_id=u.id AND m.sender_id=?) WHERE u.id<>? GROUP BY u.id, u.display_name, u.last_seen_at ORDER BY MAX(m.id) IS NULL, MAX(m.id) DESC, u.display_name, u.id');
-    $people->execute([$me,$me,$me]);
-    $peopleRows=$people->fetchAll();
-    // The "Deleted user" entry takes its place in the same latest-activity
-    // order, right after the newest conversation that is older than the last
-    // orphan message.
+    // The "Deleted user" orphan cursor is read before the people list: the
+    // engine query below unions the orphan entry into the same ordered set,
+    // so COUNT, the search and the pagination run over both halves and the
+    // orphan keeps taking exactly its activity-ordered slot.
     $orphanLastId=0;
     if ($orphanTotal) {
         $ol=$pdo->prepare('SELECT MAX(id) FROM messages WHERE (recipient_id=? AND sender_id IS NULL) OR (sender_id=? AND recipient_id IS NULL)');
         $ol->execute([$me,$me]);
         $orphanLastId=(int)($ol->fetchAll(PDO::FETCH_COLUMN)[0] ?? 0);
     }
-    $chatEntries=[];
-    $orphanPlaced=!$orphanTotal;
-    foreach ($peopleRows as $p) {
-        if (!$orphanPlaced && ((int)$p['last_id']===0 || $orphanLastId >= (int)$p['last_id'])) {
-            $chatEntries[]=['id'=>0,'display_name'=>'Deleted user','last_seen_at'=>null,'last_id'=>$orphanLastId];
-            $orphanPlaced=true;
-        }
-        $chatEntries[]=$p;
+    // People ordering (#94 point 7): latest conversation first. The order is
+    // stored in the messages themselves - MAX(m.id) per conversation is the
+    // activity cursor (ids are monotonic, so it has no clock-tie ambiguity) -
+    // so it survives sign-outs and devices without extra state to keep in
+    // sync, and a new message moves its conversation to the top on the very
+    // next load. People never written to sort after everyone, by name, and
+    // the "Deleted user" entry takes its place in the same order. The #57-E
+    // port keeps that exact order as the fixed default of the engine's sort
+    // allowlist (a crafted ?sort= falls back to it; the chat sidebar keeps no
+    // sort UI) and gains the search/pagination mechanics of the other lists.
+    $peopleConds=[];
+    $peopleParams=[];
+    $pq = trim((string)($_GET['q'] ?? ''));
+    if ($pq !== '') {
+        // The same |, %, _ escaping the task search uses, so a search for a
+        // literal % or _ cannot turn into a wildcard scan.
+        $term = str_replace(['|','%','_'],['||','|%','|_'],$pq);
+        $peopleConds[] = "display_name LIKE ? ESCAPE '|'";
+        $peopleParams[] = '%'.$term.'%';
     }
-    if (!$orphanPlaced) $chatEntries[]=['id'=>0,'display_name'=>'Deleted user','last_seen_at'=>null,'last_id'=>$orphanLastId];
+    $peopleUnion = 'SELECT u.id, u.display_name, u.last_seen_at, MAX(m.id) last_id FROM users u LEFT JOIN messages m ON (m.sender_id=u.id AND m.recipient_id=?) OR (m.recipient_id=u.id AND m.sender_id=?) WHERE u.id<>? GROUP BY u.id, u.display_name, u.last_seen_at';
+    if ($orphanTotal) $peopleUnion .= ' UNION ALL SELECT 0, \'Deleted user\', NULL, ' . $orphanLastId;
+    $peopleList=tb_crud_list([
+        'pdo'=>$pdo,
+        'table'=>'(' . $peopleUnion . ') ppl',
+        'select'=>'id, display_name, last_seen_at, last_id',
+        'where'=>$peopleConds,
+        // The union carries its own peer pair (twice) plus the self-exclusion
+        // before the outer WHERE, so its parameters come first.
+        'params'=>array_merge([$me,$me,$me],$peopleParams),
+        'sortColumns'=>[
+            'activity'=>'(last_id IS NULL) ASC, last_id {dir}, (CASE WHEN id = 0 THEN 0 ELSE 1 END) ASC, display_name ASC, id ASC',
+            'name'=>'display_name {dir}, (last_id IS NULL) ASC, last_id DESC, (CASE WHEN id = 0 THEN 0 ELSE 1 END) ASC, id ASC',
+        ],
+        'defaultSort'=>'activity',
+        'defaultDir'=>'desc',
+    ]);
+    $chatEntries=$peopleList['rows'];
+    $peopleUrl=tb_crud_url_builder($chatPage,['q','u']);
     // Viewing the board is what marks the messages read - the badge on the
     // page and in the navbar always means "new since the last visit".
     $pdo->prepare('UPDATE messages SET is_read=1 WHERE recipient_id=? AND is_read=0')->execute([$me]);
     // The selected conversation: ?u=<user id>, with u=0 as the "Deleted user"
     // thread (#17: messages survive account deletion, both FKs SET NULL).
     // Without a valid selection the newest unread sender wins, else the
-    // conversation with the most recent activity, else the first person
-    // alphabetically.
+    // conversation with the most recent activity, else the first person of
+    // the list. The peer is resolved straight from the users table (#57-E):
+    // the people list now paginates, so a deep link to a person whose row
+    // sits on another people page must still open exactly their conversation
+    // instead of falling through to the auto-select.
     $explicitPeer=isset($_GET['u']);
     $peerId=isset($_GET['u'])?(int)$_GET['u']:-1;
     $peer=null;
     $peerExplicit=false;
-    if ($peerId>0) {
-        foreach ($chatEntries as $p) { if ((int)$p['id']===$peerId) { $peer=$p; $peerExplicit=true; break; } }
+    $peerRowById=function(int $id) use ($pdo): ?array {
+        $s=$pdo->prepare('SELECT id, display_name, last_seen_at FROM users WHERE id=?');
+        $s->execute([$id]);
+        $row=$s->fetchAll();
+        return $row ? ['id'=>(int)$row[0]['id'],'display_name'=>(string)$row[0]['display_name'],'last_seen_at'=>$row[0]['last_seen_at'] ?? null] : null;
+    };
+    if ($peerId>0 && $peerId!==$me) {
+        // The self id is excluded on purpose: the people list never contains
+        // the visitor's own row (no self-conversation), so a crafted
+        // ?u=<own id> falls through to the auto-select exactly like it did
+        // when the peer was looked up in the rendered list rows.
+        $peer=$peerRowById($peerId);
+        if ($peer!==null) $peerExplicit=true;
     }
     if ($peerId===0 && $explicitPeer) $peerExplicit=true;
     if ($peer===null && $peerId!==0) {
@@ -1371,13 +1408,13 @@ if ($page==='messages') {
             $newest=$pdo->prepare('SELECT sender_id FROM messages WHERE recipient_id=? AND is_read=0 AND sender_id IS NOT NULL ORDER BY id DESC LIMIT 1');
             $newest->execute([$me]);
             $newestId=(int)($newest->fetchAll(PDO::FETCH_COLUMN)[0] ?? 0);
-            foreach ($chatEntries as $p) { if ((int)$p['id']===$newestId) { $peer=$p; break; } }
+            if ($newestId>0) $peer=$peerRowById($newestId);
         }
         if ($peer===null) {
             $recent=$pdo->prepare('SELECT CASE WHEN sender_id=? THEN recipient_id ELSE sender_id END other_id FROM messages WHERE sender_id=? OR recipient_id=? ORDER BY id DESC LIMIT 1');
             $recent->execute([$me,$me,$me]);
             $otherId=(int)($recent->fetchAll(PDO::FETCH_COLUMN)[0] ?? 0);
-            if ($otherId>0) foreach ($chatEntries as $p) { if ((int)$p['id']===$otherId) { $peer=$p; break; } }
+            if ($otherId>0) $peer=$peerRowById($otherId);
         }
         if ($peer===null && $chatEntries) { foreach ($chatEntries as $p) { if ((int)$p['id']!==0) { $peer=$p; break; } } }
         $peerId=$peer===null?0:(int)$peer['id'];
@@ -1433,12 +1470,14 @@ if ($page==='messages') {
     <div class="d-flex justify-content-between align-items-center mb-3"><div><h1 class="h3 mb-0">Messages</h1><div class="muted">A messenger-style board: pick a person on the left, chat in bubbles on the right - every message shows when it was sent and whether it was seen.</div></div><span class="badge text-bg-danger fs-6"><?=$newCount?> new message<?=$newCount===1?'':'s'?></span></div>
     <div class="row g-4 tb-chat<?=$hasPeer?' has-peer':''?>" data-tb-chat>
         <div class="col-lg-4 tb-chat-people"><div class="card p-3 tb-chat-people-card"><h2 class="h5">People</h2>
+            <form method="get" class="d-flex gap-2 mb-2"><input type="hidden" name="page" value="<?=$chatPage?>"><?php if($peerExplicit): ?><input type="hidden" name="u" value="<?=$peerId?>"><?php endif; ?><input class="form-control form-control-sm" type="search" name="q" value="<?=h($pq)?>" placeholder="Search people..." aria-label="Search people"><button class="btn btn-sm btn-outline-secondary">Search</button><?php if($pq!==''): ?><a class="btn btn-link btn-sm" href="<?=h($peerExplicit?'?page='.$chatPage.'&u='.$peerId:'?page='.$chatPage)?>">Clear</a><?php endif; ?></form>
             <?php foreach ($chatEntries as $p): $pid=(int)$p['id']; $isOrphan=$pid===0; ?>
-            <a class="d-flex justify-content-between align-items-center border-bottom py-2 text-decoration-none<?=$peer!==null&&$pid===(int)$peer['id']?' bg-primary-subtle fw-semibold':''?>" href="?page=messages&u=<?=$pid?>"><span><?php if($isOrphan): ?>Deleted user<?php else: ?><?=tb_user_with_activity($p)?><?php endif; ?></span><?php if($isOrphan ? $orphanUnread : ($unreadBySender[$pid] ?? 0)): ?><span class="badge text-bg-danger"><?=$isOrphan?$orphanUnread:$unreadBySender[$pid]?></span><?php endif; ?></a>
-            <?php endforeach; if(!$chatEntries): ?><div class="small muted">Nobody to talk to yet.</div><?php endif; ?>
+            <a class="d-flex justify-content-between align-items-center border-bottom py-2 text-decoration-none<?=$peer!==null&&$pid===(int)$peer['id']?' bg-primary-subtle fw-semibold':''?>" href="?page=<?=$chatPage?>&u=<?=$pid?>"><span><?php if($isOrphan): ?>Deleted user<?php else: ?><?=tb_user_with_activity($p)?><?php endif; ?></span><?php if($isOrphan ? $orphanUnread : ($unreadBySender[$pid] ?? 0)): ?><span class="badge text-bg-danger"><?=$isOrphan?$orphanUnread:$unreadBySender[$pid]?></span><?php endif; ?></a>
+            <?php endforeach; if(!$chatEntries): ?><div class="small muted"><?=$pq!==''?'No people match the search.':'Nobody to talk to yet.'?></div><?php endif; ?>
+            <?=tb_crud_pagination(['ariaLabel'=>'People list pages','page'=>$peopleList['page'],'pages'=>$peopleList['pages'],'url'=>$peopleUrl])?>
         </div></div>
         <div class="col-lg-8 tb-chat-thread"><div class="card p-3">
-            <div class="tb-chat-head d-flex align-items-center gap-2"><a class="btn btn-sm btn-outline-secondary tb-chat-back" href="?page=messages" aria-label="Back to the people list" title="Back to the people list">&larr;</a><h2 class="h5"><?=h($peer!==null?'Conversation with '.$peer['display_name']:'Deleted user')?></h2></div>
+            <div class="tb-chat-head d-flex align-items-center gap-2"><a class="btn btn-sm btn-outline-secondary tb-chat-back" href="?page=<?=$chatPage?>" aria-label="Back to the people list" title="Back to the people list">&larr;</a><h2 class="h5"><?=h($peer!==null?'Conversation with '.$peer['display_name']:'Deleted user')?></h2></div>
             <div class="tb-chat-scroll" data-tb-chat-scroll data-tb-more="<?=h('?page=messages_more&u='.$peerId.($oldestId!==null?'&before='.(int)$oldestId:''))?>" data-tb-has-more="<?=$hasMore?'1':'0'?>">
             <?php foreach ($thread as $m): $mine=$m['sender_id']!==null&&(int)$m['sender_id']===$me; echo tb_message_bubble($m,$mine,$threadAttachments[(int)$m['id']]??[]); endforeach; if(!$thread): ?><div class="text-center muted small py-4">No messages here yet - say hi below.</div><?php endif; ?>
             </div>
@@ -1548,16 +1587,43 @@ if ($page==='messages') {
 // ?page=notification_seen&id=... so a single click marks exactly that row
 // seen on the way to its task, and the Mark-all-as-seen button clears the
 // whole stream in one POST.
-if ($page==='notifications') {
+if (in_array($page, ['notifications', 'notifications-v2'], true)) {
+    // The #57-E rebuild runs the notification stream through the shared CRUD
+    // engine (src/crud.php): the rows render exactly what the hand-built
+    // stream rendered, and the page gains the search/pagination mechanics of
+    // the other lists - the hand-rolled LIMIT 200 cap becomes real pagination.
+    // The newest-first order stays the fixed default of the engine's sort
+    // allowlist (a crafted ?sort= falls back to it), and ?page=notifications
+    // keeps working as an alias: the generated links (search form, clear,
+    // pagination) carry the requested page name, so bookmarks survive.
+    $listPage = $page === 'notifications-v2' ? 'notifications-v2' : 'notifications';
     $me=(int)user()['id'];
     $newCount=tb_unseen_notification_count($pdo,$me);
     // #100: the switch that shows or hides the red navbar badge for this
     // user. Rendered next to the stream counter; the POST flips the
     // per-user preference and lands back on this page.
     $flagOn=tb_notification_flag_enabled($pdo,$me);
-    $s=$pdo->prepare('SELECT n.*,t.title task_title FROM notifications n JOIN tasks t ON t.id=n.task_id WHERE n.user_id=? ORDER BY n.id DESC LIMIT 200');
-    $s->execute([$me]);
-    $items=$s->fetchAll();
+    $nConds=['n.user_id=?']; $nParams=[$me];
+    $nq = trim((string)($_GET['q'] ?? ''));
+    if ($nq !== '') {
+        // The same |, %, _ escaping the task search uses, so a search for a
+        // literal % or _ cannot turn into a wildcard scan.
+        $term = str_replace(['|','%','_'],['||','|%','|_'],$nq);
+        $nConds[] = "(t.title LIKE ? ESCAPE '|' OR n.event LIKE ? ESCAPE '|')";
+        $nParams[] = '%'.$term.'%'; $nParams[] = '%'.$term.'%';
+    }
+    $notifList=tb_crud_list([
+        'pdo'=>$pdo,
+        'table'=>'notifications n JOIN tasks t ON t.id=n.task_id',
+        'select'=>'n.id,n.task_id,n.event,n.created_at,n.is_seen,t.title task_title',
+        'where'=>$nConds,
+        'params'=>$nParams,
+        'sortColumns'=>['newest'=>'n.id {dir}'],
+        'defaultSort'=>'newest',
+        'defaultDir'=>'desc',
+    ]);
+    $items=$notifList['rows'];
+    $notifUrl=tb_crud_url_builder($listPage,['q']);
     // Opening the page marks everything seen (#79 point 2): the red navbar
     // flag disappears on this very load and stays gone until new unseen
     // notifications arrive. Reading one by one still works - the per-item
@@ -1566,7 +1632,9 @@ if ($page==='notifications') {
     $pdo->prepare('UPDATE notifications SET is_seen=1 WHERE user_id=? AND is_seen=0')->execute([$me]);
     render_header('Notifications',$config,$error); ?>
     <div class="d-flex justify-content-between align-items-center mb-3"><div><h1 class="h3 mb-0">Notifications</h1><div class="muted">Everything that happened on the tasks you are assigned to. Opening this page marks everything seen - the red flag disappears until new ones arrive; clicking a single one opens the task it came from, and the button clears them all in one click.</div></div><div class="d-flex gap-2 align-items-center"><form method="post" class="d-inline-flex align-items-center gap-1" title="Shows or hides the red notification counter in the top menu"><?=csrf_field()?><input type="hidden" name="action" value="toggle_notification_flag"><div class="form-check form-switch mb-0"><input class="form-check-input" type="checkbox" role="switch" id="notification-flag-toggle" aria-label="Red flag in the top menu"<?=$flagOn?' checked':''?> onchange="this.form.submit()"><label class="form-check-label small muted" for="notification-flag-toggle">Red flag in the top menu</label></div><noscript><button class="btn btn-sm btn-outline-secondary">Apply</button></noscript></form><span class="badge text-bg-danger fs-6"><?=$newCount?> new notification<?=$newCount===1?'':'s'?></span><?php if($newCount): ?><form method="post" class="d-inline"><?=csrf_field()?><input type="hidden" name="action" value="mark_all_seen"><button class="btn btn-outline-primary btn-sm" title="Mark every notification as seen">Mark all as seen</button></form><?php endif; ?></div></div>
-    <div class="card p-4"><h2 class="h5">Stream</h2><?php foreach($items as $n): ?><div class="border-bottom py-2<?=$n['is_seen']?'':' fw-semibold'?>"><div><a class="fw-semibold text-decoration-none" href="?page=notification_seen&id=<?=$n['id']?>">#<?=$n['task_id']?> · <?=h($n['task_title'])?></a> <strong><?=h($n['event'])?></strong> <span class="small muted"><?=h($n['created_at'])?></span><?php if(!$n['is_seen']): ?> <span class="badge text-bg-danger">new</span><?php endif; ?></div></div><?php endforeach; if(!$items): ?><div class="small muted">No notifications yet. Assign yourself to a task and follow its history.</div><?php endif; ?></div>
+    <form method="get" class="d-flex gap-2 mb-3"><input type="hidden" name="page" value="<?=$listPage?>"><input class="form-control" type="search" name="q" value="<?=h($nq)?>" placeholder="Search task and event..." aria-label="Search notifications"><button class="btn btn-outline-secondary">Search</button><?php if($nq!==''): ?><a class="btn btn-link" href="<?=h($notifUrl())?>">Clear</a><?php endif; ?></form>
+    <div class="card p-4"><h2 class="h5">Stream</h2><?php foreach($items as $n): ?><div class="border-bottom py-2<?=$n['is_seen']?'':' fw-semibold'?>"><div><a class="fw-semibold text-decoration-none" href="?page=notification_seen&id=<?=$n['id']?>">#<?=$n['task_id']?> · <?=h($n['task_title'])?></a> <strong><?=h($n['event'])?></strong> <span class="small muted"><?=h($n['created_at'])?></span><?php if(!$n['is_seen']): ?> <span class="badge text-bg-danger">new</span><?php endif; ?></div></div><?php endforeach; if(!$items): ?><div class="small muted"><?=$nq!==''?'No notifications match the search.':'No notifications yet. Assign yourself to a task and follow its history.'?></div><?php endif; ?></div>
+    <?=tb_crud_pagination(['ariaLabel'=>'Notification list pages','page'=>$notifList['page'],'pages'=>$notifList['pages'],'url'=>$notifUrl])?>
     <?php render_footer(); exit;
 }
 

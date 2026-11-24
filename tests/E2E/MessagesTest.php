@@ -83,7 +83,7 @@ final class MessagesTest extends E2eTestCase
         // from Sent to Seen (#65) in the sender's own thread.
         $sent = $admin->get('/?page=messages&u=' . $bobId);
         $this->assertTrue($sent->contains('Welcome to the board, Bobby!'));
-        $this->assertTrue($sent->contains('· Seen'), 'The sender sees the message was read.');
+        $this->assertTrue($sent->contains('data-tb-msg-status>Seen</span>'), 'The sender sees the message was read (the #118 status hook).');
         $this->assertTrue($sent->contains('justify-content-end'), 'Own messages sit on the right like chat bubbles.');
     }
 
@@ -215,6 +215,6 @@ final class MessagesTest extends E2eTestCase
         $thread = $admin->get('/?page=messages&u=0');
         $this->assertTrue($thread->contains('Conversation with Deleted user') || $thread->contains('<h2 class="h5">Deleted user</h2>'), 'The deleted-user thread opens.');
         $this->assertTrue($thread->contains('Erin, please archive the old notes.'));
-        $this->assertTrue($thread->contains('· Sent'), 'A deleted recipient can never mark the message seen.');
+        $this->assertTrue($thread->contains('data-tb-msg-status>Sent</span>'), 'A deleted recipient can never mark the message seen (the #118 status hook).');
     }
 }

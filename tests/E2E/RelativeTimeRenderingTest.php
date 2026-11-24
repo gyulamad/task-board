@@ -97,7 +97,7 @@ final class RelativeTimeRenderingTest extends E2eTestCase
         $conversation = $admin->get('/?page=messages&u=' . $viewerId);
         $this->assertSame(200, $conversation->status);
         $this->assertTrue($conversation->contains('Aged bubble body'), 'The sent message renders in the thread.');
-        $this->assertTrue($conversation->contains(' (2 minutes ago)'), 'The chat bubble renders the relative note.');
+        $this->assertTrue($conversation->contains('>2 minutes ago</span>)'), 'The chat bubble renders the relative note (inside its #118 refresh hook).');
     }
 
     public function test_a_stamp_that_was_never_set_renders_never_without_a_suffix(): void

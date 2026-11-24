@@ -1308,6 +1308,17 @@ if ($page==='messages_live') {
     } elseif ($u===0) {
         $feedPeer=['id'=>0,'display_name'=>'Deleted user','last_seen_at'=>null,'logged_out'=>0];
     }
+    // #118: how far the seen status has reached for the viewer's own messages
+    // in the open conversation - the peer opening the thread flips the Sent
+    // labels to Seen in place, without a page reload.
+    if ($u>0) {
+        $seen=$pdo->prepare('SELECT COALESCE(MAX(id),0) FROM messages WHERE sender_id=? AND recipient_id=? AND is_read=1');
+        $seen->execute([$me,$u]);
+    } else {
+        $seen=$pdo->prepare('SELECT COALESCE(MAX(id),0) FROM messages WHERE sender_id=? AND recipient_id IS NULL AND is_read=1');
+        $seen->execute([$me]);
+    }
+    $seenUpTo=(int)$seen->fetchColumn();
     header('Content-Type: application/json; charset=utf-8');
     header('Cache-Control: no-store');
     exit(json_encode([
@@ -1315,6 +1326,7 @@ if ($page==='messages_live') {
         'lastId'=>$lastId,
         'peopleHtml'=>tb_chat_people_rows($people['entries'],$people['unreadBySender'],$people['orphanUnread'],$feedPeer,$chatPage),
         'newCount'=>tb_unread_message_count($pdo,$me),
+        'seenUpTo'=>$seenUpTo,
     ], JSON_UNESCAPED_UNICODE));
 }
 
@@ -1633,8 +1645,37 @@ if ($page === 'messages') {
             var lastId=parseInt(scroll?scroll.getAttribute('data-tb-after')||'0':'0',10);
             if(!(lastId>=0)) lastId=0;
             var liveBusy=false;
+            // #118: the relative sending time of every bubble is refreshed in
+            // place from its epoch - the suffix grammar is deterministic, the
+            // absolute datetime (timezone + format) stays exactly as rendered.
+            var agoSuffix=function(ts,nowSec){
+                var s=nowSec-ts;
+                if(!(ts>0)||s<0) return null;
+                if(s<60) return 'just now';
+                var unit=function(n,w){return n+' '+w+(n===1?'':'s')+' ago';};
+                var minutes=Math.floor(s/60);
+                if(minutes<60) return unit(minutes,'minute');
+                var hours=Math.floor(s/3600);
+                if(hours<24) return unit(hours,'hour');
+                var days=Math.floor(s/86400);
+                if(days<7) return unit(days,'day');
+                if(days<30) return unit(Math.floor(days/7),'week');
+                if(days<365) return unit(Math.floor(days/30),'month');
+                return unit(Math.floor(days/365),'year');
+            };
+            var refreshAgo=function(){
+                var nowSec=Math.floor(Date.now()/1000);
+                var els=root.querySelectorAll('[data-tb-ago-sfx]');
+                for(var i=0;i<els.length;i++){
+                    var ts=parseInt(els[i].getAttribute('data-tb-ago-ts'),10);
+                    var sfx=agoSuffix(ts,nowSec);
+                    if(sfx!==null) els[i].textContent='('+sfx+')';
+                }
+            };
+            refreshAgo();
             var poll=function(){
                 if(liveBusy||document.hidden) return;
+                refreshAgo();
                 liveBusy=true;
                 fetch(liveUrl+'&after='+lastId,{credentials:'same-origin',headers:{'Accept':'application/json'}})
                     .then(function(r){return r.ok?r.json():null;})
@@ -1653,6 +1694,15 @@ if ($page === 'messages') {
                         if(typeof d.peopleHtml==='string'&&d.peopleHtml!==''){
                             var rowsEl=document.querySelector('[data-tb-chat-live-people]');
                             if(rowsEl&&rowsEl.innerHTML!==d.peopleHtml) rowsEl.innerHTML=d.peopleHtml;
+                        }
+                        if(typeof d.seenUpTo==='number'&&d.seenUpTo>0){
+                            // #118: the peer read the thread - my Sent labels
+                            // flip to Seen without a reload.
+                            var statuses=root.querySelectorAll('[data-tb-msg-status]');
+                            for(var i=0;i<statuses.length;i++){
+                                var b=statuses[i].closest('[data-tb-msg-id]');
+                                if(b&&parseInt(b.getAttribute('data-tb-msg-id'),10)<=d.seenUpTo) statuses[i].textContent='Seen';
+                            }
                         }
                     })
                     .catch(function(){})

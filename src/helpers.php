@@ -51,12 +51,22 @@ function tb_message_bubble(array $m, bool $mine, array $attachments = []): strin
     foreach ($attachments as $a) {
         $inner .= '<div class="mt-1"><a class="badge text-bg-light border text-decoration-none tb-chat-attachment" href="?page=message_download&amp;id=' . (int)$a['id'] . '" download title="Download attachment">' . h((string)$a['original_name']) . ' <span class="fw-normal">(' . number_format((int)$a['file_size'] / 1024, 1) . ' KB)</span></a></div>';
     }
+    // #118: the absolute datetime renders once as before; the relative
+    // suffix carries its epoch so the chat poll refreshes it in place (the
+    // suffix grammar is deterministic from the epoch, the timezone and the
+    // format stay exactly as rendered), and my bubbles carry the seen-status
+    // hook the feed's seenUpTo keeps current without a page reload.
+    $ts = (int)($m['created_at'] ?? 0);
+    $sfx = tb_ago_suffix($m['created_at']);
+    $when = $sfx === ''
+        ? h(tb_dt($m['created_at']))
+        : h(tb_dt($m['created_at'])) . ' (<span data-tb-ago-sfx data-tb-ago-ts="' . $ts . '">' . h($sfx) . '</span>)';
     if ($mine) {
-        return '<div class="d-flex justify-content-end mb-2"><div class="bg-primary text-white rounded-3 px-3 py-2 tb-chat-bubble" style="max-width:75%">' . $inner
-            . '<div class="small mt-1" style="opacity:.75">' . h(tb_ago($m['created_at'])) . ' · ' . ((int)$m['is_read'] ? 'Seen' : 'Sent') . '</div></div></div>';
+        return '<div class="d-flex justify-content-end mb-2" data-tb-msg-id="' . (int)$m['id'] . '"><div class="bg-primary text-white rounded-3 px-3 py-2 tb-chat-bubble" style="max-width:75%">' . $inner
+            . '<div class="small mt-1" style="opacity:.75">' . $when . ' · <span data-tb-msg-status>' . ((int)$m['is_read'] ? 'Seen' : 'Sent') . '</span></div></div></div>';
     }
-    return '<div class="d-flex justify-content-start mb-2"><div class="border rounded-3 px-3 py-2 tb-chat-bubble" style="max-width:75%">' . $inner
-        . '<div class="small muted mt-1">' . h(tb_ago($m['created_at'])) . '</div></div></div>';
+    return '<div class="d-flex justify-content-start mb-2" data-tb-msg-id="' . (int)$m['id'] . '"><div class="border rounded-3 px-3 py-2 tb-chat-bubble" style="max-width:75%">' . $inner
+        . '<div class="small muted mt-1">' . $when . '</div></div></div>';
 }
 
 /** The attachments of a set of chat messages (#94), grouped by message id:

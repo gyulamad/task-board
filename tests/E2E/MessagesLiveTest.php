@@ -69,6 +69,36 @@ final class MessagesLiveTest extends E2eTestCase
         $this->assertTrue(str_contains($body, 'data-tb-chat-newcount'), 'The newcount badge hook survives in the markup.');
     }
 
+    public function test_the_bubbles_carry_live_hooks_and_the_feed_reports_seen_progress(): void
+    {
+        // Task #118: the sending time and the seen status used to freeze at
+        // page load - only a full reload refreshed them. Now the bubbles
+        // carry the epoch hook for the in-place suffix refresh, and the feed
+        // reports how far the peer has read, so the Sent labels flip without
+        // a reload.
+        $admin = $this->adminSession();
+        $peer = $this->createRegularUser($admin, 'livehookpeer');
+        $peerId = $this->userId('livehookpeer');
+        $this->sendMessageFrom($admin, $peerId, 'Watch this bubble age.');
+
+        $body = $admin->get('/?page=messages&u=' . $peerId)->body;
+        $this->assertTrue(str_contains($body, 'data-tb-ago-sfx data-tb-ago-ts="'), 'The bubble suffix carries its epoch for the in-place refresh.');
+        $this->assertTrue(str_contains($body, '>just now</span>'), 'A fresh message renders the just-now suffix.');
+        $this->assertTrue(str_contains($body, 'data-tb-msg-status>Sent</span>'), 'An unread own message starts as Sent.');
+        $this->assertTrue(str_contains($body, 'data-tb-msg-id="'), 'The bubbles carry their message id.');
+
+        $before = json_decode((string)$admin->get('/?page=messages_live&u=' . $peerId . '&after=0')->body, true);
+        $this->assertSame(0, $before['seenUpTo'], 'Nobody has read the thread yet.');
+
+        // The peer opening the conversation is what marks it read (#114);
+        // the next admin poll reports how far the seen status reached.
+        $this->assertSame(200, $peer->get('/?page=messages&u=' . $this->userId('admin'))->status);
+
+        $after = json_decode((string)$admin->get('/?page=messages_live&u=' . $peerId . '&after=0')->body, true);
+        $this->assertGreaterThan(0, $after['seenUpTo'], 'The seen status must travel through the feed.');
+        $this->assertTrue(str_contains((string)$admin->get('/?page=messages&u=' . $peerId)->body, 'data-tb-msg-status>Seen</span>'), 'A fresh load renders the read message as Seen.');
+    }
+
     public function test_the_page_carries_the_live_hooks(): void
     {
         $admin = $this->adminSession();
@@ -111,7 +141,7 @@ final class MessagesLiveTest extends E2eTestCase
         $this->assertSame(200, $feed->status);
         $data = json_decode((string)$feed->body, true);
         $this->assertIsArray($data, 'The feed answers with JSON.');
-        $this->assertSame(['html', 'lastId', 'peopleHtml', 'newCount'], array_keys($data), 'The feed contract is stable for the JS.');
+        $this->assertSame(['html', 'lastId', 'peopleHtml', 'newCount', 'seenUpTo'], array_keys($data), 'The feed contract is stable for the JS (seenUpTo is the #118 seen-progress key).');
         $this->assertTrue(str_contains($data['html'], 'Live follow-up question.'), 'The feed carries the new bubble.');
         $this->assertTrue(str_contains($data['html'], 'justify-content-start'), 'A foreign bubble sits on the left.');
         $newId = (int)TestServer::pdo()->query("SELECT MAX(id) FROM messages WHERE body='Live follow-up question.'")->fetchColumn();

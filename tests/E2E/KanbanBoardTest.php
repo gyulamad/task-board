@@ -36,8 +36,10 @@ final class KanbanBoardTest extends E2eTestCase
 
     private function columnHeader(string $statusName): string
     {
+        // #66: the header groups the status badge and the task-count badge in
+        // one inner div and carries the collapse-toggle form next to them.
         return '<div class="card-header bg-transparent d-flex justify-content-between align-items-center py-2">'
-            . '<span class="badge text-bg-light border">' . $statusName . '</span>';
+            . '<div class="d-flex align-items-center gap-2"><span class="badge text-bg-light border">' . $statusName . '</span>';
     }
 
     private function taskCardLink(int $taskId, string $title): string

@@ -154,7 +154,10 @@ final class MessagesTest extends E2eTestCase
         $erin = $this->createRegularUser($admin, 'erin');
         $erinId = $this->userId('erin');
         $admin->post('/?page=messages', ['action' => 'send_message', 'recipient_id' => (string)$erinId, 'body' => 'Erin, please archive the old notes.']);
-        $erin->get('/?page=messages');
+        // Erin never opens the board: viewing it consumes her unread messages
+        // (the page-view mark-seen), which would legitimately flip the bubble
+        // to Seen before the deletion. The Sent-forever pin below is only
+        // meaningful for a message the recipient never consumed.
 
         $admin->post('/?page=users', ['action' => 'delete_user', 'id' => (string)$erinId]);
         // The messenger keeps the conversation with the #17 convention: a

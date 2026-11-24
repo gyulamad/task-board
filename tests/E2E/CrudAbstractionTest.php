@@ -43,16 +43,6 @@ final class CrudAbstractionTest extends E2eTestCase
         return substr($body, 0, $cut);
     }
 
-    /** The two page names must render the same chrome once normalized. */
-    private function assertSameChrome(string $pathA, string $pathB, string $fromName, string $toName): void
-    {
-        $admin = $this->adminSession();
-        $a = $this->pageChrome($admin->get($pathA)->body);
-        $b = $this->pageChrome($admin->get($pathB)->body);
-        $b = str_replace($fromName, $toName, $b);
-        $this->assertSame($a, $b, 'The two pages must render the identical list chrome.');
-    }
-
     // --- users-v2: the users list feature set (mirrors UserListTest) --------
 
     public function test_users_v2_searches_username_and_display_name(): void
@@ -294,6 +284,9 @@ final class CrudAbstractionTest extends E2eTestCase
 
         $old = $this->pageChrome($admin->get('/?page=users')->body);
         $new = $this->pageChrome($admin->get('/?page=users-v2')->body);
+        // The navbar link points at the v2 page on both fetches, so both
+        // bodies get the same page-name rewrite before the comparison.
+        $old = str_replace('users-v2', 'users', $old);
         $new = str_replace('users-v2', 'users', $new);
         $this->assertSame($old, $new, 'The v2 users list must render the identical chrome to ?page=users.');
     }
@@ -305,6 +298,9 @@ final class CrudAbstractionTest extends E2eTestCase
 
         $old = $this->pageChrome($admin->get('/?page=tasks')->body);
         $new = $this->pageChrome($admin->get('/?page=tasks-v2')->body);
+        // The navbar link points at the v2 page on both fetches, so both
+        // bodies get the same page-name rewrite before the comparison.
+        $old = str_replace('tasks-v2', 'tasks', $old);
         $new = str_replace('tasks-v2', 'tasks', $new);
         $this->assertSame($old, $new, 'The v2 task list must render the identical chrome to the task list.');
     }
@@ -327,6 +323,7 @@ final class CrudAbstractionTest extends E2eTestCase
         foreach ($pairs as [$oldPath, $newPath, $fromName, $toName]) {
             $old = $this->pageChrome($admin->get('/?' . ltrim($oldPath, '/'))->body);
             $new = $this->pageChrome($admin->get('/?' . ltrim($newPath, '/'))->body);
+            $old = str_replace($fromName, $toName, $old);
             $new = str_replace($fromName, $toName, $new);
             $this->assertSame($old, $new, "Filtered views must match too: {$oldPath} vs {$newPath}.");
         }

@@ -20,7 +20,7 @@ final class AdminPagesTest extends E2eTestCase
         $page = $admin->get('/?page=admin');
         $this->assertSame(200, $page->status);
         $this->assertTrue($page->contains('Administration'));
-        $this->assertTrue($page->contains('href="?page=users"'), 'The hub must link to the Users page.');
+        $this->assertTrue($page->contains('href="?page=users-v2"'), 'The hub must link to the Users page (the v2 list since #57).');
         $this->assertTrue($page->contains('href="?page=statuses"'), 'The hub must link to the Task statuses page.');
         $this->assertTrue($page->contains('href="?page=activity_settings"'), 'The hub must still link to the activity periods.');
         $this->assertTrue($page->contains('href="?page=updates"'), 'The hub must still link to the software updates.');

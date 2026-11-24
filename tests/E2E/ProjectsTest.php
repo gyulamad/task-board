@@ -243,8 +243,9 @@ final class ProjectsTest extends E2eTestCase
         $this->assertTrue($list->contains('#' . $projectId . ' · Listed project'));
         $this->assertTrue($list->contains('#' . $other . ' · Empty project'));
         $this->assertTrue($list->contains('page=project&id=' . $projectId));
-        // [Tasks...] button per project row leading to the filtered task list.
-        $this->assertTrue($list->contains('page=tasks&project=' . $projectId));
+        // [Tasks...] button per project row leading to the filtered task list
+        // (the v2 task list since #57).
+        $this->assertTrue($list->contains('page=tasks-v2&project=' . $projectId));
         $this->assertTrue($list->contains('Tasks…'));
         $this->assertTrue($list->contains('1 task'));
         $this->assertTrue($list->contains('+ New project'));

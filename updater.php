@@ -1104,6 +1104,21 @@ function task_board_update_page(PDO $pdo, array $config): void {
             <div class="mb-3" id="branch-wrap" <?=$selectedType==='branch'?'':'hidden'?>><label class="form-label" for="branch">Branch name</label><input class="form-control" id="branch" name="branch" value="<?=h($selectedBranch)?>" maxlength="100" placeholder="master"></div>
             <button class="btn btn-outline-primary">Check source</button>
         </form>
+        <?php if ($sourceInfo): ?>
+            <?php // #90: the confirm-and-install step belongs to the check above, so it renders directly under the Check source form in a red-bordered callout - the new area and its install button stay in view instead of hiding at the bottom of the page. ?>
+            <div class="border border-danger-subtle rounded-3 p-3 mt-3" id="pending-install" role="region" aria-label="Pending update install">
+                <h3 class="h6 text-danger">Install <?=h($sourceInfo['label'])?></h3>
+                <p class="small muted">The updater changes only the application's allowlisted files. It never overwrites config.php or uploaded files, deletes files, executes SQL, or runs downloaded scripts as part of extraction. A private backup is created first. Make your own database backup before updating — the full backup download below is exactly that.</p>
+                <form method="post" onsubmit="return confirm('Install this update now? Make sure you have a database backup.')"><?=csrf_field()?>
+                    <input type="hidden" name="action" value="install_update">
+                    <input type="hidden" name="source_type" value="<?=h($selectedType)?>">
+                    <input type="hidden" name="branch" value="<?=h($selectedBranch)?>">
+                    <input type="hidden" name="source_ref" value="<?=h($sourceInfo['ref'])?>">
+                    <div class="mb-3"><label class="form-label" for="current_password">Current administrator password</label><input class="form-control" type="password" id="current_password" name="current_password" autocomplete="current-password" required></div>
+                    <button class="btn btn-danger">Back up and install update</button>
+                </form>
+            </div>
+        <?php endif; ?>
         <hr><h3 class="h6">Download a full backup</h3>
         <p class="small muted">One ZIP package with the complete application code (including <span class="font-monospace">config.php</span>), every uploaded attachment file and an SQL dump of the whole database — the restore point to keep before installing an update. The archive holds credentials, so keep the downloaded file safe; nothing is stored on the server.</p>
         <form method="post" class="mb-3" onsubmit="return confirm('Prepare and download the full backup ZIP now?')"><?=csrf_field()?>
@@ -1142,18 +1157,6 @@ function task_board_update_page(PDO $pdo, array $config): void {
             <?php foreach ($migrationRows as $row): ?><tr><td class="font-monospace"><?=h($row['version'])?></td><td><?=h($row['file'])?></td><td><?php if ($row['applied_at'] !== null): ?><?=h($row['applied_at'])?><?php else: ?><span class="badge text-bg-warning text-dark">pending</span><?php endif; ?></td></tr><?php endforeach; ?>
             <?php if (!$migrationRows): ?><tr><td colspan="3" class="text-center muted py-3">No migration files yet. Pending scripts appear here before they run; the table fills as migrations apply.</td></tr><?php endif; ?>
             </tbody></table></div>
-        <?php endif; ?>
-        <?php if ($sourceInfo): ?>
-            <hr><h3 class="h6">Install <?=h($sourceInfo['label'])?></h3>
-            <p class="small muted">The updater changes only the application's allowlisted files. It never overwrites config.php or uploaded files, deletes files, executes SQL, or runs downloaded scripts as part of extraction. A private backup is created first. Make your own database backup before updating — the full backup download above is exactly that.</p>
-            <form method="post" onsubmit="return confirm('Install this update now? Make sure you have a database backup.')"><?=csrf_field()?>
-                <input type="hidden" name="action" value="install_update">
-                <input type="hidden" name="source_type" value="<?=h($selectedType)?>">
-                <input type="hidden" name="branch" value="<?=h($selectedBranch)?>">
-                <input type="hidden" name="source_ref" value="<?=h($sourceInfo['ref'])?>">
-                <div class="mb-3"><label class="form-label" for="current_password">Current administrator password</label><input class="form-control" type="password" id="current_password" name="current_password" autocomplete="current-password" required></div>
-                <button class="btn btn-danger">Back up and install update</button>
-            </form>
         <?php endif; ?>
     </div>
     <?php render_footer();

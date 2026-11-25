@@ -23,6 +23,14 @@ final class HttpClient
         return $this->request('GET', $path, null, []);
     }
 
+    /** GETs with extra request headers - the realtime refresh poll (#126)
+     * announces itself with X-TB-List-Refresh, so the tests can drive the
+     * exact request the browser sends every refresh interval. */
+    public function getWithHeaders(string $path, array $headers): HttpResponse
+    {
+        return $this->request('GET', $path, null, $headers);
+    }
+
     public function postForm(string $path, array $fields): HttpResponse
     {
         return $this->request('POST', $path, http_build_query($fields), ['Content-Type: application/x-www-form-urlencoded']);

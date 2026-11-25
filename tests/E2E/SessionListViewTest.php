@@ -146,6 +146,38 @@ final class SessionListViewTest extends E2eTestCase
         $this->assertTrue($back->contains('value="1" selected'), 'The filter dropdown marks the remembered pick.');
     }
 
+    public function test_the_realtime_refresh_poll_replays_the_stored_view(): void
+    {
+        // Task #126: the #51 refresh poll re-fetches the bare kanban URL the
+        // visitor is sitting on. A poll is not a navigation - without the
+        // replay it swapped the filtered board for the plain one a few
+        // seconds after the page load, so the board "forgot" the saved
+        // search's status filter while the user was hanging on it.
+        $admin = $this->adminSession();
+        $admin->createTask('Todo item');
+        $admin->createTask('Progress item', ['status_id' => '2']);
+
+        $admin->get('/?page=kanban&status[]=1');
+        $admin->taskPage(1);
+        $loaded = $admin->get('/?page=kanban');
+        $this->assertTrue($loaded->contains($this->columnHeader('TODO')), 'The page loads filtered, as reported.');
+
+        // The poll the browser sends every refresh interval (#51) carries the
+        // marker header now: the stored view replays and the swapped region
+        // keeps exactly the columns the visitor was watching.
+        $poll = $admin->http->getWithHeaders('/?page=kanban', ['X-TB-List-Refresh: 1']);
+        $this->assertTrue($poll->contains($this->columnHeader('TODO')), 'The poll renders the filtered board (#126).');
+        $this->assertFalse($poll->contains($this->columnHeader('IN PROGRESS')), 'The unselected column never comes back through the poll.');
+
+        // The refresh script really sends the marker (pin the contract).
+        $this->assertTrue($loaded->contains("headers: {'X-TB-List-Refresh': '1'}"), 'The refresh fetch announces itself.');
+
+        // The #113 rule stays intact for real navigations: a consecutive
+        // bare request WITHOUT the marker still renders the plain board.
+        $plain = $admin->get('/?page=kanban');
+        $this->assertTrue($plain->contains($this->columnHeader('IN PROGRESS')), 'A consecutive bare navigation still rides no replay (#113).');
+    }
+
     public function test_the_replayed_view_pagination_keeps_the_filters(): void
     {
         $admin = $this->adminSession();

@@ -818,7 +818,11 @@ const TB_LIST_VIEW_PAGES = [
  * engine, the URL builders, the form fields - sees it unchanged. Consecutive
  * requests of the same list page (sorting, paging, filtering, the second
  * click on the same navbar link) never replay: they ride their explicit
- * params and stay byte-identical to the pre-#113 behaviour.
+ * params and stay byte-identical to the pre-#113 behaviour. The one
+ * exception is the #51 realtime refresh poll (#126): it re-fetches the bare
+ * URL the visitor is watching and is not a navigation at all, so - marked by
+ * its X-TB-List-Refresh header - it replays like an arrival from elsewhere
+ * and the filtered board never silently loses its columns.
  *
  * PERSISTENCE (#120): the session stays the working copy, but every capture
  * is mirrored into the user_list_views table and the explicit clear deletes
@@ -858,7 +862,15 @@ function tb_list_view_boot(string $page, ?PDO $pdo = null): void {
         $_SESSION['tb_list_views'][$page] = $view;
         if ($pdo instanceof PDO) tb_list_view_save($pdo, $userId, $page, $view);
     }
-    if (!$clearing && $view === [] && $previous !== $page && isset($_SESSION['tb_list_views'][$page]) && is_array($_SESSION['tb_list_views'][$page])) {
+    // #126: the realtime list refresh (#51) is not a navigation - its poll
+    // re-fetches the very URL the visitor is sitting on, and on a bare list
+    // URL that content is exactly the replayed view they are looking at. A
+    // poll that never replayed swapped the filtered board for the plain one
+    // a few seconds after the page load. The poll announces itself with the
+    // X-TB-List-Refresh header, and such a request replays the stored view
+    // like an arrival from another page does.
+    $isRefreshPoll = (($_SERVER['HTTP_X_TB_LIST_REFRESH'] ?? '') === '1');
+    if (!$clearing && $view === [] && ($previous !== $page || $isRefreshPoll) && isset($_SESSION['tb_list_views'][$page]) && is_array($_SESSION['tb_list_views'][$page])) {
         $_GET = array_merge($_SESSION['tb_list_views'][$page], $_GET);
         // #119: mark that this request's view params came from the session
         // replay, not from the visitor's own URL - the task filter card reads
@@ -2660,7 +2672,11 @@ function tb_render_list_refresh_script(): void {
     function tick() {
         if (busy || document.hidden) return;
         busy = true;
-        fetch(window.location.href, {credentials: 'same-origin'})
+        // #126: the poll announces itself, so the list view memory replays
+        // the stored selection on a bare URL - the refresh must reproduce
+        // exactly the filtered content the visitor is watching, not silently
+        // swap in the plain list a few seconds after the page load.
+        fetch(window.location.href, {credentials: 'same-origin', headers: {'X-TB-List-Refresh': '1'}})
             .then(function (response) { return response.ok ? response.text() : null; })
             .then(function (html) {
                 if (html === null) return;

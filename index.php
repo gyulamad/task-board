@@ -139,6 +139,12 @@ $error = '';
 // so the stored views survive logout/login.
 tb_list_view_boot($page, $pdo);
 
+// The create-form project autofill (#130): judges the request's project
+// selection right after the view boot, so a #113 replayed filter counts
+// exactly like the visitor's own URL. A single picked project rides in the
+// session and the create form starts preselected with it.
+tb_project_autofill_capture($page, $pdo);
+
 // Sign-out is POST-only and CSRF-protected, so a crafted <img src="?page=logout">
 // link or other cross-site GET request can no longer force users to log out.
 if ($page === 'logout') {
@@ -2066,6 +2072,15 @@ if ($page==='edit' || $page==='new') {
         if(!$cloneSource){http_response_code(404);exit('Task not found.');}
         $task=$cloneSource;unset($task['id'],$task['archived_at']);
         $s=$pdo->prepare('SELECT user_id FROM task_assignees WHERE task_id=?');$s->execute([$cloneSourceId]);$selected=array_map('intval',array_column($s->fetchAll(),'user_id'));
+    }
+    // #130: a single project picked on a list view (or an open project page)
+    // rides in the session and prefills the create form's project selector -
+    // a fresh form opens on the project the operator is already working in.
+    // A clone and an edit keep their own task's project; a since-deleted
+    // project autofills nothing (tb_project_autofill_current re-checks it).
+    if ($page==='new' && !$id && !$cloneSourceId) {
+        $autofillProject = tb_project_autofill_current($pdo);
+        if ($autofillProject !== null) $task['project_id'] = $autofillProject;
     }
     // Scheduler targets for the edit form (#31): the stored status id (0 =
     // the empty option = the TODO default) and the stored assignee id list.

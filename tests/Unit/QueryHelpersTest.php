@@ -97,6 +97,63 @@ final class QueryHelpersTest extends TestCase
         $this->assertNull(find_project($this->pdo, 999));
     }
 
+    public function test_project_autofill_capture_tracks_a_single_picked_project(): void
+    {
+        // #130: wherever the board can pick exactly one project - the three
+        // filter-card views or the project page - the id rides in the session
+        // for the create form; anything else that can be judged clears it,
+        // and the pages without a project selection never judge it.
+        $this->seed();
+        $_SESSION['user'] = ['id' => 1, 'username' => 'admin', 'display_name' => 'Administrator', 'role' => 'admin'];
+
+        // The three filter-card views store exactly one real project...
+        foreach (['tasks', 'kanban', 'waterflow'] as $page) {
+            $_GET = ['page' => $page, 'project' => [(string)21]];
+            tb_project_autofill_capture($page, $this->pdo);
+            $this->assertSame(21, $_SESSION['tb_project_autofill'], 'The ' . $page . ' filter stores the single picked project.');
+        }
+        // ...the legacy scalar shape is the same single pick...
+        $_GET = ['page' => 'tasks', 'project' => '21'];
+        tb_project_autofill_capture('tasks', $this->pdo);
+        $this->assertSame(21, $_SESSION['tb_project_autofill']);
+        // ...and the project page stores the project it opens.
+        $_GET = ['page' => 'project', 'id' => '20'];
+        tb_project_autofill_capture('project', $this->pdo);
+        $this->assertSame(20, $_SESSION['tb_project_autofill']);
+
+        // Everything else clears: several values, the "No project"
+        // pseudo-value, an unknown id, no filter at all, a broken project id.
+        foreach ([['project' => ['20', '21']], ['project' => ['none']], ['project' => ['999']], ['project' => ['x']], []] as $view) {
+            $_GET = ['page' => 'tasks'] + $view;
+            tb_project_autofill_capture('tasks', $this->pdo);
+            $this->assertArrayNotHasKey('tb_project_autofill', $_SESSION, 'The view ' . json_encode($view) . ' must clear the stored pick.');
+        }
+
+        // A stored pick survives the pages that cannot judge a selection,
+        // and the read re-checks the project still exists.
+        $_GET = ['page' => 'project', 'id' => '21'];
+        tb_project_autofill_capture('project', $this->pdo);
+        $_GET = [];
+        tb_project_autofill_capture('archive', $this->pdo);
+        tb_project_autofill_capture('users', $this->pdo);
+        $this->assertSame(21, $_SESSION['tb_project_autofill'], 'The archive and the user list never judge the pick.');
+        $this->assertSame(21, tb_project_autofill_current($this->pdo));
+        $this->pdo->exec('DELETE FROM projects WHERE id=21');
+        $this->assertNull(tb_project_autofill_current($this->pdo), 'A since-deleted project autofills nothing.');
+
+        // A signed-out visitor captures nothing, and a POST never judges.
+        unset($_SESSION['user'], $_SESSION['tb_project_autofill']);
+        $_GET = ['page' => 'tasks', 'project' => ['20']];
+        tb_project_autofill_capture('tasks', $this->pdo);
+        $this->assertArrayNotHasKey('tb_project_autofill', $_SESSION);
+        $_SERVER['REQUEST_METHOD'] = 'POST';
+        $_SESSION['user'] = ['id' => 1, 'username' => 'admin', 'display_name' => 'Administrator', 'role' => 'admin'];
+        tb_project_autofill_capture('tasks', $this->pdo);
+        $this->assertArrayNotHasKey('tb_project_autofill', $_SESSION, 'A form POST to a list page does not judge the selection.');
+        $_SERVER['REQUEST_METHOD'] = 'GET';
+        $_GET = [];
+    }
+
     public function test_status_and_project_existence_checks(): void
     {
         $this->seed();

@@ -942,6 +942,60 @@ function tb_list_view_has_selection(string $page): bool {
     return $view !== [];
 }
 
+// ---- Create-form project autofill (Task #130) ------------------------------
+// The proposed flow: wherever the board lets the visitor pick exactly one
+// project - the project filter of the task list, the kanban board or the
+// waterflow chart, or an open project page - the create form's project
+// selector starts preselected with it. The selection rides in the session
+// (per user, dropped at sign-out with the rest of it): a single valid
+// project id is stored, everything else clears it, and the pages without a
+// project selection never judge it - unselecting only means something where
+// a project can be selected in the first place.
+
+/** The list pages whose project filter feeds the autofill (#130): the same
+ * three views the shared filter card serves. */
+const TB_PROJECT_AUTOFILL_PAGES = ['tasks', 'kanban', 'waterflow'];
+
+/** Judges the current request's project selection for the create-form
+ * autofill (#130). Called from the request boot right after
+ * tb_list_view_boot(), so $_GET already carries the effective view - a #113
+ * replayed selection counts exactly like the visitor's own URL. Exactly one
+ * real project (the "No project" pseudo-value, several values, unknown ids
+ * and no filter at all clear the stored one); the project page stores the
+ * project it opens; any other page leaves the stored value untouched. Only
+ * GET navigations are judged: a form POST to a list page does not carry the
+ * filter UI's selection - its redirect back to the filtered list does, and
+ * that GET re-judges. */
+function tb_project_autofill_capture(string $page, PDO $pdo): void {
+    if ($_SERVER['REQUEST_METHOD'] !== 'GET') return;
+    if (!function_exists('user') || user() === null) return;
+    if ($page === 'project') {
+        $id = (int)($_GET['id'] ?? 0);
+        if ($id > 0 && find_project($pdo, $id) !== null) {
+            $_SESSION['tb_project_autofill'] = $id;
+        } else {
+            unset($_SESSION['tb_project_autofill']);
+        }
+        return;
+    }
+    if (!in_array($page, TB_PROJECT_AUTOFILL_PAGES, true)) return;
+    $projects = filter_values('project');
+    if (count($projects) === 1 && ctype_digit($projects[0]) && find_project($pdo, (int)$projects[0]) !== null) {
+        $_SESSION['tb_project_autofill'] = (int)$projects[0];
+    } else {
+        unset($_SESSION['tb_project_autofill']);
+    }
+}
+
+/** The project id the create form's selector autofills from (#130): the
+ * session-stored selection, re-checked against the projects table at read
+ * time so a since-deleted project autofills nothing. */
+function tb_project_autofill_current(PDO $pdo): ?int {
+    $id = (int)($_SESSION['tb_project_autofill'] ?? 0);
+    if ($id <= 0 || find_project($pdo, $id) === null) return null;
+    return $id;
+}
+
 /**
  * Renders the task filter card with the saved searches row, shared by the
  * task list, the kanban board (#43) and the waterflow chart (#44) so all

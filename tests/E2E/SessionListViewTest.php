@@ -37,6 +37,36 @@ final class SessionListViewTest extends E2eTestCase
         $this->assertFalse($back->contains('#' . $beta . ' · Beta item'), 'The remembered filter really filters.');
     }
 
+    public function test_the_stored_views_survive_a_logout_login_cycle(): void
+    {
+        // #120: the session stays the working copy, but every capture is
+        // mirrored into the user_list_views table and a fresh session
+        // hydrates from it on the first list-page request - the advanced
+        // filter setups and the picked saved search survive logout/login.
+        // A new AppSession is exactly the fresh-sign-in state: empty session,
+        // same user.
+        $admin = $this->adminSession();
+        $this->createTaskRow();
+
+        $admin->get('/?page=tasks&assignee[]=unassigned&sort=id&dir=asc');
+        $row = (string)TestServer::pdo()->query("SELECT view_query FROM user_list_views WHERE page='tasks'")->fetchColumn();
+        $this->assertTrue(str_contains($row, 'assignee'), 'The capture is mirrored into the persistent home.');
+        $this->assertTrue(str_contains($row, 'dir=asc'), 'The stored query carries the whole view, not just the filters.');
+
+        // A brand-new session (the next sign-in) hydrates and replays it.
+        $fresh = new AppSession('admin', 'AdminPass1234');
+        $replayed = $fresh->get('/?page=tasks');
+        $this->assertTrue($replayed->contains('<input type="hidden" name="assignee[]" value="unassigned">'), 'The stored view survives the sign-in cycle.');
+        $this->assertTrue($replayed->contains('value="asc"'), 'The remembered sort direction rides along.');
+
+        // The explicit clear drops it everywhere, session and persistent home.
+        $fresh->get('/?page=tasks&clear_search=1');
+        $left = (int)TestServer::pdo()->query("SELECT COUNT(*) FROM user_list_views WHERE page='tasks'")->fetchColumn();
+        $this->assertSame(0, $left, 'The clear deletes the persistent row too.');
+        $plain = (new AppSession('admin', 'AdminPass1234'))->get('/?page=tasks');
+        $this->assertFalse($plain->contains('<input type="hidden" name="assignee[]"'), 'The next sign-in starts from the plain list.');
+    }
+
     public function test_a_consecutive_bare_fetch_stays_plain(): void
     {
         $admin = $this->adminSession();

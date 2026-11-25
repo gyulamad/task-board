@@ -290,5 +290,18 @@ CREATE TABLE user_preferences (
     FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
+-- User list views (#120): the persistent home of the #113 stored list view
+-- selections - the advanced filter setups and the picked saved search of
+-- every list page survive logout/login, per user and per page. The session
+-- stays the working copy; rows cascade away with their user. TEXT keeps a
+-- rich multi-select filter from ever being truncated.
+CREATE TABLE user_list_views (
+    user_id INT UNSIGNED NOT NULL,
+    page VARCHAR(40) NOT NULL,
+    view_query TEXT NOT NULL,
+    PRIMARY KEY (user_id, page),
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
 INSERT INTO statuses (name, sort_order, is_done) VALUES
 ('TODO', 1, 0), ('IN PROGRESS', 2, 0), ('DONE', 3, 1);

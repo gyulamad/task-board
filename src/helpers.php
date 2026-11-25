@@ -756,20 +756,44 @@ const TB_LIST_VIEW_PAGES = [
  * requests of the same list page (sorting, paging, filtering, the second
  * click on the same navbar link) never replay: they ride their explicit
  * params and stay byte-identical to the pre-#113 behaviour.
+ *
+ * PERSISTENCE (#120): the session stays the working copy, but every capture
+ * is mirrored into the user_list_views table and the explicit clear deletes
+ * the row, so a fresh session (the next sign-in) hydrates the stored views
+ * from the database - the advanced filter setups and the picked saved
+ * searches survive logout/login. Pass the connection to opt in; without one
+ * the boot keeps the pure-session behaviour.
  */
-function tb_list_view_boot(string $page): void {
+function tb_list_view_boot(string $page, ?PDO $pdo = null): void {
     $previous = $_SESSION['tb_last_page'] ?? null;
     $_SESSION['tb_last_page'] = $page;   // the navigation marker for the next request
     if (!in_array($page, TB_LIST_VIEW_PAGES, true)) return;
     if (!function_exists('user') || user() === null) return;
+    $userId = (int)user()['id'];
+
+    // #120: a fresh session hydrates the stored views from the persistent
+    // home once - the key being absent means "new sign-in". The hydration
+    // never fights a live edit: afterwards the session stays the working
+    // copy and the database is written on every capture.
+    if ($pdo instanceof PDO && !isset($_SESSION['tb_list_views'])) {
+        $hydrated = [];
+        foreach (tb_list_views_load($pdo, $userId) as $storedPage => $storedQuery) {
+            if ($storedQuery === '') continue;
+            parse_str($storedQuery, $storedView);
+            if (is_array($storedView) && $storedView !== []) $hydrated[$storedPage] = $storedView;
+        }
+        $_SESSION['tb_list_views'] = $hydrated;
+    }
 
     $clearing = isset($_GET['clear_search']);
     if ($clearing) {
         unset($_SESSION['tb_list_views'][$page]);
+        if ($pdo instanceof PDO) tb_list_view_delete($pdo, $userId, $page);
     }
     $view = array_diff_key($_GET, ['page' => true, 'p' => true, 'clear_search' => true]);
     if (!$clearing && $view !== []) {
         $_SESSION['tb_list_views'][$page] = $view;
+        if ($pdo instanceof PDO) tb_list_view_save($pdo, $userId, $page, $view);
     }
     if (!$clearing && $view === [] && $previous !== $page && isset($_SESSION['tb_list_views'][$page]) && is_array($_SESSION['tb_list_views'][$page])) {
         $_GET = array_merge($_SESSION['tb_list_views'][$page], $_GET);
@@ -778,6 +802,47 @@ function tb_list_view_boot(string $page): void {
         // the flag to keep the advanced area closed on such a bare visit.
         $GLOBALS['TB_LIST_VIEW_REPLAYED'] = true;
     }
+}
+
+/**
+ * The persistent home of the stored list views (#120): one row per user and
+ * list page, holding the captured view in its URL query form (the same
+ * array the session keeps, http_build_query'd). TEXT on both dialects, so a
+ * rich multi-select filter is never truncated.
+ *
+ * @return array<string,string> page => stored query string
+ */
+function tb_list_views_load(PDO $pdo, int $userId): array {
+    $s = $pdo->prepare('SELECT page, view_query FROM user_list_views WHERE user_id=?');
+    $s->execute([$userId]);
+    $out = [];
+    foreach ($s->fetchAll(PDO::FETCH_ASSOC) as $row) {
+        $out[(string)$row['page']] = (string)$row['view_query'];
+    }
+    return $out;
+}
+
+/** Mirrors one captured list view into the persistent home (#120): the same
+ * select-then-insert-or-update discipline as tb_user_pref_set, so MySQL and
+ * SQLite take the exact same two steps. */
+function tb_list_view_save(PDO $pdo, int $userId, string $page, array $view): void {
+    $query = http_build_query($view);
+    $s = $pdo->prepare('SELECT view_query FROM user_list_views WHERE user_id=? AND page=?');
+    $s->execute([$userId, $page]);
+    if (!$s->fetchAll(PDO::FETCH_COLUMN)) {
+        $pdo->prepare('INSERT INTO user_list_views(user_id,page,view_query) VALUES(?,?,?)')
+            ->execute([$userId, $page, $query]);
+    } else {
+        $pdo->prepare('UPDATE user_list_views SET view_query=? WHERE user_id=? AND page=?')
+            ->execute([$query, $userId, $page]);
+    }
+}
+
+/** Drops one page's persistent list view (#120): the explicit Clear search
+ * removes the stored selection everywhere, not just in the session. */
+function tb_list_view_delete(PDO $pdo, int $userId, string $page): void {
+    $pdo->prepare('DELETE FROM user_list_views WHERE user_id=? AND page=?')
+        ->execute([$userId, $page]);
 }
 
 /**
@@ -2080,6 +2145,34 @@ function tb_migrate_schema(PDO $pdo): void {
                 pref_key TEXT NOT NULL,
                 pref_value TEXT NOT NULL DEFAULT '',
                 PRIMARY KEY (user_id, pref_key),
+                FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+            )");
+        }
+    }
+
+    // User list views (#120): the persistent home of the #113 stored list
+    // view selections, so the advanced filter setups and the picked saved
+    // searches survive logout/login. The same self-heal discipline as the
+    // table above: fresh installs get it from schema.sql, a deployment that
+    // lands without the migration file gets it recreated on first request.
+    $hasUserListViews = $isMysql
+        ? (bool)$pdo->query("SHOW TABLES LIKE 'user_list_views'")->fetchColumn()
+        : (bool)$pdo->query("SELECT 1 FROM sqlite_master WHERE type='table' AND name='user_list_views'")->fetchColumn();
+    if (!$hasUserListViews) {
+        if ($isMysql) {
+            $pdo->exec("CREATE TABLE user_list_views (
+                user_id INT UNSIGNED NOT NULL,
+                page VARCHAR(40) NOT NULL,
+                view_query TEXT NOT NULL,
+                PRIMARY KEY (user_id, page),
+                FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4");
+        } else {
+            $pdo->exec("CREATE TABLE user_list_views (
+                user_id INTEGER NOT NULL,
+                page TEXT NOT NULL,
+                view_query TEXT NOT NULL,
+                PRIMARY KEY (user_id, page),
                 FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
             )");
         }

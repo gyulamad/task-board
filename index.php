@@ -134,8 +134,10 @@ $error = '';
 
 // The list view memory (#113): capture the current selection, replay the
 // stored one when arriving from another page, honour the explicit clear -
-// before anything reads $_GET, so every reader sees the same view.
-tb_list_view_boot($page);
+// before anything reads $_GET, so every reader sees the same view. The
+// connection mirrors every capture into the user_list_views table (#120),
+// so the stored views survive logout/login.
+tb_list_view_boot($page, $pdo);
 
 // Sign-out is POST-only and CSRF-protected, so a crafted <img src="?page=logout">
 // link or other cross-site GET request can no longer force users to log out.

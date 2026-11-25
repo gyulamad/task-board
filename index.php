@@ -513,6 +513,49 @@ if (user()) {
                 // single-pane view (#94) also lands inside the thread.
                 redirect('?page=messages&u='.$recipientId);
             }
+            if ($action === 'delete_message') {
+                // Message deletion (#122): an administrator can remove a
+                // single message from the conversation they are looking at.
+                // Single users are restricted from deleting - the guard holds
+                // even though the UI never renders them the controls.
+                if (!is_admin()) throw new RuntimeException('Only an administrator can delete messages.');
+                $msgId = (int)($_POST['message_id'] ?? 0);
+                $s = $pdo->prepare('SELECT sender_id, recipient_id FROM messages WHERE id=?');
+                $s->execute([$msgId]);
+                $row = $s->fetch();
+                if (!$row) throw new RuntimeException('Message not found.');
+                tb_delete_messages($pdo, [$msgId]);
+                flash('Message deleted.');
+                // Back to the conversation the message belonged to: the other
+                // end of the pair, with the orphan thread as u=0 (#17).
+                $other = (int)$row['sender_id'] === (int)user()['id'] ? (int)$row['recipient_id'] : (int)$row['sender_id'];
+                redirect('?page=messages&u=' . $other);
+            }
+            if ($action === 'delete_messages') {
+                // The bulk half of #122: every selected message of the open
+                // thread goes away in one confirm-guarded submit. The ids
+                // ride in as the checkboxes' ids[] array; an empty or
+                // non-array selection is a validation error, not a wipe.
+                if (!is_admin()) throw new RuntimeException('Only an administrator can delete messages.');
+                $msgIds = is_array($_POST['ids'] ?? null) ? $_POST['ids'] : [];
+                $deleted = tb_delete_messages($pdo, $msgIds);
+                if ($deleted === 0) throw new RuntimeException('Select the messages to delete.');
+                flash($deleted === 1 ? '1 message deleted.' : $deleted . ' messages deleted.');
+                redirect('?page=messages&u=' . max(0, (int)($_POST['u'] ?? 0)));
+            }
+            if ($action === 'delete_conversation') {
+                // And the whole-conversation half of #122: the complete
+                // thread with the selected peer - u=0 is the "Deleted user"
+                // thread (#17) - is wiped in one submit. Only the messages of
+                // this pair are touched, never anybody else's conversations.
+                if (!is_admin()) throw new RuntimeException('Only an administrator can delete messages.');
+                $peerId = max(0, (int)($_POST['u'] ?? 0));
+                $msgIds = tb_conversation_message_ids($pdo, (int)user()['id'], $peerId);
+                if (!$msgIds) throw new RuntimeException('The conversation is already empty.');
+                tb_delete_messages($pdo, $msgIds);
+                flash('Conversation deleted.');
+                redirect('?page=messages' . ($peerId > 0 ? '&u=' . $peerId : ''));
+            }
             if ($action === 'mark_all_seen') {
                 // Seen all notification (#79): one click clears the whole
                 // stream, so the red navbar flag disappears until new unseen
@@ -1297,7 +1340,7 @@ if ($page==='messages_live') {
     $feedAttachments=tb_message_attachments($pdo,array_map(function($m){return (int)$m['id'];},$rows));
     foreach ($rows as $m) {
         $mine=$m['sender_id']!==null&&(int)$m['sender_id']===$me;
-        $html.=tb_message_bubble($m,$mine,$feedAttachments[(int)$m['id']]??[]);
+        $html.=tb_message_bubble($m,$mine,$feedAttachments[(int)$m['id']]??[],is_admin());
         $lastId=(int)$m['id'];
     }
     $people=tb_chat_people_model($pdo,$me);
@@ -1356,7 +1399,7 @@ if ($page==='messages_more') {
     $html='';
     foreach ($rows as $m) {
         $mine=$m['sender_id']!==null&&(int)$m['sender_id']===$me;
-        $html.=tb_message_bubble($m,$mine,$feedAttachments[(int)$m['id']]??[]);
+        $html.=tb_message_bubble($m,$mine,$feedAttachments[(int)$m['id']]??[],is_admin());
     }
     header('Content-Type: application/json; charset=utf-8');
     header('Cache-Control: no-store');
@@ -1514,6 +1557,11 @@ if ($page === 'messages') {
     .tb-chat-scroll{flex:1 1 auto;overflow-y:auto;min-height:0;padding:6px 2px}
     .tb-chat-composer{flex:0 0 auto}
     .tb-chat-back{display:none}
+    /* #122: the admin delete controls of a bubble sit on their own row,
+       checkbox first, the single-message button next to it. */
+    .tb-chat-delrow{display:flex;align-items:center;gap:.5rem;margin-top:.25rem}
+    .tb-chat-delcheck{opacity:.75;font-size:.875rem;font-weight:400}
+    .tb-chat-delone{display:inline}
     @media (max-width: 991.98px){
       /* #117: on a phone the intro (title + description) only pushes the chat
          down - the chat top sits right below the main menu header instead. The
@@ -1537,9 +1585,9 @@ if ($page === 'messages') {
             <?=tb_crud_pagination(['ariaLabel'=>'People list pages','page'=>$peopleList['page'],'pages'=>$peopleList['pages'],'url'=>$peopleUrl])?>
         </div></div>
         <div class="col-lg-8 tb-chat-thread"><div class="card p-3">
-            <div class="tb-chat-head d-flex align-items-center gap-2"><a class="btn btn-sm btn-outline-secondary tb-chat-back" href="?page=<?=$chatPage?>" aria-label="Back to the people list" title="Back to the people list">&larr;</a><h2 class="h5"><?=h($peer!==null?'Conversation with '.$peer['display_name']:'Deleted user')?></h2></div>
+            <div class="tb-chat-head d-flex align-items-center gap-2"><a class="btn btn-sm btn-outline-secondary tb-chat-back" href="?page=<?=$chatPage?>" aria-label="Back to the people list" title="Back to the people list">&larr;</a><h2 class="h5"><?=h($peer!==null?'Conversation with '.$peer['display_name']:'Deleted user')?></h2><?php if (is_admin()): ?><form method="post" id="tb-chat-bulk-delete" class="ms-auto" onsubmit="return confirm('Delete the selected messages permanently?')"><?=csrf_field()?><input type="hidden" name="action" value="delete_messages"><input type="hidden" name="u" value="<?=$peerId?>"><button class="btn btn-sm btn-outline-danger" title="Delete the selected messages">Delete selected</button></form><form method="post" onsubmit="return confirm('Delete this whole conversation permanently?')"><?=csrf_field()?><input type="hidden" name="action" value="delete_conversation"><input type="hidden" name="u" value="<?=$peerId?>"><button class="btn btn-sm btn-outline-danger" title="Delete the whole conversation">Delete conversation</button></form><?php endif; ?></div>
             <div class="tb-chat-scroll" data-tb-chat-scroll data-tb-more="<?=h('?page=messages_more&u='.$peerId.($oldestId!==null?'&before='.(int)$oldestId:''))?>" data-tb-has-more="<?=$hasMore?'1':'0'?>" data-tb-after="<?=$newestId?>">
-            <?php foreach ($thread as $m): $mine=$m['sender_id']!==null&&(int)$m['sender_id']===$me; echo tb_message_bubble($m,$mine,$threadAttachments[(int)$m['id']]??[]); endforeach; if(!$thread): ?><div class="text-center muted small py-4">No messages here yet - say hi below.</div><?php endif; ?>
+            <?php foreach ($thread as $m): $mine=$m['sender_id']!==null&&(int)$m['sender_id']===$me; echo tb_message_bubble($m,$mine,$threadAttachments[(int)$m['id']]??[],is_admin()); endforeach; if(!$thread): ?><div class="text-center muted small py-4">No messages here yet - say hi below.</div><?php endif; ?>
             </div>
             <?php if ($peerId!==0): ?><form method="post" class="tb-chat-composer mt-2" enctype="multipart/form-data" data-tb-chat-send><?=csrf_field()?><input type="hidden" name="action" value="send_message"><input type="hidden" name="recipient_id" value="<?=$peerId?>"><input type="hidden" name="send_token" value="<?=h(tb_message_send_token())?>"><div class="input-group"><button class="btn btn-outline-secondary tb-chat-attach" type="button" aria-label="Attach a file" title="Attach a file">&#128206;</button><input type="file" class="d-none" name="attachment" aria-label="Attachment file" data-tb-chat-file><textarea class="form-control" id="message-body" name="body" rows="2" placeholder="Write a message..." aria-label="Message" data-tb-chat-body></textarea><button class="btn btn-primary" type="submit">Send</button></div><div class="small muted mt-1 d-none" data-tb-chat-file-name></div><div class="small muted mt-1">Enter sends &middot; Shift+Enter or Ctrl+Enter adds a new line &middot; max <?=round($config['max_upload_bytes']/1024/1024)?> MB per attachment.</div></form>
             <?php else: ?><div class="small muted mt-2">This account was deleted - the conversation stays readable, but new messages cannot be delivered.</div><?php endif; ?>

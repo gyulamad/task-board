@@ -43,7 +43,7 @@ function tb_message_send_token_rotate(): void {
  * and the HTML escaping stays on the server. Attachments (#94) render as
  * download links inside the bubble; the viewer is only ever served files of
  * a conversation they take part in (message_download checks it). */
-function tb_message_bubble(array $m, bool $mine, array $attachments = []): string {
+function tb_message_bubble(array $m, bool $mine, array $attachments = [], bool $canDelete = false): string {
     $inner = '';
     if ((string)($m['body'] ?? '') !== '') {
         $inner .= '<div class="prewrap">' . h((string)$m['body']) . '</div>';
@@ -61,12 +61,26 @@ function tb_message_bubble(array $m, bool $mine, array $attachments = []): strin
     $when = $sfx === ''
         ? h(tb_dt($m['created_at']))
         : h(tb_dt($m['created_at'])) . ' (<span data-tb-ago-sfx data-tb-ago-ts="' . $ts . '">' . h($sfx) . '</span>)';
+    // #122: the admin's per-message controls ride along on every rendered
+    // bubble. The select checkbox stays bound to the thread-head bulk form
+    // through the form= attribute, so bubbles appended by the live feed or
+    // prepended by the older-pages feed join the very same delete form, and
+    // the small button removes this one message on its own. A bubble without
+    // the delete capability renders byte-identical to the pre-#122 markup.
+    $controls = '';
+    if ($canDelete) {
+        $controls = '<div class="tb-chat-delrow">'
+            . '<label class="tb-chat-delcheck"><input type="checkbox" name="ids[]" value="' . (int)$m['id'] . '" form="tb-chat-bulk-delete"> select</label>'
+            . '<form method="post" class="tb-chat-delone" onsubmit="return confirm(\'Delete this message permanently?\')">' . csrf_field()
+            . '<input type="hidden" name="action" value="delete_message"><input type="hidden" name="message_id" value="' . (int)$m['id'] . '">'
+            . '<button class="btn btn-link text-danger p-0 tb-chat-delbtn">Delete</button></form></div>';
+    }
     if ($mine) {
         return '<div class="d-flex justify-content-end mb-2" data-tb-msg-id="' . (int)$m['id'] . '"><div class="bg-primary text-white rounded-3 px-3 py-2 tb-chat-bubble" style="max-width:75%">' . $inner
-            . '<div class="small mt-1" style="opacity:.75">' . $when . ' · <span data-tb-msg-status>' . ((int)$m['is_read'] ? 'Seen' : 'Sent') . '</span></div></div></div>';
+            . '<div class="small mt-1" style="opacity:.75">' . $when . ' · <span data-tb-msg-status>' . ((int)$m['is_read'] ? 'Seen' : 'Sent') . '</span></div>' . $controls . '</div></div>';
     }
     return '<div class="d-flex justify-content-start mb-2" data-tb-msg-id="' . (int)$m['id'] . '"><div class="border rounded-3 px-3 py-2 tb-chat-bubble" style="max-width:75%">' . $inner
-        . '<div class="small muted mt-1">' . $when . '</div></div></div>';
+        . '<div class="small muted mt-1">' . $when . '</div>' . $controls . '</div></div>';
 }
 
 /** The attachments of a set of chat messages (#94), grouped by message id:
@@ -83,6 +97,55 @@ function tb_message_attachments(PDO $pdo, array $messageIds): array {
         $grouped[(int)$a['message_id']][] = $a;
     }
     return $grouped;
+}
+
+/** #122: the stored names of a set of messages' attachments, captured before
+ * the delete cascades the rows away - the message_attachments FK is ON DELETE
+ * CASCADE, so after the DELETE the files would be unreferenced orphans in
+ * uploads/ (the same capture-first discipline the #38 task deletion uses). */
+function tb_message_attachment_files(PDO $pdo, array $messageIds): array {
+    $ids = array_values(array_unique(array_filter(array_map('intval', $messageIds))));
+    if (!$ids) return [];
+    $in = implode(',', array_fill(0, count($ids), '?'));
+    $s = $pdo->prepare('SELECT stored_name FROM message_attachments WHERE message_id IN (' . $in . ')');
+    $s->execute($ids);
+    return array_map('strval', $s->fetchAll(PDO::FETCH_COLUMN));
+}
+
+/**
+ * #122: hard-deletes the given chat messages. The attachment rows cascade
+ * away with their message; the stored files are captured first and removed
+ * with them, so a deleted message leaves nothing behind - no row, no file.
+ * Returns the number of messages actually deleted.
+ */
+function tb_delete_messages(PDO $pdo, array $messageIds): int {
+    $ids = array_values(array_unique(array_filter(array_map('intval', $messageIds), function ($v) { return $v > 0; })));
+    if (!$ids) return 0;
+    $files = tb_message_attachment_files($pdo, $ids);
+    $in = implode(',', array_fill(0, count($ids), '?'));
+    $s = $pdo->prepare('DELETE FROM messages WHERE id IN (' . $in . ')');
+    $s->execute($ids);
+    $deleted = $s->rowCount();
+    tb_unlink_stored_files($files);
+    return $deleted;
+}
+
+/**
+ * #122: the message ids of the open conversation - the pair ($me, $peer),
+ * with peer 0 meaning the "Deleted user" orphan thread (#17). The whole-
+ * conversation delete feeds exactly these ids into tb_delete_messages(), so
+ * the thread the admin is looking at is what goes away, never anybody
+ * else's conversations.
+ */
+function tb_conversation_message_ids(PDO $pdo, int $me, int $peer): array {
+    if ($peer === 0) {
+        $s = $pdo->prepare('SELECT id FROM messages WHERE (recipient_id=? AND sender_id IS NULL) OR (sender_id=? AND recipient_id IS NULL)');
+        $s->execute([$me, $me]);
+    } else {
+        $s = $pdo->prepare('SELECT id FROM messages WHERE (sender_id=? AND recipient_id=?) OR (sender_id=? AND recipient_id=?)');
+        $s->execute([$me, $peer, $peer, $me]);
+    }
+    return array_map('intval', $s->fetchAll(PDO::FETCH_COLUMN));
 }
 
 /**

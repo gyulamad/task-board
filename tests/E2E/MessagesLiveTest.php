@@ -65,7 +65,7 @@ final class MessagesLiveTest extends E2eTestCase
         $admin = $this->adminSession();
         $body = $admin->get('/?page=messages')->body;
         $this->assertTrue(str_contains($body, 'd-flex justify-content-between align-items-center mb-3 tb-chat-intro'), 'The intro row is marked for the mobile hide.');
-        $this->assertTrue(str_contains($body, '.tb-chat-intro{display:none}'), 'The mobile media query hides the intro.');
+        $this->assertTrue(str_contains($body, '.tb-chat-intro{display:none!important}'), 'The mobile media query hides the intro - with !important, because the intro row carries the d-flex utility whose display:flex!important beats a plain display:none (#117 v2).');
         $this->assertTrue(str_contains($body, 'data-tb-chat-newcount'), 'The newcount badge hook survives in the markup.');
     }
 

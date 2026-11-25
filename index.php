@@ -1566,8 +1566,11 @@ if ($page === 'messages') {
       /* #117: on a phone the intro (title + description) only pushes the chat
          down - the chat top sits right below the main menu header instead. The
          unread count stays visible on the navbar Messages badge, and the chat
-         re-size JS below measures the freed space at runtime. */
-      .tb-chat-intro{display:none}
+         re-size JS below measures the freed space at runtime. The !important
+         is not optional: the intro row carries Bootstrap's d-flex utility,
+         whose display:flex!important beats a plain display:none (#117 v2 -
+         the pre-v2 rule silently lost and the intro stayed on the phone). */
+      .tb-chat-intro{display:none!important}
       .tb-chat>.col-lg-4,.tb-chat>.col-lg-8{flex:0 0 100%;max-width:100%;height:100%}
       .tb-chat>.col-lg-8{display:none}
       .tb-chat.has-peer>.col-lg-8{display:flex}

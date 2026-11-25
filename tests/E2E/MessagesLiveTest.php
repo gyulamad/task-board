@@ -99,6 +99,52 @@ final class MessagesLiveTest extends E2eTestCase
         $this->assertTrue(str_contains((string)$admin->get('/?page=messages&u=' . $peerId)->body, 'data-tb-msg-status>Seen</span>'), 'A fresh load renders the read message as Seen.');
     }
 
+    public function test_the_ago_suffix_stays_in_single_parentheses(): void
+    {
+        // Task #125 bug 1: the suffix span renders inside the PHP markup's
+        // own parentheses, so the in-place JS refresh must write back the
+        // bare grammar - a re-wrapped pair doubled it into ((4 minutes ago)).
+        $admin = $this->adminSession();
+        $peer = $this->createRegularUser($admin, 'singleparens');
+        $peerId = $this->userId('singleparens');
+        $this->sendMessageFrom($admin, $peerId, 'Time it right.');
+
+        $body = $admin->get('/?page=messages&u=' . $peerId)->body;
+        $this->assertTrue(str_contains($body, '(<span data-tb-ago-sfx data-tb-ago-ts="'), 'The PHP renders exactly one paren before the suffix span.');
+        $this->assertTrue(str_contains($body, '>just now</span>)'), 'And exactly one paren after it.');
+        $this->assertFalse(str_contains($body, '((<span data-tb-ago-sfx'), 'No doubled opening paren on a fresh load.');
+
+        // The refresh script writes back the bare suffix (the parens belong
+        // to the markup), so a poll can never double them either.
+        $this->assertTrue(str_contains($body, 'els[i].textContent=sfx;'), 'The JS refresh writes the bare suffix (#125).');
+        $this->assertFalse(str_contains($body, "'('+sfx+')'"), 'The JS refresh must not re-wrap the suffix in parentheses (#125).');
+
+        // The feed appends the very same markup shape.
+        $feed = json_decode((string)$admin->get('/?page=messages_live&u=' . $peerId . '&after=0')->body, true);
+        $this->assertStringNotContainsString('((<span data-tb-ago-sfx', (string)$feed['html'], 'The feed bubbles carry the single-paren shape too.');
+    }
+
+    public function test_the_composer_focus_survives_the_enter_send(): void
+    {
+        // Task #125 bug 2: Enter sends through a full form submit and the
+        // page reloads - the composer must come back focused, so the next
+        // message can be typed without clicking back into the field.
+        $admin = $this->adminSession();
+        $peer = $this->createRegularUser($admin, 'stayfocused');
+        $peerId = $this->userId('stayfocused');
+
+        $before = $admin->get('/?page=messages&u=' . $peerId);
+        $this->assertTrue(str_contains($before->body, 'data-tb-chat-body autofocus>'), 'The composer textarea declares autofocus.');
+
+        $this->assertSame(302, $this->sendMessageFrom($admin, $peerId, 'Typed without a click.')->status, 'Enter send still goes through the full submit.');
+
+        // The page the browser lands on after the send carries the composer,
+        // focused again - the cursor never really leaves the input area.
+        $after = $admin->get('/?page=messages&u=' . $peerId);
+        $this->assertTrue(str_contains($after->body, 'data-tb-chat-body autofocus>'), 'The reloaded thread focuses the composer again.');
+        $this->assertTrue(str_contains($after->body, 'Typed without a click.'));
+    }
+
     public function test_the_page_carries_the_live_hooks(): void
     {
         $admin = $this->adminSession();

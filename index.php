@@ -1592,7 +1592,7 @@ if ($page === 'messages') {
             <div class="tb-chat-scroll" data-tb-chat-scroll data-tb-more="<?=h('?page=messages_more&u='.$peerId.($oldestId!==null?'&before='.(int)$oldestId:''))?>" data-tb-has-more="<?=$hasMore?'1':'0'?>" data-tb-after="<?=$newestId?>">
             <?php foreach ($thread as $m): $mine=$m['sender_id']!==null&&(int)$m['sender_id']===$me; echo tb_message_bubble($m,$mine,$threadAttachments[(int)$m['id']]??[],is_admin()); endforeach; if(!$thread): ?><div class="text-center muted small py-4">No messages here yet - say hi below.</div><?php endif; ?>
             </div>
-            <?php if ($peerId!==0): ?><form method="post" class="tb-chat-composer mt-2" enctype="multipart/form-data" data-tb-chat-send><?=csrf_field()?><input type="hidden" name="action" value="send_message"><input type="hidden" name="recipient_id" value="<?=$peerId?>"><input type="hidden" name="send_token" value="<?=h(tb_message_send_token())?>"><div class="input-group"><button class="btn btn-outline-secondary tb-chat-attach" type="button" aria-label="Attach a file" title="Attach a file">&#128206;</button><input type="file" class="d-none" name="attachment" aria-label="Attachment file" data-tb-chat-file><textarea class="form-control" id="message-body" name="body" rows="2" placeholder="Write a message..." aria-label="Message" data-tb-chat-body></textarea><button class="btn btn-primary" type="submit">Send</button></div><div class="small muted mt-1 d-none" data-tb-chat-file-name></div><div class="small muted mt-1">Enter sends &middot; Shift+Enter or Ctrl+Enter adds a new line &middot; max <?=round($config['max_upload_bytes']/1024/1024)?> MB per attachment.</div></form>
+            <?php if ($peerId!==0): ?><form method="post" class="tb-chat-composer mt-2" enctype="multipart/form-data" data-tb-chat-send><?=csrf_field()?><input type="hidden" name="action" value="send_message"><input type="hidden" name="recipient_id" value="<?=$peerId?>"><input type="hidden" name="send_token" value="<?=h(tb_message_send_token())?>"><div class="input-group"><button class="btn btn-outline-secondary tb-chat-attach" type="button" aria-label="Attach a file" title="Attach a file">&#128206;</button><input type="file" class="d-none" name="attachment" aria-label="Attachment file" data-tb-chat-file><textarea class="form-control" id="message-body" name="body" rows="2" placeholder="Write a message..." aria-label="Message" data-tb-chat-body autofocus></textarea><button class="btn btn-primary" type="submit">Send</button></div><div class="small muted mt-1 d-none" data-tb-chat-file-name></div><div class="small muted mt-1">Enter sends &middot; Shift+Enter or Ctrl+Enter adds a new line &middot; max <?=round($config['max_upload_bytes']/1024/1024)?> MB per attachment.</div></form>
             <?php else: ?><div class="small muted mt-2">This account was deleted - the conversation stays readable, but new messages cannot be delivered.</div><?php endif; ?>
         </div></div></div>
     <script>
@@ -1722,7 +1722,10 @@ if ($page === 'messages') {
                 for(var i=0;i<els.length;i++){
                     var ts=parseInt(els[i].getAttribute('data-tb-ago-ts'),10);
                     var sfx=agoSuffix(ts,nowSec);
-                    if(sfx!==null) els[i].textContent='('+sfx+')';
+                    // #125: the parentheses are the PHP markup's own - the span
+                    // renders inside them - so the refreshed suffix must carry
+                    // exactly the bare grammar, never a second pair.
+                    if(sfx!==null) els[i].textContent=sfx;
                 }
             };
             refreshAgo();

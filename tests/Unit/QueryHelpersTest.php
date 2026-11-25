@@ -326,6 +326,49 @@ final class QueryHelpersTest extends TestCase
         $this->assertNull(tb_saved_search_query(['status' => ['']]));
     }
 
+    public function test_saved_search_signature_compares_views_canonically(): void
+    {
+        // #132: the signature is the comparison form of a list view - unknown
+        // and junk keys are dropped, a legacy scalar URL shape equals the
+        // stored array shape of the same selection, multi-value keys compare
+        // order-insensitively and a one-element array collapses to the scalar.
+        $stored = tb_saved_search_view_signature(['q' => 'Beta', 'status' => ['2']]);
+        $this->assertSame(['q' => 'Beta', 'status' => '2'], $stored);
+        $this->assertSame($stored, tb_saved_search_view_signature(['status' => '2', 'q' => 'Beta', 'evil' => 'x', 'page' => 'kanban', 'p' => '2']), 'Junk and structural keys are dropped; scalar and array shapes of one selection are the same view.');
+        $this->assertSame(['assignee' => ['3', '5', 'unassigned']], tb_saved_search_view_signature(['assignee' => ['unassigned', '5', '3', '5']]), 'Multi-value keys compare order-insensitively and de-duplicated.');
+        $this->assertSame(['q' => 'Beta', 'sort' => ['title', 'updated'], 'dir' => 'desc'], tb_saved_search_view_signature(['q' => 'Beta', 'sort' => ['title', 'updated'], 'dir' => 'desc']), 'A crafted scalar array stays its own (sorted) shape: the save handler collapses it before storing, but at read time it is a different view, so it must not identify the stored scalar link.');
+        $this->assertSame([], tb_saved_search_view_signature(['page' => 'tasks', 'clear_search' => '1']), 'A bare visit has no view signature.');
+    }
+
+    public function test_saved_search_selected_names_the_search_the_view_came_from(): void
+    {
+        // #132: the current list view (with the #113 replay already merged
+        // into $_GET) is canonicalized the same way the stored links are, so
+        // the first own saved search carrying the same view wins; a view no
+        // stored search holds returns null.
+        $searches = [
+            ['id' => '7', 'name' => 'Beta only', 'query' => 'q=Beta&status%5B0%5D=2'],
+            ['id' => '9', 'name' => 'Picks', 'query' => 'assignee%5B0%5D=2&assignee%5B1%5D=5&sort=title&dir=desc'],
+        ];
+        $_GET = ['page' => 'tasks', 'q' => 'Beta', 'status' => ['2']];
+        $this->assertSame('Beta only', tb_saved_search_selected($searches)['name']);
+        $_GET = ['page' => 'tasks', 'status' => '2', 'q' => 'Beta', 'evil' => 'x'];
+        $this->assertSame('Beta only', tb_saved_search_selected($searches)['name'], 'The legacy scalar URL shape and junk parameters still identify the same search.');
+        $_GET = ['page' => 'tasks', 'assignee' => ['5', '2'], 'sort' => 'title', 'dir' => 'desc'];
+        $this->assertSame('Picks', tb_saved_search_selected($searches)['name'], 'A different multi-select order is still the same stored search.');
+        $_GET = ['page' => 'tasks', 'assignee' => ['5'], 'sort' => 'title', 'dir' => 'desc'];
+        $this->assertNull(tb_saved_search_selected($searches), 'A hand-modified filter set matches no stored search.');
+        $_GET = ['page' => 'tasks', 'q' => 'Beta', 'status' => ['1']];
+        $this->assertNull(tb_saved_search_selected($searches), 'A different filter value matches nothing.');
+        $_GET = ['page' => 'tasks'];
+        $this->assertNull(tb_saved_search_selected($searches), 'The plain list is nobody\'s search.');
+        $_GET = ['page' => 'tasks', 'q' => 'Beta', 'status' => ['2']];
+        $this->assertNull(tb_saved_search_selected([]), 'No saved searches, no name.');
+        $_GET = ['page' => 'tasks', 'q' => 'Beta', 'status' => ['2']];
+        $this->assertNull(tb_saved_search_selected([['id' => '3', 'name' => 'Broken', 'query' => '']]), 'A broken stored link matches nothing instead of fataling.');
+        $_GET = [];
+    }
+
     public function test_filter_query_value_reads_the_given_source_instead_of_get(): void
     {
         $_GET['status'] = '1';

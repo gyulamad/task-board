@@ -213,6 +213,44 @@ final class SavedSearchesTest extends E2eTestCase
         $this->assertTrue($list->contains('q=%22%3E%3Csvg+onload%3Dalert%282%29%3E'), 'The stored link is URL-encoded, not injected.');
     }
 
+    public function test_the_filter_card_names_the_saved_search_the_view_came_from(): void
+    {
+        // Task #132: the advanced filter area offers the saved searches
+        // dropdown, but nothing said WHICH search (if any) the current view
+        // came from - the card now names it next to the dropdown, and a view
+        // that matches no stored search shows no name at all.
+        [$admin, , $beta] = $this->seedTasks();
+
+        // A pristine list carries no indicator at all.
+        $plain = $admin->get('/?page=tasks');
+        $this->assertFalse($plain->contains('data-tb-saved-search-selected'), 'No saved search name on a pristine list.');
+
+        $this->saveSearch($admin, ['q' => 'Beta', 'status' => ['2']], 'Beta only');
+        $open = $admin->get('/?page=tasks&q=Beta&status%5B0%5D=2');
+        $this->assertTrue($open->contains('Selected:'), 'The name next to the dropdown is labelled.');
+        $this->assertTrue($open->contains('data-tb-saved-search-selected="Beta only"'), 'The card names the saved search the view came from.');
+
+        // The session replay keeps the name: after a trip elsewhere a bare
+        // list visit restores the stored view (#113), which is the same
+        // search - the indicator follows the effective view, replay included.
+        $task = $admin->get('/?page=task&id=' . $beta);
+        $this->assertSame(200, $task->status);
+        $replayed = $admin->get('/?page=tasks');
+        $this->assertTrue($replayed->contains('data-tb-saved-search-selected="Beta only"'), 'The replayed stored view still names its saved search.');
+
+        // A hand-modified filter set is nobody's stored search: the
+        // indicator disappears while the dropdowns still show the values.
+        $modified = $admin->get('/?page=tasks&q=Beta&status%5B0%5D=1');
+        $this->assertFalse($modified->contains('data-tb-saved-search-selected'), 'A view that matches no stored search shows no name.');
+
+        // Deleting the search takes the name with it, on the very same URL.
+        $searchId = (int)TestServer::pdo()->query("SELECT id FROM saved_searches WHERE name='Beta only'")->fetchColumn();
+        $deleted = $admin->post('/?page=tasks', ['action' => 'delete_search', 'id' => (string)$searchId, 'return' => '?page=tasks&q=Beta&status%5B0%5D=2']);
+        $this->assertSame(302, $deleted->status);
+        $after = $admin->get('/?page=tasks&q=Beta&status%5B0%5D=2');
+        $this->assertFalse($after->contains('data-tb-saved-search-selected'), 'The name is gone once the search is deleted.');
+    }
+
     public function test_first_request_recreates_a_dropped_saved_searches_table(): void
     {
         $admin = $this->adminSession();

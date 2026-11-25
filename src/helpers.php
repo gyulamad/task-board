@@ -788,6 +788,55 @@ function tb_saved_search_query(array $source): ?string {
     return http_build_query($qs);
 }
 
+/** The canonical signature of a list view (#132): every TASK_BOARD_SEARCH_KEYS
+ * entry through filter_query_value(), so unknown, empty and junk parameters
+ * are dropped and a legacy scalar URL shape compares equal to the stored
+ * array shape of the same selection. Multi-value keys are sorted and
+ * de-duplicated, because the filter result of one dropdown is
+ * order-insensitive ("values match any of them") - the same selection picked
+ * in a different order is still the same search. A one-element array
+ * collapses to its scalar, so ?status=2 and ?status[0]=2 are one view.
+ *
+ * @return array<string,string|list<string>> key => value, in canonical key order
+ */
+function tb_saved_search_view_signature(array $view): array {
+    $sig = [];
+    foreach (TASK_BOARD_SEARCH_KEYS as $key) {
+        $value = filter_query_value($key, $view);
+        if ($value === null) continue;
+        if (is_array($value)) {
+            $value = array_values(array_unique($value));
+            sort($value, SORT_STRING);
+            $value = count($value) === 1 ? $value[0] : $value;
+        }
+        $sig[$key] = $value;
+    }
+    return $sig;
+}
+
+/** Which saved search (if any) does the current list view come from (#132)?
+ * The visitor's URL - with the #113 session replay already merged into $_GET
+ * by tb_list_view_boot(), so a restored view identifies its search too - is
+ * canonicalized the same way the stored links are built, and the first own
+ * saved search whose stored link is the same view wins. Returns null when
+ * the view matches no stored search: the plain list, a hand-modified filter
+ * set, or no saved searches at all.
+ *
+ * @param array<int,array<string,mixed>> $savedSearches the signed-in user's saved searches (id, name, query)
+ * @return array<string,mixed>|null the matching saved search row
+ */
+function tb_saved_search_selected(array $savedSearches): ?array {
+    $current = tb_saved_search_view_signature(array_diff_key($_GET, ['page' => true, 'p' => true, 'clear_search' => true]));
+    if ($current === []) return null;
+    foreach ($savedSearches as $sv) {
+        parse_str((string)($sv['query'] ?? ''), $stored);
+        if (tb_saved_search_view_signature(is_array($stored) ? $stored : []) === $current) {
+            return $sv;
+        }
+    }
+    return null;
+}
+
 // ---- List view memory (Task #113) ------------------------------------------
 // The list pages' filter/sort/search selection lives in the URL only, so
 // navigating to a task and coming back loses it. Since #113 the selection of
@@ -1045,7 +1094,7 @@ function tb_render_task_filter_card(array $ctx): void {
     $advancedOpen = $advancedActive && empty($GLOBALS['TB_LIST_VIEW_REPLAYED']);
     ?>
 <div class="card p-3 mb-3"><form class="row g-2 align-items-end"><input type="hidden" name="page" value="<?=h($page)?>"><?php foreach (array_diff(TASK_BOARD_SEARCH_FILTER_KEYS, ['q']) as $fk): foreach (filter_values($fk) as $fv): ?><input type="hidden" name="<?=$fk?>[]" value="<?=h($fv)?>"><?php endforeach; endforeach; ?><div class="col-md-2"><input class="form-control" name="q" value="<?=h($_GET['q']??'')?>" placeholder="Search tasks" aria-label="Search tasks"></div><div class="col-md-auto d-grid"><button class="btn btn-outline-secondary<?= $advancedActive ? ' border-primary' : '' ?>" type="button" data-bs-toggle="collapse" data-bs-target="#advanced-filters" aria-expanded="<?= $advancedOpen ? 'true' : 'false' ?>" aria-controls="advanced-filters">Advanced filter<?= $advancedActive ? ' <span class="badge text-bg-info ms-1">on</span>' : '' ?></button></div><?php if (tb_list_view_has_selection($page)): ?><div class="col-md-auto d-grid"><a class="btn btn-outline-danger" href="<?=h('?page='.$page.'&clear_search=1')?>" title="Drop the stored selection and show the plain list (#113)">Clear search</a></div><?php endif; ?></form><?php // #48: the advanced area (dropdowns, Filter button, saved searches) is the toggleable rest of the card - hidden by default, expanded when one of the advanced filters is active in the visitor's own request (#119: a replayed session view keeps it closed). ?><div class="collapse<?= $advancedOpen ? ' show' : '' ?>" id="advanced-filters"><div><form class="row g-2 align-items-end"><input type="hidden" name="page" value="<?=h($page)?>"><input type="hidden" name="q" value="<?=h($_GET['q']??'')?>"><div class="col-md-2"><label class="form-label small muted mb-1" for="filter-assignee">Assignees</label><select class="form-select" id="filter-assignee" name="assignee[]" multiple size="4"><option value="unassigned" <?=in_array('unassigned',$fAssignees,true)?'selected':''?>>Unassigned</option><?php foreach($users as $u): ?><option value="<?=$u['id']?>" <?=in_array((string)$u['id'],$fAssignees,true)?'selected':''?>><?=h($u['display_name'])?></option><?php endforeach; if(!$users): ?><option value="" disabled>No users yet</option><?php endif; ?></select></div><div class="col-md-2"><label class="form-label small muted mb-1" for="filter-status">Statuses</label><select class="form-select" id="filter-status" name="status[]" multiple size="4"><?php foreach($statuses as $st): ?><option value="<?=$st['id']?>" <?=in_array((string)$st['id'],$fStatuses,true)?'selected':''?>><?=h($st['name'])?></option><?php endforeach; ?></select></div><div class="col-md-2"><label class="form-label small muted mb-1" for="filter-parent">Parents</label><select class="form-select" id="filter-parent" name="parent[]" multiple size="4"><option value="none" <?=in_array('none',$fParents,true)?'selected':''?>>No parent</option><?php foreach($parents as $pt): ?><option value="<?=$pt['parent_id']?>" <?=in_array((string)$pt['parent_id'],$fParents,true)?'selected':''?>>#<?=$pt['parent_id']?> · <?=h($pt['parent_title'])?></option><?php endforeach; ?></select></div><div class="col-md-2"><label class="form-label small muted mb-1" for="filter-project">Projects</label><select class="form-select" id="filter-project" name="project[]" multiple size="4"><option value="none" <?=in_array('none',$fProjects,true)?'selected':''?>>No project</option><?php foreach($projectOptions as $po): ?><option value="<?=$po['id']?>" <?=in_array((string)$po['id'],$fProjects,true)?'selected':''?>>#<?=$po['id']?> · <?=h($po['name'])?></option><?php endforeach; ?></select></div><div class="col-md-2 d-grid"><button class="btn btn-outline-primary">Filter</button></div><div class="col-12"><div class="form-text mb-0">Hold Ctrl/Cmd to pick several values in a dropdown; an empty dropdown filters nothing. Values inside one dropdown match any of them, different dropdowns combine.</div></div></form>
-<div class="d-flex justify-content-between align-items-center gap-2 flex-wrap mt-3 pt-3 border-top"><?php if($savedSearches): ?><div class="dropdown"><button class="btn btn-outline-secondary dropdown-toggle" type="button" data-bs-toggle="dropdown" aria-expanded="false">Saved searches <span class="badge text-bg-secondary"><?=count($savedSearches)?></span></button><div class="dropdown-menu"><div class="dropdown-item"><a class="text-decoration-none <?= tb_list_view_has_selection($page) ? 'fw-semibold' : 'muted' ?>" href="<?=h('?page='.$page.'&clear_search=1')?>" title="Show the plain list without any saved search (#113)">- Not selected -</a></div><div class="dropdown-divider"></div><?php foreach($savedSearches as $sv): ?><div class="dropdown-item d-flex align-items-center justify-content-between gap-3 text-nowrap"><a class="text-decoration-none flex-grow-1" href="<?=h('?page='.$page.'&'.$sv['query'])?>" title="Open the saved search <?=h($sv['name'])?>"><?=h($sv['name'])?></a><form method="post" class="d-inline" onsubmit="return confirm('Delete this saved search?')"><?=csrf_field()?><input type="hidden" name="action" value="delete_search"><input type="hidden" name="id" value="<?=$sv['id']?>"><input type="hidden" name="return" value="<?=h($returnUrl)?>"><button class="btn btn-sm btn-link text-danger p-0 lh-1" title="Delete this saved search" aria-label="Delete the saved search <?=h($sv['name'])?>">&times;</button></form></div><?php endforeach; ?></div></div><?php else: ?><span class="small muted" id="saved-searches-empty">No saved searches yet.</span><?php endif; ?>
+<div class="d-flex justify-content-between align-items-center gap-2 flex-wrap mt-3 pt-3 border-top"><?php if($savedSearches): ?><div class="d-flex align-items-center gap-2 flex-wrap"><div class="dropdown"><button class="btn btn-outline-secondary dropdown-toggle" type="button" data-bs-toggle="dropdown" aria-expanded="false">Saved searches <span class="badge text-bg-secondary"><?=count($savedSearches)?></span></button><div class="dropdown-menu"><div class="dropdown-item"><a class="text-decoration-none <?= tb_list_view_has_selection($page) ? 'fw-semibold' : 'muted' ?>" href="<?=h('?page='.$page.'&clear_search=1')?>" title="Show the plain list without any saved search (#113)">- Not selected -</a></div><div class="dropdown-divider"></div><?php foreach($savedSearches as $sv): ?><div class="dropdown-item d-flex align-items-center justify-content-between gap-3 text-nowrap"><a class="text-decoration-none flex-grow-1" href="<?=h('?page='.$page.'&'.$sv['query'])?>" title="Open the saved search <?=h($sv['name'])?>"><?=h($sv['name'])?></a><form method="post" class="d-inline" onsubmit="return confirm('Delete this saved search?')"><?=csrf_field()?><input type="hidden" name="action" value="delete_search"><input type="hidden" name="id" value="<?=$sv['id']?>"><input type="hidden" name="return" value="<?=h($returnUrl)?>"><button class="btn btn-sm btn-link text-danger p-0 lh-1" title="Delete this saved search" aria-label="Delete the saved search <?=h($sv['name'])?>">&times;</button></form></div><?php endforeach; ?></div></div><?php /* #132: the card says WHICH saved search (if any) the current filters came from - the same canonical comparison the stored links are built with, so the name only shows while the view really is that stored search (a hand-modified filter set or the plain list stays unnamed). */ $tbSelectedSearch=tb_saved_search_selected($savedSearches); if($tbSelectedSearch!==null): ?><span class="small muted">Selected:</span><span class="badge text-bg-primary" data-tb-saved-search-selected="<?=h((string)$tbSelectedSearch['name'])?>" title="The current filters are the saved search <?=h((string)$tbSelectedSearch['name'])?> (#132)"><?=h((string)$tbSelectedSearch['name'])?></span><?php endif; ?></div><?php else: ?><span class="small muted" id="saved-searches-empty">No saved searches yet.</span><?php endif; ?>
     <form method="post" class="d-flex align-items-center gap-2"><?=csrf_field()?><input type="hidden" name="action" value="save_search"><input type="hidden" name="save_page" value="<?=h($page)?>"><label class="visually-hidden" for="save-search-name">Name this search</label><input class="form-control" id="save-search-name" name="name" maxlength="200" placeholder="Name this search" aria-label="Name for the saved search" required><button class="btn btn-outline-primary text-nowrap" title="Save the current list filters as a search">Save search</button><?php foreach (TASK_BOARD_SEARCH_KEYS as $fk): if (($fv=filter_query_value($fk))===null) continue; if (is_array($fv)): foreach ($fv as $fvOne): ?><input type="hidden" name="<?=$fk?>[]" value="<?=h($fvOne)?>"><?php endforeach; else: ?><input type="hidden" name="<?=$fk?>" value="<?=h($fv)?>"><?php endif; endforeach; ?></form></div></div></div></div>
     <?php
 }

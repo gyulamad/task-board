@@ -8,9 +8,11 @@ namespace TaskBoard\Tests\E2E;
  * default; an Advanced filter toggle reveals the rest - the four dropdowns,
  * the Filter button and the saved searches. The card is the shared component
  * of the task list, the kanban board and the waterflow chart, so the toggle
- * behaves the same on all three. The area starts expanded when the current
- * view is already filtered by one of the advanced keys, so an active filter
- * is never hidden from the operator. The collapse only hides things visually:
+ * behaves the same on all three. The area starts expanded when the visitor's
+ * own request is already filtered by one of the advanced keys, so an active
+ * filter is never hidden from the operator - but a #113-replayed bare visit
+ * keeps the area closed (#119): the filters still apply and the toggle keeps
+ * its 'on' badge. The collapse only hides things visually:
  * the inputs stay in the DOM and keep submitting (the scheduler area #35
  * pattern), so every filter URL keeps working and the list-behaviour suites
  * (MultiSelectFiltersTest, SavedSearchesTest, TaskFiltersTest, ...) keep
@@ -18,6 +20,26 @@ namespace TaskBoard\Tests\E2E;
  */
 final class AdvancedFilterToggleTest extends E2eTestCase
 {
+    public function test_a_replayed_stored_view_keeps_the_area_closed(): void
+    {
+        // #119 x #113: a stored advanced filter replays silently on a bare
+        // visit from another page - the list stays filtered and the toggle
+        // keeps its 'on' badge, but the panel no longer shoves itself open.
+        $admin = $this->adminSession();
+
+        $filtered = $admin->get('/?page=tasks&assignee[]=unassigned');
+        $this->assertTrue($filtered->contains('class="collapse show" id="advanced-filters"'), 'an explicit advanced filter opens the area (the #48 rule)');
+
+        // Leave and come back bare: the stored view replays (#113).
+        $admin->get('/?page=kanban');
+        $replayed = $admin->get('/?page=tasks');
+        $this->assertTrue($replayed->contains('<input type="hidden" name="assignee[]" value="unassigned">'), 'the replayed filter still applies');
+        $this->assertTrue($replayed->contains('badge text-bg-info ms-1">on</span>'), 'the toggle still shows that an advanced filter is on');
+        $this->assertTrue($replayed->contains('<div class="collapse" id="advanced-filters">'), 'the replayed bare visit keeps the area closed');
+        $this->assertFalse($replayed->contains('class="collapse show" id="advanced-filters"'), 'no auto-expand on a replayed view');
+        $this->assertTrue($replayed->contains('aria-expanded="false"'), 'the toggle reports the closed state');
+    }
+
     public function test_the_search_bar_shows_alone_and_the_toggle_hides_the_rest(): void
     {
         $admin = $this->adminSession();

@@ -508,7 +508,12 @@ if (user()) {
                         ->execute([(int)$pdo->lastInsertId(),(int)user()['id'],$storedName,$attachment['name'],$attachment['mime'],$attachment['size'],time()]);
                 }
                 tb_message_send_token_rotate();
-                flash('Message sent.');
+                // (#129) The confirmation ribbon is marked in the markup so
+                // the mobile stylesheet can hide exactly this flash: on a
+                // phone it only ate chat space and never dismissed itself,
+                // while the bubble's own Sent/Seen status (#118) already
+                // tells the story. Every other flash stays unmarked.
+                flash('Message sent.', 'tb-flash-message-sent');
                 // Back to the conversation the send belongs to, so the mobile
                 // single-pane view (#94) also lands inside the thread.
                 redirect('?page=messages&u='.$recipientId);
@@ -961,7 +966,8 @@ function render_header(string $title, array $config, string $error = ''): void {
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
     <style>body{background:#f5f6f8}.card{border:0;box-shadow:0 1px 5px #0000000d}.muted{color:#687386}.prewrap{white-space:pre-wrap}.navbar-brand{font-weight:700}.tb-activity-dot{display:inline-block;width:.55em;height:.55em;border-radius:50%;margin-right:.3em}.tb-activity-green{background:#198754}.tb-activity-yellow{background:#ffc107}.tb-activity-red{background:#dc3545}.tb-activity-grey{background:#6c757d}.tb-activity-char{font-weight:700;margin-right:.3em}.tb-activity-empty{font-weight:400;margin-right:.3em;color:#6c757d}.tb-activity-empty.tb-activity-green{color:#198754;background:transparent}.tb-activity-empty.tb-activity-yellow{color:#ffc107;background:transparent}.tb-activity-empty.tb-activity-red{color:#dc3545;background:transparent}html[data-bs-theme="dark"] body{background:#14181f}html[data-bs-theme="dark"] .card{box-shadow:0 1px 6px #00000059}html[data-bs-theme="dark"] .muted{color:#8b96a5}</style></head><body>
     <nav class="navbar navbar-expand-lg navbar-dark bg-dark"><div class="container"><a class="navbar-brand" href="?"><?=h($config['app_name'])?></a><?php if(user()): ?><button class="navbar-toggler ms-auto" type="button" data-bs-toggle="collapse" data-bs-target="#tb-navbar" aria-controls="tb-navbar" aria-expanded="false" aria-label="Toggle navigation"><span class="navbar-toggler-icon"></span></button><div class="collapse navbar-collapse" id="tb-navbar"><div class="navbar-nav ms-auto align-items-center"><a class="nav-link" href="?page=tasks">Tasks</a><a class="nav-link" href="?page=kanban">Kanban</a><a class="nav-link" href="?page=waterflow">Waterflow</a><a class="nav-link" href="?page=projects">Projects</a><a class="nav-link" href="?page=templates">Templates</a><a class="nav-link" href="?page=documents">Know-hows</a><a class="nav-link" href="?page=messages">Messages<?php global $pdo; $tbUnread=array_key_exists('TB_UNREAD_BADGE',$GLOBALS)?(int)$GLOBALS['TB_UNREAD_BADGE']:tb_unread_message_count($pdo,(int)user()['id']); if($tbUnread): ?> <span class="badge text-bg-danger" title="New messages"><?=$tbUnread?></span><?php endif; unset($GLOBALS['TB_UNREAD_BADGE']); ?></a><a class="nav-link" href="?page=notifications">Notifications<?php global $pdo; $tbSeen=array_key_exists('TB_NOTIFICATION_BADGE',$GLOBALS)?(int)$GLOBALS['TB_NOTIFICATION_BADGE']:tb_unseen_notification_count($pdo,(int)user()['id']); if($tbSeen && tb_notification_flag_enabled($pdo,(int)user()['id'])): ?> <span class="badge text-bg-danger" title="New notifications"><?=$tbSeen?></span><?php endif; unset($GLOBALS['TB_NOTIFICATION_BADGE']); ?></a><a class="nav-link" href="?page=settings">Settings</a><?php if(is_admin()): ?><a class="nav-link" href="?page=admin">Administration</a><a class="nav-link" href="?page=activity_settings">Activity periods</a><a class="nav-link" href="?page=updates">Software updates</a><?php endif; ?><form method="post" class="d-flex align-items-center mx-2"><?=csrf_field()?><input type="hidden" name="action" value="save_theme"><select name="theme" class="form-select form-select-sm bg-dark text-light border-secondary" aria-label="Theme" title="Theme" onchange="this.form.submit()"><option value="light" <?=$theme==='light'?'selected':''?>>Light</option><option value="dark" <?=$theme==='dark'?'selected':''?>>Dark</option></select><noscript><button class="btn btn-sm btn-outline-light ms-1">Save</button></noscript></form><span class="navbar-text mx-2"><?=tb_user_with_activity($_SESSION['user'])?></span><form method="post" action="?page=logout" class="d-inline m-0"><?=csrf_field()?><button type="submit" class="btn btn-link nav-link p-0 text-white text-decoration-none">Sign out</button></form></div></div><?php endif; ?></div></nav><main class="container py-4">
-    <?php if (!empty($_SESSION['flash'])): ?><div class="alert alert-success"><?=h($_SESSION['flash'])?></div><?php unset($_SESSION['flash']); endif; ?>
+    <?php /* (#129) The queued confirmation ribbon: flash() may carry an extra class that marks the div (tb-flash-message-sent on the send confirmation) so the messages page's mobile stylesheet can hide exactly that one below the lg breakpoint - the bubble itself carries the live Sent/Seen status (#118). Every other flash renders exactly as before, on every viewport. */ ?>
+    <?php if (!empty($_SESSION['flash'])): ?><div class="alert alert-success<?=!empty($_SESSION['flash_class']) ? ' ' . h((string)$_SESSION['flash_class']) : ''?>"><?=h($_SESSION['flash'])?></div><?php unset($_SESSION['flash'], $_SESSION['flash_class']); endif; ?>
     <?php if($error): ?><div class="alert alert-danger"><?=h($error)?></div><?php endif;
 }
 function render_footer(): void { ?></main><?php if (user()): ?><script>
@@ -1571,6 +1577,15 @@ if ($page === 'messages') {
          whose display:flex!important beats a plain display:none (#117 v2 -
          the pre-v2 rule silently lost and the intro stayed on the phone). */
       .tb-chat-intro{display:none!important}
+      /* #129: the "Message sent." ribbon renders on the top of the chat, is
+         never dismissed and on a phone only eats chat area - the bubble's
+         own Sent/Seen status (#118) already tells that story there, so the
+         ribbon is hidden below the lg breakpoint. The !important is the
+         same defence the intro hide uses against Bootstrap's display
+         utilities. Desktop keeps the ribbon, and any other flash (the
+         dropped-submit note included) still renders on the phone - only
+         the marked send confirmation hides. */
+      .tb-flash-message-sent{display:none!important}
       .tb-chat>.col-lg-4,.tb-chat>.col-lg-8{flex:0 0 100%;max-width:100%;height:100%}
       .tb-chat>.col-lg-8{display:none}
       .tb-chat.has-peer>.col-lg-8{display:flex}

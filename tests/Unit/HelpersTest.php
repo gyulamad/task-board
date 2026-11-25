@@ -71,6 +71,21 @@ final class HelpersTest extends TestCase
         $this->assertSame('Task deleted.', $_SESSION['flash']);
     }
 
+    public function test_flash_stores_the_optional_markup_class(): void
+    {
+        // Task #129: a special flash can carry the class its markup is
+        // hidden by - the send confirmation marks itself with
+        // tb-flash-message-sent so the mobile stylesheet can hide exactly
+        // that ribbon. A plain flash keeps storing no class at all.
+        flash('Message sent.', 'tb-flash-message-sent');
+        $this->assertSame('Message sent.', $_SESSION['flash']);
+        $this->assertSame('tb-flash-message-sent', $_SESSION['flash_class']);
+        unset($_SESSION['flash'], $_SESSION['flash_class']);
+        flash('Task archived. Find it under Archive.');
+        $this->assertSame('Task archived. Find it under Archive.', $_SESSION['flash']);
+        $this->assertSame('', $_SESSION['flash_class']);
+    }
+
     public function test_csrf_field_renders_a_hidden_input_with_the_session_token(): void
     {
         $_SESSION['csrf'] = str_repeat('ab', 32);

@@ -69,6 +69,43 @@ final class MessagesLiveTest extends E2eTestCase
         $this->assertTrue(str_contains($body, 'data-tb-chat-newcount'), 'The newcount badge hook survives in the markup.');
     }
 
+    public function test_the_message_sent_flash_hides_on_mobile(): void
+    {
+        // Task #129: after a send the green "Message sent." ribbon renders on
+        // the top of the chat, is never dismissed, and on a phone it only
+        // eats chat area - the bubble itself carries the live Sent/Seen
+        // status (#118), so the ribbon is redundant there. The send
+        // confirmation is marked in the markup and the mobile media query
+        // hides exactly it: desktop keeps the ribbon (the markup renders
+        // unchanged) and every other flash still renders on the phone.
+        $admin = $this->adminSession();
+        $peer = $this->createRegularUser($admin, 'flashmobile');
+        $peerId = $this->userId('flashmobile');
+        $this->sendMessageFrom($admin, $peerId, 'Watch the ribbon, not the phone.');
+
+        $body = $admin->get('/?page=messages&u=' . $peerId)->body;
+        $this->assertTrue(str_contains($body, '<div class="alert alert-success tb-flash-message-sent">Message sent.</div>'), 'The send confirmation renders marked for the mobile hide - the same markup serves the desktop, which keeps the ribbon.');
+
+        // The hide rule lives inside the mobile media query - the ribbon is
+        // only hidden below the lg breakpoint, exactly like the #117 intro.
+        $this->assertSame(1, preg_match('/@media \(max-width: 991\.98px\)\{.*\.tb-flash-message-sent\{display:none!important\}/s', $body), 'The mobile media query hides the marked ribbon.');
+        $this->assertSame(1, substr_count($body, '.tb-flash-message-sent{display:none!important}'), 'The hide rule exists exactly once, inside the mobile media query - it must not leak above the lg breakpoint.');
+
+        // Any other flash stays visible on the phone: a replayed send token
+        // (#87) renders the dropped-submit note WITHOUT the mobile-hide mark
+        // - hiding it would silence the only feedback a double submit gives.
+        $composer = $admin->get('/?page=messages&u=' . $peerId);
+        $this->assertSame(1, preg_match('/name="send_token" value="([^"]+)"/', $composer->body, $m), 'The composer renders the one-time send token (#87).');
+        $fields = ['action' => 'send_message', 'recipient_id' => (string)$peerId, 'body' => 'Double click.', 'send_token' => $m[1]];
+        $admin->post('/?page=messages&u=' . $peerId, $fields);
+        $admin->post('/?page=messages&u=' . $peerId, $fields);
+        $dropped = $admin->get('/?page=messages&u=' . $peerId)->body;
+        $this->assertTrue(str_contains($dropped, '<div class="alert alert-success">This submit was dropped'), 'The dropped-submit note renders unmarked.');
+        // The class name appears exactly once on the page - inside the CSS
+        // rule itself - so no flash div on the dropped page carries the mark.
+        $this->assertSame(1, substr_count($dropped, 'tb-flash-message-sent'), 'No other flash carries the mobile-hide mark.');
+    }
+
     public function test_the_bubbles_carry_live_hooks_and_the_feed_reports_seen_progress(): void
     {
         // Task #118: the sending time and the seen status used to freeze at

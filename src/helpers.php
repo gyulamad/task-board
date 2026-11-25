@@ -15,7 +15,16 @@ function verify_csrf(): void {
         http_response_code(403); exit('Invalid CSRF token.');
     }
 }
-function flash(string $message): void { $_SESSION['flash'] = $message; }
+/** Queues the one-shot confirmation ribbon render_header() shows on the next
+ * page. The optional $class is appended to the div's classes so a special
+ * flash can be marked in the markup (#129): the "Message sent." ribbon
+ * carries tb-flash-message-sent, the hook the mobile stylesheet hides that
+ * ribbon by - every other flash renders with the plain alert classes
+ * everywhere. */
+function flash(string $message, string $class = ''): void {
+    $_SESSION['flash'] = $message;
+    $_SESSION['flash_class'] = $class;
+}
 function redirect(string $url = '?'): never { header('Location: ' . $url); exit; }
 
 /** The one-time token of the messenger send form (#87): the composer embeds

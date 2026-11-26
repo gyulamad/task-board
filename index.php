@@ -2894,6 +2894,9 @@ if ($page==='document') {
 // a filter or saved search behaves the same no matter which view opened it.
 if ($page==='kanban') {
     $filters=tb_task_filters_where();
+    // Project in focus (#164): the same header badge the task list renders,
+    // fed by the same name resolver.
+    $projectFilterNames=tb_project_names_by_ids($pdo,$filters['projectIds']);
     $ksql='SELECT t.id,t.title,t.status_id,t.priority,t.parent_id,p.title parent_title,t.project_id,pr.name project_name,s.name status_name,s.color status_color FROM tasks t JOIN statuses s ON s.id=t.status_id LEFT JOIN tasks p ON p.id=t.parent_id LEFT JOIN projects pr ON pr.id=t.project_id WHERE '.implode(' AND ',$filters['where']).' ORDER BY s.sort_order, s.id, (t.kanban_rank = 0) ASC, t.kanban_rank ASC, t.updated_at DESC, t.id DESC';
     $ks=$pdo->prepare($ksql);$ks->execute($filters['params']);$kanbanTasks=$ks->fetchAll();
     $kanbanAssignees=task_assignees_by_task($pdo, array_column($kanbanTasks,'id'));
@@ -2933,7 +2936,7 @@ if ($page==='kanban') {
         return '?' . http_build_query(array_merge($qs,$override));
     };
     render_header('Kanban board',$config,$error); ?>
-    <div class="d-flex justify-content-between align-items-center mb-3"><div><h1 class="h3 mb-0">Kanban board</h1><div class="muted"><?=$kanbanTotal?> task<?=$kanbanTotal===1?'':'s'?> across <?=count($kanbanColumns)?> status column<?=count($kanbanColumns)===1?'':'s'?></div></div><div class="d-flex gap-2"><a class="btn btn-outline-secondary" href="?page=tasks">Task list</a><a class="btn btn-primary" href="?page=new">+ New task</a></div></div>
+    <div class="d-flex justify-content-between align-items-center mb-3"><div><h1 class="h3 mb-0">Kanban board</h1><div class="muted"><?=$kanbanTotal?> task<?=$kanbanTotal===1?'':'s'?> across <?=count($kanbanColumns)?> status column<?=count($kanbanColumns)===1?'':'s'?></div><?php if($projectFilterNames): ?><div class="mt-1"><span class="badge text-bg-info">Project<?=count($projectFilterNames)===1?'':'s'?>: <?=h(implode(', ',$projectFilterNames))?></span> <a class="small" href="<?=h($kanbanUrl(['project'=>null]))?>">Show all tasks</a></div><?php endif; ?></div><div class="d-flex gap-2"><a class="btn btn-outline-secondary" href="?page=tasks">Task list</a><a class="btn btn-primary" href="?page=new">+ New task</a></div></div>
     <?php tb_render_task_filter_card(['page'=>'kanban','users'=>$users,'statuses'=>$statuses,'parents'=>$parents,'projectOptions'=>$projectOptions,'savedSearches'=>$savedSearches,'fAssignees'=>$filters['fAssignees'],'fStatuses'=>$filters['fStatuses'],'fParents'=>$filters['fParents'],'fProjects'=>$filters['fProjects'],'returnUrl'=>$kanbanUrl()]); ?>
     <div id="tb-list-region" data-tb-refresh="10"><div class="row g-3 row-cols-1 row-cols-md-2 row-cols-xl-3"><?php foreach($kanbanColumns as $col): $st=$col['status']; ?><div class="col"><div class="card<?=$col['collapsed']??false?'':' h-100'?>"><div class="card-header bg-transparent d-flex justify-content-between align-items-center py-2"><div class="d-flex align-items-center gap-2"><?=tb_status_badge((string)$st['name'], $st['color'] ?? null)?><span class="badge text-bg-light border"><?=count($col['tasks'])?></span></div><form method="post" class="d-inline"><?=csrf_field()?><input type="hidden" name="action" value="toggle_kanban_column"><input type="hidden" name="status_id" value="<?=$st['id']?>"><button class="btn btn-sm btn-outline-secondary py-0 px-2" aria-label="<?=$col['collapsed']??false?'Expand column':'Collapse column'?>" title="<?=$col['collapsed']??false?'Expand column':'Collapse column'?>"><?=$col['collapsed']??false?'+':'&minus;'?></button></form></div><div class="card-body p-2<?=$col['collapsed']??false?' d-none':''?>" data-status-id="<?=$st['id']?>" data-tb-kanban-column><?php if(!($col['collapsed']??false)): ?><?php foreach($col['tasks'] as $kt): ?><div class="border rounded p-2 mb-2" draggable="true" data-task-id="<?=$kt['id']?>" data-tb-kanban-card><div class="d-flex justify-content-between align-items-start gap-2"><a class="fw-semibold text-decoration-none" href="?page=task&id=<?=$kt['id']?>">#<?=$kt['id']?> · <?=h($kt['title'])?></a><span class="badge text-bg-light border" title="Priority">&times;<?=h((string)max(1,min(1000,(int)($kt['priority'] ?? 1))))?></span></div><div class="small muted mt-1"><?php $ka=[];foreach($kanbanAssignees[(int)$kt['id']]??[] as $au){$ka[]=tb_user_with_activity($au);}echo $ka?implode(', ',$ka):'Unassigned'; if($kt['project_id']): ?> · <a href="?page=project&id=<?=$kt['project_id']?>">#<?=$kt['project_id']?> · <?=h($kt['project_name'])?></a><?php endif; if($kt['parent_id']): ?> · parent <a href="?page=task&id=<?=$kt['parent_id']?>">#<?=$kt['parent_id']?></a><?php endif; ?></div></div><?php endforeach; endif; if(!$col['tasks']): ?><div class="text-center muted small py-3">No tasks</div><?php endif; ?></div></div></div><?php endforeach; ?></div></div>
     <p class="small muted mt-3">Same filters and saved searches as the task list — the two views share one implementation. Archived tasks only show up in the archive. Drag a card onto another column to change its status, or up and down inside a column to reorder it (#154). On a phone or tablet press and hold a card until it lifts, then move it - a quick swipe still scrolls the board.</p>
@@ -3138,6 +3141,9 @@ document.addEventListener('click',function(e){
 // list's own shared component, like on the kanban board.
 if ($page==='waterflow') {
     $filters=tb_task_filters_where();
+    // Project in focus (#164): the same header badge the task list renders,
+    // fed by the same name resolver.
+    $projectFilterNames=tb_project_names_by_ids($pdo,$filters['projectIds']);
     $wsql='SELECT t.id,t.title,t.status_id,t.complexity,t.parent_id,p.title parent_title,t.project_id,pr.name project_name,s.name status_name,s.color status_color FROM tasks t JOIN statuses s ON s.id=t.status_id LEFT JOIN tasks p ON p.id=t.parent_id LEFT JOIN projects pr ON pr.id=t.project_id WHERE '.implode(' AND ',$filters['where']).' ORDER BY t.id DESC';
     $ws=$pdo->prepare($wsql);$ws->execute($filters['params']);$waterTasks=$ws->fetchAll();
     // Dependency edges between tasks that are both inside the chart: who
@@ -3171,7 +3177,7 @@ if ($page==='waterflow') {
         return '?' . http_build_query(array_merge($qs,$override));
     };
     render_header('Dependency waterflow',$config,$error); ?>
-    <div class="d-flex justify-content-between align-items-center mb-3"><div><h1 class="h3 mb-0">Dependency waterflow</h1><div class="muted"><?=$waterTotal?> task<?=$waterTotal===1?'':'s'?> flowing through <?=count($waterRows)?> level<?=count($waterRows)===1?'':'s'?> · widest block = the largest complexity in view (<?=$maxComplexity?>)</div></div><div class="d-flex gap-2"><a class="btn btn-outline-secondary" href="?page=tasks">Task list</a><a class="btn btn-primary" href="?page=new">+ New task</a></div></div>
+    <div class="d-flex justify-content-between align-items-center mb-3"><div><h1 class="h3 mb-0">Dependency waterflow</h1><div class="muted"><?=$waterTotal?> task<?=$waterTotal===1?'':'s'?> flowing through <?=count($waterRows)?> level<?=count($waterRows)===1?'':'s'?> · widest block = the largest complexity in view (<?=$maxComplexity?>)</div><?php if($projectFilterNames): ?><div class="mt-1"><span class="badge text-bg-info">Project<?=count($projectFilterNames)===1?'':'s'?>: <?=h(implode(', ',$projectFilterNames))?></span> <a class="small" href="<?=h($waterUrl(['project'=>null]))?>">Show all tasks</a></div><?php endif; ?></div><div class="d-flex gap-2"><a class="btn btn-outline-secondary" href="?page=tasks">Task list</a><a class="btn btn-primary" href="?page=new">+ New task</a></div></div>
     <?php tb_render_task_filter_card(['page'=>'waterflow','users'=>$users,'statuses'=>$statuses,'parents'=>$parents,'projectOptions'=>$projectOptions,'savedSearches'=>$savedSearches,'fAssignees'=>$filters['fAssignees'],'fStatuses'=>$filters['fStatuses'],'fParents'=>$filters['fParents'],'fProjects'=>$filters['fProjects'],'returnUrl'=>$waterUrl()]); ?>
 <div id="tb-list-region" data-tb-refresh="10"><?php if(!$waterRows): ?><div class="card p-4 text-center muted">No tasks match the current filters.</div><?php endif; ?>
     <div class="card p-3 mb-2"><?php foreach($waterRows as $level=>$rows): ?><div class="border-bottom py-2" data-level="<?=$level?>"><div class="d-flex align-items-center gap-2 mb-2"><span class="badge text-bg-secondary">Level <?=$level?></span><span class="small muted"><?=count($rows)?> task<?=count($rows)===1?'':'s'?></span></div><div class="d-flex flex-wrap gap-2"><?php foreach($rows as $wt): $w=max(10,(int)round(((int)($wt['complexity'] ?? 1))/$maxComplexity*100)); ?><div class="border rounded p-2 waterflow-task" style="width:<?=$w?>%;min-width:14rem"><div class="d-flex justify-content-between align-items-center gap-2"><a class="fw-semibold text-decoration-none" href="?page=task&id=<?=$wt['id']?>">#<?=$wt['id']?> · <?=h($wt['title'])?></a><span class="badge text-bg-light border" title="Complexity">&times;<?=h((string)max(1,min(1000,(int)($wt['complexity'] ?? 1))))?></span></div><div class="small muted mt-1"><?=tb_status_badge((string)$wt['status_name'], $wt['status_color'] ?? null)?><?php if($wt['project_id']): ?> · <a href="?page=project&id=<?=$wt['project_id']?>"><?=h($wt['project_name'])?></a><?php endif; if($wt['parent_id']): ?> · parent <a href="?page=task&id=<?=$wt['parent_id']?>">#<?=$wt['parent_id']?></a><?php endif; ?></div></div><?php endforeach; ?></div></div><?php endforeach; ?></div></div>
@@ -3221,15 +3227,9 @@ $filters=tb_task_filters_where();
     $tasks=$list['rows'];$sort=$list['sort'];$totalTasks=$list['total'];$totalPages=$list['pages'];$taskPage=$list['page'];
     $taskAssignees=task_assignees_by_task($pdo, array_column($tasks,'id'));
     $listUrl=tb_crud_url_builder($listPage,['q','assignee','status','parent','project','sort','dir']);
-    // Header badge for the project filter: resolve every selected project id to
-    // its name so the badge line can show more than one (#25).
-    $projectFilterNames=[];
-    if ($projectIds) {
-        $pfq=$pdo->prepare('SELECT id,name FROM projects WHERE id IN ('.tb_in_placeholders(count($projectIds)).')');
-        $pfq->execute($projectIds);
-        $projectNamesById=array_column($pfq->fetchAll(),'name','id');
-        foreach ($projectIds as $pid) {if (isset($projectNamesById[$pid])) $projectFilterNames[]=$projectNamesById[$pid];}
-    }
+    // Header badge for the project filter (#164): the shared name resolver
+    // feeds the same badge the kanban board and the waterflow chart render.
+    $projectFilterNames=tb_project_names_by_ids($pdo,$projectIds);
     // Saved searches (#29): the signed-in user's own stored list-view search
     // links, shown in the dropdown under the filter form.
     $ssq=$pdo->prepare('SELECT id,name,query FROM saved_searches WHERE user_id=? ORDER BY name,id');

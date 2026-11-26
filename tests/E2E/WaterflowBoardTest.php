@@ -192,4 +192,38 @@ final class WaterflowBoardTest extends E2eTestCase
         $this->assertSame(200, $page->status, 'The chart is a task view, not an admin page.');
         $this->assertStringContainsString('Worker item', $page->body);
     }
+
+    public function test_the_chart_shows_the_project_in_focus_when_the_project_filter_is_set(): void
+    {
+        // #164: the task list and the kanban board show the picked project(s)
+        // as a header badge with a one-click "Show all tasks" reset; the
+        // waterflow chart renders the same badge from the same resolver, so a
+        // filtered chart tells the visitor which project is in focus too.
+        $admin = $this->adminSession();
+        $admin->get('/?page=project_new');
+        $created = $admin->post('/?page=project_new', [
+            'action' => 'save_project', 'id' => '0', 'name' => 'Flow focus project',
+            'description' => 'Created by the test suite', 'status_id' => '1', 'assignees' => [],
+        ]);
+        if (!preg_match('/page=project&id=(\d+)/', (string)$created->header('location'), $m)) {
+            $this->fail('Project creation did not redirect to the project page.');
+        }
+        $projectId = (int)$m[1];
+        $admin->get('/?page=new');
+        $response = $admin->post('/?page=new', [
+            'action' => 'save_task', 'id' => '0', 'title' => 'Flow item',
+            'description' => 'Created by the test suite', 'status_id' => '1',
+            'parent_id' => '', 'project_id' => (string)$projectId, 'assignees' => [],
+        ]);
+        $this->assertSame(302, $response->status);
+
+        $unfiltered = $admin->get('/?page=waterflow')->body;
+        $this->assertStringNotContainsString('Project: ', $unfiltered, 'No badge renders without a project filter.');
+
+        $filtered = $admin->get('/?page=waterflow&project=' . $projectId)->body;
+        $this->assertStringContainsString('Project: Flow focus project', $filtered, 'The badge names the project in focus.');
+        $this->assertStringContainsString('Show all tasks', $filtered, 'The badge carries the one-click reset.');
+        $this->assertStringContainsString('href="?' . http_build_query(['page' => 'waterflow']) . '"', $filtered, 'The reset link points at the unfiltered chart.');
+        $this->assertStringContainsString('Flow item', $filtered, 'The filtered chart still renders its block.');
+    }
 }

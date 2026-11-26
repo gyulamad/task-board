@@ -279,4 +279,30 @@ final class KanbanBoardTest extends E2eTestCase
         $this->assertStringNotContainsString('Undefined variable', $body, 'The kanban variables must be defined before anything renders.');
         $this->assertStringNotContainsString('foreach() argument', $body, 'A foreach over an undefined variable must never reach the page.');
     }
+
+    public function test_the_board_shows_the_project_in_focus_when_the_project_filter_is_set(): void
+    {
+        // #164: the task list shows the picked project(s) as a header badge
+        // with a one-click "Show all tasks" reset; the kanban board renders
+        // the same badge from the same resolver, so the filtered board tells
+        // the visitor which project is in focus just like the list does.
+        $admin = $this->adminSession();
+        $projectId = $this->createProject($admin, 'Focus project');
+        $admin->get('/?page=new');
+        $response = $admin->post('/?page=new', [
+            'action' => 'save_task', 'id' => '0', 'title' => 'Focused item',
+            'description' => 'Created by the test suite', 'status_id' => '1',
+            'parent_id' => '', 'project_id' => (string)$projectId, 'assignees' => [],
+        ]);
+        $this->assertSame(302, $response->status);
+
+        $unfiltered = $this->board($admin);
+        $this->assertStringNotContainsString('Project: ', $unfiltered, 'No badge renders without a project filter.');
+
+        $filtered = $this->board($admin, '&project=' . $projectId);
+        $this->assertStringContainsString('Project: Focus project', $filtered, 'The badge names the project in focus.');
+        $this->assertStringContainsString('Show all tasks', $filtered, 'The badge carries the one-click reset.');
+        $this->assertStringContainsString('href="?' . http_build_query(['page' => 'kanban']) . '"', $filtered, 'The reset link points at the unfiltered board.');
+        $this->assertStringContainsString('Focused item', $filtered, 'The filtered board still renders its card.');
+    }
 }

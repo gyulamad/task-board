@@ -775,6 +775,24 @@ function tb_task_filters_where(): array {
 }
 
 /**
+ * The display names of the projects a list view is filtered on, in the order
+ * they were picked - the source of the shared "Project(s): ..." header badge
+ * the task list, the kanban board and the waterflow chart render (#164).
+ * Unknown ids resolve to nothing; a filter on them shows no badge, exactly
+ * like the pre-#164 task list badge behaved.
+ */
+function tb_project_names_by_ids(PDO $pdo, array $ids): array {
+    $ids = array_values(array_unique(array_filter(array_map('intval', $ids), fn($v) => $v > 0)));
+    if (!$ids) return [];
+    $q = $pdo->prepare('SELECT id,name FROM projects WHERE id IN (' . tb_in_placeholders(count($ids)) . ')');
+    $q->execute($ids);
+    $namesById = array_column($q->fetchAll(), 'name', 'id');
+    $names = [];
+    foreach ($ids as $id) { if (isset($namesById[$id])) $names[] = $namesById[$id]; }
+    return $names;
+}
+
+/**
  * Carries one filter parameter from a request into a query string builder:
  * scalars pass through as strings, arrays pass through as arrays so
  * http_build_query() re-emits them as filter[0]=...&filter[1]=... (which PHP

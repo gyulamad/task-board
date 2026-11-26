@@ -1005,6 +1005,37 @@ if (user()) {
                 $pdo->prepare('DELETE FROM statuses WHERE id=?')->execute([$id]);
                 flash('Status deleted.'); redirect('?page=statuses');
             }
+            if ($action === 'reorder_statuses' && is_admin()) {
+                // Drag & drop ordering on the statuses page (#156): the drop
+                // submits the rows' new order as the id list; the server
+                // renumbers sort_order 1..N in exactly that order, so the
+                // board columns, the dropdowns and the edit forms all follow
+                // the same display order they always read. Only known status
+                // ids take a position (a crafted list cannot invent rows),
+                // every stored status keeps one (a short list appends the
+                // missing ones in their previous order), and the renumber
+                // runs in one transaction.
+                $order = array_values(array_unique(array_filter(array_map('intval', (array)($_POST['order'] ?? [])), fn(int $v): bool => $v > 0)));
+                if (!$order) throw new RuntimeException('Nothing to order.');
+                $ph = implode(',', array_fill(0, count($order), '?'));
+                $vs = $pdo->prepare('SELECT id FROM statuses WHERE id IN (' . $ph . ')');
+                $vs->execute($order);
+                $final = array_values(array_intersect($order, array_map('intval', $vs->fetchAll(PDO::FETCH_COLUMN))));
+                foreach (array_map('intval', $pdo->query('SELECT id FROM statuses ORDER BY sort_order, id')->fetchAll(PDO::FETCH_COLUMN)) as $statusId) {
+                    if (!in_array($statusId, $final, true)) $final[] = $statusId;
+                }
+                $pdo->beginTransaction();
+                try {
+                    $renumber = $pdo->prepare('UPDATE statuses SET sort_order=? WHERE id=?');
+                    foreach ($final as $position => $statusId) $renumber->execute([$position + 1, $statusId]);
+                    $pdo->commit();
+                } catch (Throwable $e) {
+                    if ($pdo->inTransaction()) $pdo->rollBack();
+                    throw $e;
+                }
+                flash('Status order updated.');
+                redirect('?page=statuses');
+            }
             if ($action === 'save_activity_levels' && is_admin()) {
                 // Activity status periods (#34): the settings form's rows are
                 // parsed into the storage shape, validated, stored and made
@@ -1151,7 +1182,7 @@ function render_header(string $title, array $config, string $error = ''): void {
     ?><!doctype html><html lang="en" data-bs-theme="<?=h($theme)?>"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title><?=h($title)?> - <?=h($config['app_name'])?></title>
     <link rel="icon" type="image/svg+xml" href="?page=favicon&amp;type=svg"><link rel="icon" href="?page=favicon" sizes="48x48 32x32 16x16">
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
-    <style>body{background:#f5f6f8}.card{border:0;box-shadow:0 1px 5px #0000000d}.muted{color:#687386}.prewrap{white-space:pre-wrap}.navbar-brand{font-weight:700}.tb-activity-dot{display:inline-block;width:.55em;height:.55em;border-radius:50%;margin-right:.3em}.tb-activity-green{background:#198754}.tb-activity-yellow{background:#ffc107}.tb-activity-red{background:#dc3545}.tb-activity-grey{background:#6c757d}.tb-activity-char{font-weight:700;margin-right:.3em}.tb-kanban-dragging{opacity:.45}.tb-activity-empty{font-weight:400;margin-right:.3em;color:#6c757d}.tb-activity-empty.tb-activity-green{color:#198754;background:transparent}.tb-activity-empty.tb-activity-yellow{color:#ffc107;background:transparent}.tb-activity-empty.tb-activity-red{color:#dc3545;background:transparent}html[data-bs-theme="dark"] body{background:#14181f}html[data-bs-theme="dark"] .card{box-shadow:0 1px 6px #00000059}html[data-bs-theme="dark"] .muted{color:#8b96a5}</style></head><body>
+    <style>body{background:#f5f6f8}.card{border:0;box-shadow:0 1px 5px #0000000d}.muted{color:#687386}.prewrap{white-space:pre-wrap}.navbar-brand{font-weight:700}.tb-activity-dot{display:inline-block;width:.55em;height:.55em;border-radius:50%;margin-right:.3em}.tb-activity-green{background:#198754}.tb-activity-yellow{background:#ffc107}.tb-activity-red{background:#dc3545}.tb-activity-grey{background:#6c757d}.tb-activity-char{font-weight:700;margin-right:.3em}.tb-kanban-dragging{opacity:.45}.tb-status-dragging{opacity:.45}.tb-activity-empty{font-weight:400;margin-right:.3em;color:#6c757d}.tb-activity-empty.tb-activity-green{color:#198754;background:transparent}.tb-activity-empty.tb-activity-yellow{color:#ffc107;background:transparent}.tb-activity-empty.tb-activity-red{color:#dc3545;background:transparent}html[data-bs-theme="dark"] body{background:#14181f}html[data-bs-theme="dark"] .card{box-shadow:0 1px 6px #00000059}html[data-bs-theme="dark"] .muted{color:#8b96a5}</style></head><body>
     <nav class="navbar navbar-expand-lg navbar-dark bg-dark"><div class="container"><a class="navbar-brand" href="?"><?=h($config['app_name'])?></a><?php if(user()): ?><button class="navbar-toggler ms-auto" type="button" data-bs-toggle="collapse" data-bs-target="#tb-navbar" aria-controls="tb-navbar" aria-expanded="false" aria-label="Toggle navigation"><span class="navbar-toggler-icon"></span></button><div class="collapse navbar-collapse" id="tb-navbar"><div class="navbar-nav ms-auto align-items-center"><a class="nav-link" href="?page=tasks">Tasks</a><a class="nav-link" href="?page=kanban">Kanban</a><a class="nav-link" href="?page=waterflow">Waterflow</a><a class="nav-link" href="?page=projects">Projects</a><a class="nav-link" href="?page=templates">Templates</a><a class="nav-link" href="?page=documents">Know-hows</a><a class="nav-link" href="?page=messages">Messages<?php global $pdo; $tbUnread=array_key_exists('TB_UNREAD_BADGE',$GLOBALS)?(int)$GLOBALS['TB_UNREAD_BADGE']:tb_unread_message_count($pdo,(int)user()['id']); if($tbUnread): ?> <span class="badge text-bg-danger" title="New messages"><?=$tbUnread?></span><?php endif; unset($GLOBALS['TB_UNREAD_BADGE']); ?></a><a class="nav-link" href="?page=notifications">Notifications<?php global $pdo; $tbSeen=array_key_exists('TB_NOTIFICATION_BADGE',$GLOBALS)?(int)$GLOBALS['TB_NOTIFICATION_BADGE']:tb_unseen_notification_count($pdo,(int)user()['id']); if($tbSeen && tb_notification_flag_enabled($pdo,(int)user()['id'])): ?> <span class="badge text-bg-danger" title="New notifications"><?=$tbSeen?></span><?php endif; unset($GLOBALS['TB_NOTIFICATION_BADGE']); ?></a><a class="nav-link" href="?page=settings">Settings</a><?php if(is_admin()): ?><a class="nav-link" href="?page=admin">Administration</a><a class="nav-link" href="?page=activity_settings">Activity periods</a><a class="nav-link" href="?page=updates">Software updates</a><?php endif; ?><form method="post" class="d-flex align-items-center mx-2"><?=csrf_field()?><input type="hidden" name="action" value="save_theme"><select name="theme" class="form-select form-select-sm bg-dark text-light border-secondary" aria-label="Theme" title="Theme" onchange="this.form.submit()"><option value="light" <?=$theme==='light'?'selected':''?>>Light</option><option value="dark" <?=$theme==='dark'?'selected':''?>>Dark</option></select><noscript><button class="btn btn-sm btn-outline-light ms-1">Save</button></noscript></form><span class="navbar-text mx-2"><?=tb_user_with_activity($_SESSION['user'])?></span><form method="post" action="?page=logout" class="d-inline m-0"><?=csrf_field()?><button type="submit" class="btn btn-link nav-link p-0 text-white text-decoration-none">Sign out</button></form></div></div><?php endif; ?></div></nav><main class="container py-4">
     <?php /* (#129) The queued confirmation ribbon: flash() may carry an extra class that marks the div (tb-flash-message-sent on the send confirmation) so the messages page's mobile stylesheet can hide exactly that one below the lg breakpoint - the bubble itself carries the live Sent/Seen status (#118). Every other flash renders exactly as before, on every viewport. */ ?>
     <?php if (!empty($_SESSION['flash'])): ?><div class="alert alert-success<?=!empty($_SESSION['flash_class']) ? ' ' . h((string)$_SESSION['flash_class']) : ''?>"><?=h($_SESSION['flash'])?></div><?php unset($_SESSION['flash'], $_SESSION['flash_class']); endif; ?>
@@ -2246,7 +2277,59 @@ if ($page==='statuses' && is_admin()) {
     $statuses=all_statuses($pdo);
     render_header('Task statuses',$config,$error); ?>
     <div class="d-flex justify-content-between align-items-center mb-3"><div><h1 class="h3 mb-0">Task statuses</h1><div class="muted">Labels, display order, completion flag and colour</div></div><a class="btn btn-outline-secondary" href="?page=admin">Back to administration</a></div>
-    <div class="card p-4"><p class="small muted">Rename statuses, change their display order, mark them as completion statuses, pick their colour or delete the ones no task uses. The colour renders on every status badge of the board; tick &quot;Default colour&quot; to go back to the built-in look.</p><ul class="list-group mb-3"><?php foreach($statuses as $st): ?><li class="list-group-item"><form method="post" class="row g-2 align-items-center"><?=csrf_field()?><input type="hidden" name="action" value="edit_status"><input type="hidden" name="id" value="<?=$st['id']?>"><div class="col-12 col-md-2"><?=tb_status_badge((string)$st['name'], $st['color'] ?? null)?></div><div class="col-12 col-md-4"><label class="visually-hidden" for="status-name-<?=$st['id']?>">Status name</label><input class="form-control form-control-sm" name="name" id="status-name-<?=$st['id']?>" value="<?=h($st['name'])?>" maxlength="40" required></div><div class="col-4 col-md-1"><label class="visually-hidden" for="status-sort-<?=$st['id']?>">Sort order</label><input class="form-control form-control-sm" type="number" name="sort_order" id="status-sort-<?=$st['id']?>" value="<?=$st['sort_order']?>" title="Display order, lower numbers first"></div><div class="col-auto"><label class="visually-hidden" for="status-color-<?=$st['id']?>">Colour of status <?=h($st['name'])?></label><input type="color" class="form-control form-control-color form-control-sm" name="color" id="status-color-<?=$st['id']?>" value="<?=h(strtolower((string)($st['color'] ?? '#6c757d')))?>" title="Status colour (a colour picker; tick &quot;Default colour&quot; for the built-in look)"></div><div class="col-auto form-check mb-0 ms-1"><input class="form-check-input" type="checkbox" name="color_default" id="status-color-default-<?=$st['id']?>" <?=($st['color'] ?? null)===null?'checked':''?>><label class="form-check-label small" for="status-color-default-<?=$st['id']?>">Default colour</label></div><div class="col-8 col-md-2 form-check ms-md-1 mb-0"><input class="form-check-input" type="checkbox" name="is_done" id="status-done-<?=$st['id']?>" <?=$st['is_done']?'checked':''?>><label class="form-check-label small" for="status-done-<?=$st['id']?>">Completed</label><?php if($st['is_done']): ?><span class="badge text-bg-success ms-1">Completion status</span><?php endif; ?></div><div class="col-12 col-md-2 d-flex gap-1 justify-content-md-end"><button class="btn btn-sm btn-outline-primary">Save</button><button type="submit" class="btn btn-sm btn-outline-danger" form="delete-status-<?=$st['id']?>">Delete</button></div></form><form method="post" id="delete-status-<?=$st['id']?>" class="d-none" onsubmit="return confirm('Delete this status?');"><?=csrf_field()?><input type="hidden" name="action" value="delete_status"><input type="hidden" name="id" value="<?=$st['id']?>"></form></li><?php endforeach; ?></ul><form method="post"><?=csrf_field()?><input type="hidden" name="action" value="add_status"><div class="row g-2 align-items-center"><div class="col-12 col-md-5"><input class="form-control" name="name" placeholder="New status label" required></div><div class="col-auto"><label class="visually-hidden" for="new-status-color">Colour of the new status</label><input type="color" class="form-control form-control-color form-control-sm" name="color" id="new-status-color" value="#6c757d" title="Status colour"></div><div class="col-auto form-check mb-0 ms-1"><input class="form-check-input" type="checkbox" name="color_default" id="new-status-color-default"><label class="form-check-label small" for="new-status-color-default">Default colour</label></div><div class="col-12 col-md-3 form-check mb-0 ms-md-1"><input class="form-check-input" type="checkbox" name="is_done" id="done"><label class="form-check-label" for="done">Treat as completed</label></div><div class="col-12 col-md-auto"><button class="btn btn-primary">Add status</button></div></div></form><p class="small muted mt-3">Statuses are shown in display order. A status that tasks still use and the last remaining status cannot be deleted.</p></div>
+    <div class="card p-4"><p class="small muted">Rename statuses, change their display order, mark them as completion statuses, pick their colour or delete the ones no task uses. The colour renders on every status badge of the board; tick &quot;Default colour&quot; to go back to the built-in look. Drag a row by its grip to reorder the statuses (#156) - the numeric field shows the stored position and still accepts a manual number.</p><ul class="list-group mb-3" data-tb-status-list><?php foreach($statuses as $st): ?><li class="list-group-item d-flex align-items-center" data-tb-status-row data-status-id="<?=$st['id']?>"><div class="d-flex align-items-center px-2 text-secondary user-select-none" draggable="true" data-tb-status-handle title="Drag to reorder" aria-label="Drag to reorder status <?=h($st['name'])?>"><span aria-hidden="true">&#8942;&#8942;</span></div><form method="post" class="row g-2 align-items-center flex-grow-1"><?=csrf_field()?><input type="hidden" name="action" value="edit_status"><input type="hidden" name="id" value="<?=$st['id']?>"><div class="col-12 col-md-2"><?=tb_status_badge((string)$st['name'], $st['color'] ?? null)?></div><div class="col-12 col-md-4"><label class="visually-hidden" for="status-name-<?=$st['id']?>">Status name</label><input class="form-control form-control-sm" name="name" id="status-name-<?=$st['id']?>" value="<?=h($st['name'])?>" maxlength="40" required></div><div class="col-4 col-md-1"><label class="visually-hidden" for="status-sort-<?=$st['id']?>">Sort order</label><input class="form-control form-control-sm" type="number" name="sort_order" id="status-sort-<?=$st['id']?>" value="<?=$st['sort_order']?>" title="Display order, lower numbers first"></div><div class="col-auto"><label class="visually-hidden" for="status-color-<?=$st['id']?>">Colour of status <?=h($st['name'])?></label><input type="color" class="form-control form-control-color form-control-sm" name="color" id="status-color-<?=$st['id']?>" value="<?=h(strtolower((string)($st['color'] ?? '#6c757d')))?>" title="Status colour (a colour picker; tick &quot;Default colour&quot; for the built-in look)"></div><div class="col-auto form-check mb-0 ms-1"><input class="form-check-input" type="checkbox" name="color_default" id="status-color-default-<?=$st['id']?>" <?=($st['color'] ?? null)===null?'checked':''?>><label class="form-check-label small" for="status-color-default-<?=$st['id']?>">Default colour</label></div><div class="col-8 col-md-2 form-check ms-md-1 mb-0"><input class="form-check-input" type="checkbox" name="is_done" id="status-done-<?=$st['id']?>" <?=$st['is_done']?'checked':''?>><label class="form-check-label small" for="status-done-<?=$st['id']?>">Completed</label><?php if($st['is_done']): ?><span class="badge text-bg-success ms-1">Completion status</span><?php endif; ?></div><div class="col-12 col-md-2 d-flex gap-1 justify-content-md-end"><button class="btn btn-sm btn-outline-primary">Save</button><button type="submit" class="btn btn-sm btn-outline-danger" form="delete-status-<?=$st['id']?>">Delete</button></div></form><form method="post" id="delete-status-<?=$st['id']?>" class="d-none" onsubmit="return confirm('Delete this status?');"><?=csrf_field()?><input type="hidden" name="action" value="delete_status"><input type="hidden" name="id" value="<?=$st['id']?>"></form></li><?php endforeach; ?></ul><form method="post"><?=csrf_field()?><input type="hidden" name="action" value="add_status"><div class="row g-2 align-items-center"><div class="col-12 col-md-5"><input class="form-control" name="name" placeholder="New status label" required></div><div class="col-auto"><label class="visually-hidden" for="new-status-color">Colour of the new status</label><input type="color" class="form-control form-control-color form-control-sm" name="color" id="new-status-color" value="#6c757d" title="Status colour"></div><div class="col-auto form-check mb-0 ms-1"><input class="form-check-input" type="checkbox" name="color_default" id="new-status-color-default"><label class="form-check-label small" for="new-status-color-default">Default colour</label></div><div class="col-12 col-md-3 form-check mb-0 ms-md-1"><input class="form-check-input" type="checkbox" name="is_done" id="done"><label class="form-check-label" for="done">Treat as completed</label></div><div class="col-12 col-md-auto"><button class="btn btn-primary">Add status</button></div></div></form><p class="small muted mt-3">Statuses are shown in display order. A status that tasks still use and the last remaining status cannot be deleted.</p></div>
+    <script>
+// Drag & drop ordering of the status rows (#156): the grip handle is the
+// native HTML5 draggable, the list is the drop zone, and a drop reorders the
+// DOM rows and POSTs their new order through a plain form (the same
+// full-reload round-trip the #154 kanban drop uses - the form reuses the
+// page session csrf input). The server renumbers sort_order 1..N and the
+// reload shows the new order in every dropdown, column and numeric field.
+(function(){
+var list=document.querySelector('[data-tb-status-list]');
+if(!list)return;
+var dragged=null;
+list.addEventListener('dragstart',function(e){
+    var handle=e.target.closest&&e.target.closest('[data-tb-status-handle]');
+    if(!handle)return;
+    dragged=handle.closest('[data-tb-status-row]');
+    if(!dragged){e.preventDefault();return;}
+    dragged.classList.add('tb-status-dragging');
+    try{e.dataTransfer.setData('text/plain',dragged.getAttribute('data-status-id')||'');}catch(err){}
+    e.dataTransfer.effectAllowed='move';
+});
+list.addEventListener('dragend',function(){
+    if(dragged){dragged.classList.remove('tb-status-dragging');dragged=null;}
+});
+list.addEventListener('dragover',function(e){
+    if(!dragged)return;
+    e.preventDefault();
+    e.dataTransfer.dropEffect='move';
+});
+list.addEventListener('drop',function(e){
+    if(!dragged)return;
+    var row=e.target.closest&&e.target.closest('[data-tb-status-row]');
+    if(row&&row!==dragged&&row.parentElement===list){list.insertBefore(dragged,row);}
+    else if(!row){list.appendChild(dragged);}
+    dragged.classList.remove('tb-status-dragging');
+    var ids=[];
+    list.querySelectorAll('[data-tb-status-row]').forEach(function(r){ids.push(r.getAttribute('data-status-id'));});
+    var form=document.createElement('form');
+    form.method='post';
+    form.action=window.location.pathname+window.location.search;
+    var field=function(name,value){
+        var input=document.createElement('input');
+        input.type='hidden';input.name=name;input.value=value;
+        form.appendChild(input);
+    };
+    field('csrf',(document.querySelector('input[name="csrf"]')||{}).value||'');
+    field('action','reorder_statuses');
+    ids.forEach(function(id){field('order[]',id);});
+    document.body.appendChild(form);
+    form.submit();
+});
+})();
+</script>
     <?php render_footer(); exit;
 }
 

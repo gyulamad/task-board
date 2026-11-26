@@ -1182,7 +1182,7 @@ function render_header(string $title, array $config, string $error = ''): void {
     ?><!doctype html><html lang="en" data-bs-theme="<?=h($theme)?>"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title><?=h($title)?> - <?=h($config['app_name'])?></title>
     <link rel="icon" type="image/svg+xml" href="?page=favicon&amp;type=svg"><link rel="icon" href="?page=favicon" sizes="48x48 32x32 16x16">
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
-    <style>body{background:#f5f6f8}.card{border:0;box-shadow:0 1px 5px #0000000d}.muted{color:#687386}.prewrap{white-space:pre-wrap}.navbar-brand{font-weight:700}.tb-activity-dot{display:inline-block;width:.55em;height:.55em;border-radius:50%;margin-right:.3em}.tb-activity-green{background:#198754}.tb-activity-yellow{background:#ffc107}.tb-activity-red{background:#dc3545}.tb-activity-grey{background:#6c757d}.tb-activity-char{font-weight:700;margin-right:.3em}.tb-kanban-dragging{opacity:.45}.tb-status-dragging{opacity:.45}.tb-activity-empty{font-weight:400;margin-right:.3em;color:#6c757d}.tb-activity-empty.tb-activity-green{color:#198754;background:transparent}.tb-activity-empty.tb-activity-yellow{color:#ffc107;background:transparent}.tb-activity-empty.tb-activity-red{color:#dc3545;background:transparent}html[data-bs-theme="dark"] body{background:#14181f}html[data-bs-theme="dark"] .card{box-shadow:0 1px 6px #00000059}html[data-bs-theme="dark"] .muted{color:#8b96a5}</style></head><body>
+    <style>body{background:#f5f6f8}.card{border:0;box-shadow:0 1px 5px #0000000d}.muted{color:#687386}.prewrap{white-space:pre-wrap}.navbar-brand{font-weight:700}.tb-activity-dot{display:inline-block;width:.55em;height:.55em;border-radius:50%;margin-right:.3em}.tb-activity-green{background:#198754}.tb-activity-yellow{background:#ffc107}.tb-activity-red{background:#dc3545}.tb-activity-grey{background:#6c757d}.tb-activity-char{font-weight:700;margin-right:.3em}.tb-kanban-dragging{opacity:.45}.tb-kanban-over{outline:2px dashed var(--bs-primary,#0d6efd);outline-offset:-2px}.tb-kanban-noselect{-webkit-touch-callout:none;-webkit-user-select:none;user-select:none}.tb-status-dragging{opacity:.45}.tb-activity-empty{font-weight:400;margin-right:.3em;color:#6c757d}.tb-activity-empty.tb-activity-green{color:#198754;background:transparent}.tb-activity-empty.tb-activity-yellow{color:#ffc107;background:transparent}.tb-activity-empty.tb-activity-red{color:#dc3545;background:transparent}html[data-bs-theme="dark"] body{background:#14181f}html[data-bs-theme="dark"] .card{box-shadow:0 1px 6px #00000059}html[data-bs-theme="dark"] .muted{color:#8b96a5}</style></head><body>
     <nav class="navbar navbar-expand-lg navbar-dark bg-dark"><div class="container"><a class="navbar-brand" href="?"><?=h($config['app_name'])?></a><?php if(user()): ?><button class="navbar-toggler ms-auto" type="button" data-bs-toggle="collapse" data-bs-target="#tb-navbar" aria-controls="tb-navbar" aria-expanded="false" aria-label="Toggle navigation"><span class="navbar-toggler-icon"></span></button><div class="collapse navbar-collapse" id="tb-navbar"><div class="navbar-nav ms-auto align-items-center"><a class="nav-link" href="?page=tasks">Tasks</a><a class="nav-link" href="?page=kanban">Kanban</a><a class="nav-link" href="?page=waterflow">Waterflow</a><a class="nav-link" href="?page=projects">Projects</a><a class="nav-link" href="?page=templates">Templates</a><a class="nav-link" href="?page=documents">Know-hows</a><a class="nav-link" href="?page=messages">Messages<?php global $pdo; $tbUnread=array_key_exists('TB_UNREAD_BADGE',$GLOBALS)?(int)$GLOBALS['TB_UNREAD_BADGE']:tb_unread_message_count($pdo,(int)user()['id']); if($tbUnread): ?> <span class="badge text-bg-danger" title="New messages"><?=$tbUnread?></span><?php endif; unset($GLOBALS['TB_UNREAD_BADGE']); ?></a><a class="nav-link" href="?page=notifications">Notifications<?php global $pdo; $tbSeen=array_key_exists('TB_NOTIFICATION_BADGE',$GLOBALS)?(int)$GLOBALS['TB_NOTIFICATION_BADGE']:tb_unseen_notification_count($pdo,(int)user()['id']); if($tbSeen && tb_notification_flag_enabled($pdo,(int)user()['id'])): ?> <span class="badge text-bg-danger" title="New notifications"><?=$tbSeen?></span><?php endif; unset($GLOBALS['TB_NOTIFICATION_BADGE']); ?></a><a class="nav-link" href="?page=settings">Settings</a><?php if(is_admin()): ?><a class="nav-link" href="?page=admin">Administration</a><a class="nav-link" href="?page=activity_settings">Activity periods</a><a class="nav-link" href="?page=updates">Software updates</a><?php endif; ?><form method="post" class="d-flex align-items-center mx-2"><?=csrf_field()?><input type="hidden" name="action" value="save_theme"><select name="theme" class="form-select form-select-sm bg-dark text-light border-secondary" aria-label="Theme" title="Theme" onchange="this.form.submit()"><option value="light" <?=$theme==='light'?'selected':''?>>Light</option><option value="dark" <?=$theme==='dark'?'selected':''?>>Dark</option></select><noscript><button class="btn btn-sm btn-outline-light ms-1">Save</button></noscript></form><span class="navbar-text mx-2"><?=tb_user_with_activity($_SESSION['user'])?></span><form method="post" action="?page=logout" class="d-inline m-0"><?=csrf_field()?><button type="submit" class="btn btn-link nav-link p-0 text-white text-decoration-none">Sign out</button></form></div></div><?php endif; ?></div></nav><main class="container py-4">
     <?php /* (#129) The queued confirmation ribbon: flash() may carry an extra class that marks the div (tb-flash-message-sent on the send confirmation) so the messages page's mobile stylesheet can hide exactly that one below the lg breakpoint - the bubble itself carries the live Sent/Seen status (#118). Every other flash renders exactly as before, on every viewport. */ ?>
     <?php if (!empty($_SESSION['flash'])): ?><div class="alert alert-success<?=!empty($_SESSION['flash_class']) ? ' ' . h((string)$_SESSION['flash_class']) : ''?>"><?=h($_SESSION['flash'])?></div><?php unset($_SESSION['flash'], $_SESSION['flash_class']); endif; ?>
@@ -2817,7 +2817,7 @@ if ($page==='kanban') {
     <div class="d-flex justify-content-between align-items-center mb-3"><div><h1 class="h3 mb-0">Kanban board</h1><div class="muted"><?=$kanbanTotal?> task<?=$kanbanTotal===1?'':'s'?> across <?=count($kanbanColumns)?> status column<?=count($kanbanColumns)===1?'':'s'?></div></div><div class="d-flex gap-2"><a class="btn btn-outline-secondary" href="?page=tasks">Task list</a><a class="btn btn-primary" href="?page=new">+ New task</a></div></div>
     <?php tb_render_task_filter_card(['page'=>'kanban','users'=>$users,'statuses'=>$statuses,'parents'=>$parents,'projectOptions'=>$projectOptions,'savedSearches'=>$savedSearches,'fAssignees'=>$filters['fAssignees'],'fStatuses'=>$filters['fStatuses'],'fParents'=>$filters['fParents'],'fProjects'=>$filters['fProjects'],'returnUrl'=>$kanbanUrl()]); ?>
     <div id="tb-list-region" data-tb-refresh="10"><div class="row g-3 row-cols-1 row-cols-md-2 row-cols-xl-3"><?php foreach($kanbanColumns as $col): $st=$col['status']; ?><div class="col"><div class="card<?=$col['collapsed']??false?'':' h-100'?>"><div class="card-header bg-transparent d-flex justify-content-between align-items-center py-2"><div class="d-flex align-items-center gap-2"><?=tb_status_badge((string)$st['name'], $st['color'] ?? null)?><span class="badge text-bg-light border"><?=count($col['tasks'])?></span></div><form method="post" class="d-inline"><?=csrf_field()?><input type="hidden" name="action" value="toggle_kanban_column"><input type="hidden" name="status_id" value="<?=$st['id']?>"><button class="btn btn-sm btn-outline-secondary py-0 px-2" aria-label="<?=$col['collapsed']??false?'Expand column':'Collapse column'?>" title="<?=$col['collapsed']??false?'Expand column':'Collapse column'?>"><?=$col['collapsed']??false?'+':'&minus;'?></button></form></div><div class="card-body p-2<?=$col['collapsed']??false?' d-none':''?>" data-status-id="<?=$st['id']?>" data-tb-kanban-column><?php if(!($col['collapsed']??false)): ?><?php foreach($col['tasks'] as $kt): ?><div class="border rounded p-2 mb-2" draggable="true" data-task-id="<?=$kt['id']?>" data-tb-kanban-card><div class="d-flex justify-content-between align-items-start gap-2"><a class="fw-semibold text-decoration-none" href="?page=task&id=<?=$kt['id']?>">#<?=$kt['id']?> · <?=h($kt['title'])?></a><span class="badge text-bg-light border" title="Priority">&times;<?=h((string)max(1,min(1000,(int)($kt['priority'] ?? 1))))?></span></div><div class="small muted mt-1"><?php $ka=[];foreach($kanbanAssignees[(int)$kt['id']]??[] as $au){$ka[]=tb_user_with_activity($au);}echo $ka?implode(', ',$ka):'Unassigned'; if($kt['project_id']): ?> · <a href="?page=project&id=<?=$kt['project_id']?>">#<?=$kt['project_id']?> · <?=h($kt['project_name'])?></a><?php endif; if($kt['parent_id']): ?> · parent <a href="?page=task&id=<?=$kt['parent_id']?>">#<?=$kt['parent_id']?></a><?php endif; ?></div></div><?php endforeach; endif; if(!$col['tasks']): ?><div class="text-center muted small py-3">No tasks</div><?php endif; ?></div></div></div><?php endforeach; ?></div></div>
-    <p class="small muted mt-3">Same filters and saved searches as the task list — the two views share one implementation. Archived tasks only show up in the archive. Drag a card onto another column to change its status, or up and down inside a column to reorder it (#154).</p>
+    <p class="small muted mt-3">Same filters and saved searches as the task list — the two views share one implementation. Archived tasks only show up in the archive. Drag a card onto another column to change its status, or up and down inside a column to reorder it (#154). On a phone or tablet press and hold a card until it lifts, then move it - a quick swipe still scrolls the board.</p>
     <?php tb_render_list_refresh_script(); ?>
     <?php if (user()): ?>
     <script>
@@ -2884,6 +2884,127 @@ region.addEventListener('drop',function(e){
     document.body.appendChild(form);
     form.submit();
 });
+})();
+// Touch support (#154 v2): the native HTML5 drag above never fires on phones
+// and tablets - a finger produces pointer/touch events, not dragstart/drop -
+// so dragging on the board did nothing at all on mobile. The touch path
+// mirrors the mouse path gesture for gesture: press and HOLD a card (~260 ms)
+// to pick it up (a quick swipe still scrolls the board like before), the card
+// follows the finger, the column under it lights up (tb-kanban-over) and
+// lifting the finger posts the same move_kanban_task form the desktop drop
+// submits. Mouse dragging stays on the HTML5 path above - nothing changes
+// there.
+(function(){
+var region=document.getElementById('tb-list-region');
+if(!region||!window.PointerEvent)return;
+var dragged=null,pressTimer=null,activePointer=null,startX=0,startY=0,startColumn=null,startNext=null,swallowClick=0;
+var PICK_DELAY=260,MOVE_SLOP=10,FINGER_LIFT=14;
+var columnUnder=function(x,y){
+    // elementFromPoint above the fingertip - a straight look at (x, y) finds
+    // the dragged card itself, so the aim point rides over the finger
+    var el=document.elementFromPoint(x,y-FINGER_LIFT);
+    return el&&el.closest?el.closest('[data-tb-kanban-column]'):null;
+};
+var place=function(column,x,y){
+    // the #51 realtime refresh can replace the region mid-drag: a detached
+    // card ends the gesture instead of being pushed back into the new DOM
+    if(!dragged.isConnected){stop(false);return;}
+    if(dragged.parentElement!==column){column.appendChild(dragged);}
+    var el=document.elementFromPoint(x,y-FINGER_LIFT);
+    var card=el&&el.closest?el.closest('[data-tb-kanban-card]'):null;
+    if(card&&card!==dragged&&card.parentElement===column){
+        // above or below the card's midpoint decides before/after - so the
+        // bottom of a column is reachable by aiming under the last card
+        var box=card.getBoundingClientRect();
+        column.insertBefore(dragged,y-FINGER_LIFT>box.top+box.height/2?card.nextElementSibling:card);
+    }
+};
+var submit=function(column){
+    var ids=[];
+    column.querySelectorAll('[data-tb-kanban-card]').forEach(function(c){ids.push(c.getAttribute('data-task-id'));});
+    var form=document.createElement('form');
+    form.method='post';
+    // the current URL, exactly like the mouse drop above - a failed move
+    // re-renders the filtered board the visitor is looking at
+    form.action=window.location.pathname+window.location.search;
+    var field=function(name,value){
+        var input=document.createElement('input');
+        input.type='hidden';input.name=name;input.value=value;
+        form.appendChild(input);
+    };
+    field('csrf',(document.querySelector('input[name="csrf"]')||{}).value||'');
+    field('action','move_kanban_task');
+    field('id',dragged.getAttribute('data-task-id')||'');
+    field('status_id',column.getAttribute('data-status-id')||'');
+    ids.forEach(function(taskId){field('order[]',taskId);});
+    document.body.appendChild(form);
+    form.submit();
+};
+var stop=function(submitChange){
+    if(pressTimer){clearTimeout(pressTimer);pressTimer=null;}
+    if(dragged){
+        var column=dragged.parentElement;
+        dragged.classList.remove('tb-kanban-dragging');
+        // a card put back exactly where it was picked up changes nothing -
+        // no form, no reload for a no-op pick
+        if(submitChange&&(column!==startColumn||dragged.nextElementSibling!==startNext)&&dragged.isConnected){submit(column);}
+        dragged=null;
+        swallowClick=Date.now()+400;
+    }
+    document.querySelectorAll('.tb-kanban-over').forEach(function(c){c.classList.remove('tb-kanban-over');});
+    document.documentElement.classList.remove('tb-kanban-noselect');
+    activePointer=null;
+};
+region.addEventListener('pointerdown',function(e){
+    // the mouse keeps the native HTML5 drag above; touch and pen get this path
+    if(activePointer!==null||e.pointerType==='mouse')return;
+    var card=e.target.closest&&e.target.closest('[data-tb-kanban-card]');
+    if(!card)return;
+    activePointer=e.pointerId;
+    startX=e.clientX;startY=e.clientY;
+    pressTimer=setTimeout(function(){
+        pressTimer=null;
+        if(activePointer===null)return;
+        dragged=card;
+        startColumn=card.parentElement;
+        startNext=card.nextElementSibling;
+        card.classList.add('tb-kanban-dragging');
+        document.documentElement.classList.add('tb-kanban-noselect');
+    },PICK_DELAY);
+});
+region.addEventListener('pointermove',function(e){
+    if(e.pointerId!==activePointer)return;
+    if(!dragged){
+        // the finger is travelling before the pick-up: that is a scroll -
+        // give the gesture back to the browser and forget the press
+        if(pressTimer&&(Math.abs(e.clientX-startX)>MOVE_SLOP||Math.abs(e.clientY-startY)>MOVE_SLOP)){
+            clearTimeout(pressTimer);pressTimer=null;activePointer=null;
+        }
+        return;
+    }
+    var column=columnUnder(e.clientX,e.clientY);
+    if(column){place(column,e.clientX,e.clientY);}
+    document.querySelectorAll('.tb-kanban-over').forEach(function(c){c.classList.remove('tb-kanban-over');});
+    if(column){column.classList.add('tb-kanban-over');}
+});
+region.addEventListener('pointerup',function(e){
+    if(e.pointerId!==activePointer)return;
+    stop(!!dragged);
+});
+region.addEventListener('pointercancel',function(e){
+    if(e.pointerId!==activePointer)return;
+    stop(false);
+});
+// the browser only honours preventDefault on a non-passive touchmove that was
+// registered before the gesture started: while a card is picked up this keeps
+// the page from scrolling under the finger, a plain swipe (no pick-up yet)
+// passes through untouched
+region.addEventListener('touchmove',function(e){if(dragged)e.preventDefault();},{passive:false});
+// the finger that just dropped a card sits on a link - swallow the click the
+// lift would produce so a move never opens the task page by accident
+document.addEventListener('click',function(e){
+    if(Date.now()<swallowClick){e.preventDefault();e.stopPropagation();}
+},true);
 })();
 </script><?php endif; ?>
     <?php render_footer(); exit;

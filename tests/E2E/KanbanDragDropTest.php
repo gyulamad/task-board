@@ -58,6 +58,25 @@ final class KanbanDragDropTest extends E2eTestCase
         $this->assertStringContainsString('name="action" value="toggle_kanban_column"', $body);
     }
 
+    public function test_the_board_ships_the_touch_drag_path_for_phones_and_tablets(): void
+    {
+        // #154 v2: the native HTML5 drag never fires on touch devices, so the
+        // board ships a pointer/touch path beside it - press and hold picks the
+        // card up, the card follows the finger, the column under it lights up
+        // and the same move_kanban_task form is submitted on lift. The mouse
+        // keeps the HTML5 path, so desktop behaviour is unchanged.
+        $this->adminSession();
+        $body = $this->board();
+        $this->assertStringContainsString("e.pointerType==='mouse')return", $body, 'The mouse keeps the native HTML5 drag path.');
+        $this->assertStringContainsString('PICK_DELAY', $body, 'The press-and-hold pick-up delay is defined.');
+        $this->assertStringContainsString("field('action','move_kanban_task')", $body, 'The touch drop submits the same move_kanban_task action.');
+        $this->assertStringContainsString("field('status_id',column.getAttribute('data-status-id')||'')", $body, 'The touch drop carries the target column status id.');
+        $this->assertStringContainsString('.tb-kanban-over{outline:2px dashed', $body, 'The column highlight visual is defined.');
+        $this->assertStringContainsString(".tb-kanban-noselect{-webkit-touch-callout:none", $body, 'The pick-up suppresses the long-press callout.');
+        $this->assertStringContainsString('{passive:false}', $body, 'The touchmove scroll blocker is registered non-passive.');
+        $this->assertStringContainsString('press and hold a card', $body, 'The footer hint explains the touch gesture.');
+    }
+
     public function test_a_drop_into_another_column_moves_the_task_with_the_full_audit_trail(): void
     {
         $this->adminSession();

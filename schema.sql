@@ -58,6 +58,11 @@ CREATE TABLE tasks (
     complexity INT UNSIGNED NOT NULL DEFAULT 1,
     -- Priority (#45): ordering weight of a task, default 1, whole numbers.
     priority INT UNSIGNED NOT NULL DEFAULT 1,
+    -- Kanban manual order (#154): an explicit per-column position the drag &
+    -- drop board writes on every drop (1..N inside the column). 0 means "no
+    -- explicit position yet" - those cards keep the pre-#154 board order
+    -- (updated_at DESC, id DESC) and sort after the manually placed ones.
+    kanban_rank INT UNSIGNED NOT NULL DEFAULT 0,
     parent_id INT UNSIGNED NULL,
     schedule_period VARCHAR(20) NULL DEFAULT NULL,
     -- Scheduler targets (#31): the status and assignee list the cron job sets

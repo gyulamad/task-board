@@ -407,6 +407,83 @@ if (user()) {
                 flash('Assignees updated.');
                 redirect('?page=task&id=' . $id);
             }
+            if ($action === 'move_kanban_task') {
+                // Drag & drop on the kanban board (#154): a drop sends the moved
+                // task, the target column's status and the column's card order
+                // exactly as the visitor arranged it. The audit mirrors the full
+                // save's discipline: a status move writes the same field-level
+                // row and event sentence the #153 quick change writes, the
+                // reorder writes a kanban_order row with human-readable
+                // positions, and one event row lands per drop - after the state
+                // is final, so the notified assignees see the finished move.
+                // updated_at stays as the full save leaves it. The action is
+                // stacked on the #153 quick changes and shares their guards.
+                $id = (int)$_POST['id'];
+                $t = find_task($pdo, $id);
+                if (!$t) throw new RuntimeException('Task not found.');
+                if (task_is_archived($t)) throw new RuntimeException('This task is archived and read-only. Restore it from the archive first.');
+                $statusId = (int)($_POST['status_id'] ?? 0);
+                if (!status_exists($pdo, $statusId)) throw new RuntimeException('Choose a valid status.');
+                $order = array_values(array_unique(array_filter(array_map('intval', (array)($_POST['order'] ?? [])), fn(int $v): bool => $v > 0)));
+                // Only live tasks can take a board position: the column's DOM
+                // can never contain archived cards, so a crafted list drops
+                // them instead of ranking them.
+                if ($order) {
+                    $ph = implode(',', array_fill(0, count($order), '?'));
+                    $vs = $pdo->prepare('SELECT id FROM tasks WHERE id IN (' . $ph . ') AND archived_at IS NULL');
+                    $vs->execute($order);
+                    $order = array_values(array_intersect($order, array_map('intval', $vs->fetchAll(PDO::FETCH_COLUMN))));
+                }
+                if (!in_array($id, $order, true)) $order[] = $id;
+                $oldStatusId = (int)$t['status_id'];
+                $statusNames=[];
+                foreach (all_statuses($pdo) as $st) $statusNames[(int)$st['id']]=(string)$st['name'];
+                // The board order inside one status column: explicitly placed
+                // cards lead in their manual order, cards without an explicit
+                // position keep the pre-#154 order behind them (the very order
+                // this clause rendered before the first drop, so an untouched
+                // column behaves byte-identically to the pre-#154 board).
+                $columnOrderSql = 'SELECT id FROM tasks WHERE status_id=? AND archived_at IS NULL ORDER BY (kanban_rank = 0) ASC, kanban_rank ASC, updated_at DESC, id DESC';
+                $ocs = $pdo->prepare($columnOrderSql);
+                $ocs->execute([$oldStatusId]);
+                $oldColumn = array_map('intval', $ocs->fetchAll(PDO::FETCH_COLUMN));
+                $oldIndex = array_search($id, $oldColumn, true);
+                $oldPos = $oldIndex === false ? 0 : $oldIndex + 1;
+                $pdo->beginTransaction();
+                try {
+                    // The target column: the submitted visible order ranks
+                    // 1..N, the hidden (filtered-out) tasks of the same status
+                    // follow appended in their previous board order - a drop
+                    // under filters can never interleave hidden cards into
+                    // the row the visitor just arranged.
+                    $final = $order;
+                    $ocs2 = $pdo->prepare($columnOrderSql);
+                    $ocs2->execute([$statusId]);
+                    foreach (array_map('intval', $ocs2->fetchAll(PDO::FETCH_COLUMN)) as $hiddenId) {
+                        if (!in_array($hiddenId, $final, true)) $final[] = $hiddenId;
+                    }
+                    $newIndex = array_search($id, $final, true);
+                    $newPos = $newIndex === false ? 0 : $newIndex + 1;
+                    $move = $pdo->prepare('UPDATE tasks SET status_id=?, kanban_rank=? WHERE id=?');
+                    foreach ($final as $position => $taskId) $move->execute([$statusId, $position + 1, $taskId]);
+                    $pdo->commit();
+                } catch (Throwable $e) {
+                    if ($pdo->inTransaction()) $pdo->rollBack();
+                    throw $e;
+                }
+                $audit=[];
+                if ($oldStatusId !== $statusId) $audit[]=['status','Status',$statusNames[$oldStatusId] ?? null,$statusNames[$statusId] ?? null];
+                if ($oldPos !== $newPos) $audit[]=['kanban_order','Kanban order','position '.$oldPos.' in '.$statusNames[$oldStatusId],'position '.$newPos.' in '.$statusNames[$statusId]];
+                if (!$audit) {
+                    flash('The kanban board did not change.');
+                    redirect('?page=kanban');
+                }
+                history($pdo,$id,'Task updated','The followings are changed: '.implode(', ',array_column($audit,1)).'. '
+                    .implode('; ',array_map(fn(array $a): string => $a[1].' changed from "'.$a[2].'" to "'.$a[3].'"',$audit)).'.');
+                foreach ($audit as [$hField,$hLabel,$hOld,$hNew]) history_change($pdo,$id,$hField,$hLabel,$hOld,$hNew);
+                flash('Kanban board updated.');
+                redirect('?page=kanban');
+            }
             if ($action === 'archive_task') {
                 // Soft delete (#12): the task leaves the lists but stays restorable.
                 $id = (int)$_POST['id'];
@@ -1074,7 +1151,7 @@ function render_header(string $title, array $config, string $error = ''): void {
     ?><!doctype html><html lang="en" data-bs-theme="<?=h($theme)?>"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title><?=h($title)?> - <?=h($config['app_name'])?></title>
     <link rel="icon" type="image/svg+xml" href="?page=favicon&amp;type=svg"><link rel="icon" href="?page=favicon" sizes="48x48 32x32 16x16">
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
-    <style>body{background:#f5f6f8}.card{border:0;box-shadow:0 1px 5px #0000000d}.muted{color:#687386}.prewrap{white-space:pre-wrap}.navbar-brand{font-weight:700}.tb-activity-dot{display:inline-block;width:.55em;height:.55em;border-radius:50%;margin-right:.3em}.tb-activity-green{background:#198754}.tb-activity-yellow{background:#ffc107}.tb-activity-red{background:#dc3545}.tb-activity-grey{background:#6c757d}.tb-activity-char{font-weight:700;margin-right:.3em}.tb-activity-empty{font-weight:400;margin-right:.3em;color:#6c757d}.tb-activity-empty.tb-activity-green{color:#198754;background:transparent}.tb-activity-empty.tb-activity-yellow{color:#ffc107;background:transparent}.tb-activity-empty.tb-activity-red{color:#dc3545;background:transparent}html[data-bs-theme="dark"] body{background:#14181f}html[data-bs-theme="dark"] .card{box-shadow:0 1px 6px #00000059}html[data-bs-theme="dark"] .muted{color:#8b96a5}</style></head><body>
+    <style>body{background:#f5f6f8}.card{border:0;box-shadow:0 1px 5px #0000000d}.muted{color:#687386}.prewrap{white-space:pre-wrap}.navbar-brand{font-weight:700}.tb-activity-dot{display:inline-block;width:.55em;height:.55em;border-radius:50%;margin-right:.3em}.tb-activity-green{background:#198754}.tb-activity-yellow{background:#ffc107}.tb-activity-red{background:#dc3545}.tb-activity-grey{background:#6c757d}.tb-activity-char{font-weight:700;margin-right:.3em}.tb-kanban-dragging{opacity:.45}.tb-activity-empty{font-weight:400;margin-right:.3em;color:#6c757d}.tb-activity-empty.tb-activity-green{color:#198754;background:transparent}.tb-activity-empty.tb-activity-yellow{color:#ffc107;background:transparent}.tb-activity-empty.tb-activity-red{color:#dc3545;background:transparent}html[data-bs-theme="dark"] body{background:#14181f}html[data-bs-theme="dark"] .card{box-shadow:0 1px 6px #00000059}html[data-bs-theme="dark"] .muted{color:#8b96a5}</style></head><body>
     <nav class="navbar navbar-expand-lg navbar-dark bg-dark"><div class="container"><a class="navbar-brand" href="?"><?=h($config['app_name'])?></a><?php if(user()): ?><button class="navbar-toggler ms-auto" type="button" data-bs-toggle="collapse" data-bs-target="#tb-navbar" aria-controls="tb-navbar" aria-expanded="false" aria-label="Toggle navigation"><span class="navbar-toggler-icon"></span></button><div class="collapse navbar-collapse" id="tb-navbar"><div class="navbar-nav ms-auto align-items-center"><a class="nav-link" href="?page=tasks">Tasks</a><a class="nav-link" href="?page=kanban">Kanban</a><a class="nav-link" href="?page=waterflow">Waterflow</a><a class="nav-link" href="?page=projects">Projects</a><a class="nav-link" href="?page=templates">Templates</a><a class="nav-link" href="?page=documents">Know-hows</a><a class="nav-link" href="?page=messages">Messages<?php global $pdo; $tbUnread=array_key_exists('TB_UNREAD_BADGE',$GLOBALS)?(int)$GLOBALS['TB_UNREAD_BADGE']:tb_unread_message_count($pdo,(int)user()['id']); if($tbUnread): ?> <span class="badge text-bg-danger" title="New messages"><?=$tbUnread?></span><?php endif; unset($GLOBALS['TB_UNREAD_BADGE']); ?></a><a class="nav-link" href="?page=notifications">Notifications<?php global $pdo; $tbSeen=array_key_exists('TB_NOTIFICATION_BADGE',$GLOBALS)?(int)$GLOBALS['TB_NOTIFICATION_BADGE']:tb_unseen_notification_count($pdo,(int)user()['id']); if($tbSeen && tb_notification_flag_enabled($pdo,(int)user()['id'])): ?> <span class="badge text-bg-danger" title="New notifications"><?=$tbSeen?></span><?php endif; unset($GLOBALS['TB_NOTIFICATION_BADGE']); ?></a><a class="nav-link" href="?page=settings">Settings</a><?php if(is_admin()): ?><a class="nav-link" href="?page=admin">Administration</a><a class="nav-link" href="?page=activity_settings">Activity periods</a><a class="nav-link" href="?page=updates">Software updates</a><?php endif; ?><form method="post" class="d-flex align-items-center mx-2"><?=csrf_field()?><input type="hidden" name="action" value="save_theme"><select name="theme" class="form-select form-select-sm bg-dark text-light border-secondary" aria-label="Theme" title="Theme" onchange="this.form.submit()"><option value="light" <?=$theme==='light'?'selected':''?>>Light</option><option value="dark" <?=$theme==='dark'?'selected':''?>>Dark</option></select><noscript><button class="btn btn-sm btn-outline-light ms-1">Save</button></noscript></form><span class="navbar-text mx-2"><?=tb_user_with_activity($_SESSION['user'])?></span><form method="post" action="?page=logout" class="d-inline m-0"><?=csrf_field()?><button type="submit" class="btn btn-link nav-link p-0 text-white text-decoration-none">Sign out</button></form></div></div><?php endif; ?></div></nav><main class="container py-4">
     <?php /* (#129) The queued confirmation ribbon: flash() may carry an extra class that marks the div (tb-flash-message-sent on the send confirmation) so the messages page's mobile stylesheet can hide exactly that one below the lg breakpoint - the bubble itself carries the live Sent/Seen status (#118). Every other flash renders exactly as before, on every viewport. */ ?>
     <?php if (!empty($_SESSION['flash'])): ?><div class="alert alert-success<?=!empty($_SESSION['flash_class']) ? ' ' . h((string)$_SESSION['flash_class']) : ''?>"><?=h($_SESSION['flash'])?></div><?php unset($_SESSION['flash'], $_SESSION['flash_class']); endif; ?>
@@ -2599,7 +2676,7 @@ if ($page==='document') {
 // a filter or saved search behaves the same no matter which view opened it.
 if ($page==='kanban') {
     $filters=tb_task_filters_where();
-    $ksql='SELECT t.id,t.title,t.status_id,t.priority,t.parent_id,p.title parent_title,t.project_id,pr.name project_name,s.name status_name,s.color status_color FROM tasks t JOIN statuses s ON s.id=t.status_id LEFT JOIN tasks p ON p.id=t.parent_id LEFT JOIN projects pr ON pr.id=t.project_id WHERE '.implode(' AND ',$filters['where']).' ORDER BY s.sort_order, s.id, t.updated_at DESC, t.id DESC';
+    $ksql='SELECT t.id,t.title,t.status_id,t.priority,t.parent_id,p.title parent_title,t.project_id,pr.name project_name,s.name status_name,s.color status_color FROM tasks t JOIN statuses s ON s.id=t.status_id LEFT JOIN tasks p ON p.id=t.parent_id LEFT JOIN projects pr ON pr.id=t.project_id WHERE '.implode(' AND ',$filters['where']).' ORDER BY s.sort_order, s.id, (t.kanban_rank = 0) ASC, t.kanban_rank ASC, t.updated_at DESC, t.id DESC';
     $ks=$pdo->prepare($ksql);$ks->execute($filters['params']);$kanbanTasks=$ks->fetchAll();
     $kanbanAssignees=task_assignees_by_task($pdo, array_column($kanbanTasks,'id'));
     // Kanban toggle (#66): the per-user collapsed column list is a preference,
@@ -2640,9 +2717,75 @@ if ($page==='kanban') {
     render_header('Kanban board',$config,$error); ?>
     <div class="d-flex justify-content-between align-items-center mb-3"><div><h1 class="h3 mb-0">Kanban board</h1><div class="muted"><?=$kanbanTotal?> task<?=$kanbanTotal===1?'':'s'?> across <?=count($kanbanColumns)?> status column<?=count($kanbanColumns)===1?'':'s'?></div></div><div class="d-flex gap-2"><a class="btn btn-outline-secondary" href="?page=tasks">Task list</a><a class="btn btn-primary" href="?page=new">+ New task</a></div></div>
     <?php tb_render_task_filter_card(['page'=>'kanban','users'=>$users,'statuses'=>$statuses,'parents'=>$parents,'projectOptions'=>$projectOptions,'savedSearches'=>$savedSearches,'fAssignees'=>$filters['fAssignees'],'fStatuses'=>$filters['fStatuses'],'fParents'=>$filters['fParents'],'fProjects'=>$filters['fProjects'],'returnUrl'=>$kanbanUrl()]); ?>
-    <div id="tb-list-region" data-tb-refresh="10"><div class="row g-3 row-cols-1 row-cols-md-2 row-cols-xl-3"><?php foreach($kanbanColumns as $col): $st=$col['status']; ?><div class="col"><div class="card<?=$col['collapsed']??false?'':' h-100'?>"><div class="card-header bg-transparent d-flex justify-content-between align-items-center py-2"><div class="d-flex align-items-center gap-2"><?=tb_status_badge((string)$st['name'], $st['color'] ?? null)?><span class="badge text-bg-light border"><?=count($col['tasks'])?></span></div><form method="post" class="d-inline"><?=csrf_field()?><input type="hidden" name="action" value="toggle_kanban_column"><input type="hidden" name="status_id" value="<?=$st['id']?>"><button class="btn btn-sm btn-outline-secondary py-0 px-2" aria-label="<?=$col['collapsed']??false?'Expand column':'Collapse column'?>" title="<?=$col['collapsed']??false?'Expand column':'Collapse column'?>"><?=$col['collapsed']??false?'+':'&minus;'?></button></form></div><div class="card-body p-2<?=$col['collapsed']??false?' d-none':''?>"><?php if(!($col['collapsed']??false)): ?><?php foreach($col['tasks'] as $kt): ?><div class="border rounded p-2 mb-2"><div class="d-flex justify-content-between align-items-start gap-2"><a class="fw-semibold text-decoration-none" href="?page=task&id=<?=$kt['id']?>">#<?=$kt['id']?> · <?=h($kt['title'])?></a><span class="badge text-bg-light border" title="Priority">&times;<?=h((string)max(1,min(1000,(int)($kt['priority'] ?? 1))))?></span></div><div class="small muted mt-1"><?php $ka=[];foreach($kanbanAssignees[(int)$kt['id']]??[] as $au){$ka[]=tb_user_with_activity($au);}echo $ka?implode(', ',$ka):'Unassigned'; if($kt['project_id']): ?> · <a href="?page=project&id=<?=$kt['project_id']?>">#<?=$kt['project_id']?> · <?=h($kt['project_name'])?></a><?php endif; if($kt['parent_id']): ?> · parent <a href="?page=task&id=<?=$kt['parent_id']?>">#<?=$kt['parent_id']?></a><?php endif; ?></div></div><?php endforeach; endif; if(!$col['tasks']): ?><div class="text-center muted small py-3">No tasks</div><?php endif; ?></div></div></div><?php endforeach; ?></div></div>
-    <p class="small muted mt-3">Same filters and saved searches as the task list — the two views share one implementation. Archived tasks only show up in the archive.</p>
+    <div id="tb-list-region" data-tb-refresh="10"><div class="row g-3 row-cols-1 row-cols-md-2 row-cols-xl-3"><?php foreach($kanbanColumns as $col): $st=$col['status']; ?><div class="col"><div class="card<?=$col['collapsed']??false?'':' h-100'?>"><div class="card-header bg-transparent d-flex justify-content-between align-items-center py-2"><div class="d-flex align-items-center gap-2"><?=tb_status_badge((string)$st['name'], $st['color'] ?? null)?><span class="badge text-bg-light border"><?=count($col['tasks'])?></span></div><form method="post" class="d-inline"><?=csrf_field()?><input type="hidden" name="action" value="toggle_kanban_column"><input type="hidden" name="status_id" value="<?=$st['id']?>"><button class="btn btn-sm btn-outline-secondary py-0 px-2" aria-label="<?=$col['collapsed']??false?'Expand column':'Collapse column'?>" title="<?=$col['collapsed']??false?'Expand column':'Collapse column'?>"><?=$col['collapsed']??false?'+':'&minus;'?></button></form></div><div class="card-body p-2<?=$col['collapsed']??false?' d-none':''?>" data-status-id="<?=$st['id']?>" data-tb-kanban-column><?php if(!($col['collapsed']??false)): ?><?php foreach($col['tasks'] as $kt): ?><div class="border rounded p-2 mb-2" draggable="true" data-task-id="<?=$kt['id']?>" data-tb-kanban-card><div class="d-flex justify-content-between align-items-start gap-2"><a class="fw-semibold text-decoration-none" href="?page=task&id=<?=$kt['id']?>">#<?=$kt['id']?> · <?=h($kt['title'])?></a><span class="badge text-bg-light border" title="Priority">&times;<?=h((string)max(1,min(1000,(int)($kt['priority'] ?? 1))))?></span></div><div class="small muted mt-1"><?php $ka=[];foreach($kanbanAssignees[(int)$kt['id']]??[] as $au){$ka[]=tb_user_with_activity($au);}echo $ka?implode(', ',$ka):'Unassigned'; if($kt['project_id']): ?> · <a href="?page=project&id=<?=$kt['project_id']?>">#<?=$kt['project_id']?> · <?=h($kt['project_name'])?></a><?php endif; if($kt['parent_id']): ?> · parent <a href="?page=task&id=<?=$kt['parent_id']?>">#<?=$kt['parent_id']?></a><?php endif; ?></div></div><?php endforeach; endif; if(!$col['tasks']): ?><div class="text-center muted small py-3">No tasks</div><?php endif; ?></div></div></div><?php endforeach; ?></div></div>
+    <p class="small muted mt-3">Same filters and saved searches as the task list — the two views share one implementation. Archived tasks only show up in the archive. Drag a card onto another column to change its status, or up and down inside a column to reorder it (#154).</p>
     <?php tb_render_list_refresh_script(); ?>
+    <script>
+// Drag & drop on the kanban board (#154): the cards are native HTML5 draggables
+// and every column body is a drop zone. The listeners live on the #tb-list-region
+// itself with event delegation, so the #51 realtime refresh (which replaces only
+// the region's children) never orphans them. A drop places the card where it was
+// released, collects the column's new DOM order and POSTs it through a plain form
+// (the same full-reload round-trip the column collapse toggle uses, no fetch/CSRF
+// plumbing): move_kanban_task writes the status change and the 1..N ranks server
+// side and re-renders the board in the saved order.
+(function(){
+var region=document.getElementById('tb-list-region');
+if(!region)return;
+var dragged=null;
+region.addEventListener('dragstart',function(e){
+    var card=e.target.closest&&e.target.closest('[data-tb-kanban-card]');
+    if(!card)return;
+    dragged=card;
+    card.classList.add('tb-kanban-dragging');
+    try{e.dataTransfer.setData('text/plain',card.getAttribute('data-task-id')||'');}catch(err){}
+    e.dataTransfer.effectAllowed='move';
+});
+region.addEventListener('dragend',function(){
+    if(dragged){dragged.classList.remove('tb-kanban-dragging');dragged=null;}
+});
+region.addEventListener('dragover',function(e){
+    if(!dragged)return;
+    var column=e.target.closest&&e.target.closest('[data-tb-kanban-column]');
+    if(!column)return;
+    e.preventDefault();
+    e.dataTransfer.dropEffect='move';
+});
+region.addEventListener('drop',function(e){
+    if(!dragged)return;
+    var column=e.target.closest&&e.target.closest('[data-tb-kanban-column]');
+    if(!column)return;
+    e.preventDefault();
+    var card=e.target.closest&&e.target.closest('[data-tb-kanban-card]');
+    if(card&&card!==dragged&&card.parentElement===column){column.insertBefore(dragged,card);}
+    else if(!card){column.appendChild(dragged);}
+    // a drop on the moved card itself keeps the DOM order exactly as it is
+    dragged.classList.remove('tb-kanban-dragging');
+    var ids=[];
+    column.querySelectorAll('[data-tb-kanban-card]').forEach(function(c){ids.push(c.getAttribute('data-task-id'));});
+    var form=document.createElement('form');
+    form.method='post';
+    // the current URL, so a failed move re-renders exactly the board (with its
+    // filters) the visitor was dragging on - the success path redirects to the
+    // plain board anyway
+    form.action=window.location.pathname+window.location.search;
+    var field=function(name,value){
+        var input=document.createElement('input');
+        input.type='hidden';input.name=name;input.value=value;
+        form.appendChild(input);
+    };
+    // every form on the page carries the same session token - the collapse
+    // toggles and the filter card render it already, so the drop form reuses it
+    field('csrf',(document.querySelector('input[name="csrf"]')||{}).value||'');
+    field('action','move_kanban_task');
+    field('id',dragged.getAttribute('data-task-id')||'');
+    field('status_id',column.getAttribute('data-status-id')||'');
+    ids.forEach(function(taskId){field('order[]',taskId);});
+    document.body.appendChild(form);
+    form.submit();
+});
+})();
+</script><?php endif; ?>
     <?php render_footer(); exit;
 }
 

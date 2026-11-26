@@ -1969,6 +1969,19 @@ function tb_migrate_schema(PDO $pdo): void {
             ? 'ALTER TABLE tasks ADD COLUMN priority INT UNSIGNED NOT NULL DEFAULT 1 AFTER complexity'
             : 'ALTER TABLE tasks ADD COLUMN priority INTEGER NOT NULL DEFAULT 1');
     }
+    // Kanban manual order (#154): the drag & drop board writes an explicit
+    // per-column position into tasks.kanban_rank (0 = no explicit position
+    // yet - those cards keep the pre-#154 board order and sort after the
+    // manually placed ones), so a deployment that lands without the upgrade
+    // SQL adds the column on the first request. Fresh installs get it from
+    // schema.sql. Runs after the priority ALTER so the MySQL "AFTER priority"
+    // placement finds its anchor column even on a table that needed both
+    // upgrades in the same request.
+    if (!in_array('kanban_rank', $taskColumns, true)) {
+        $pdo->exec($isMysql
+            ? 'ALTER TABLE tasks ADD COLUMN kanban_rank INT UNSIGNED NOT NULL DEFAULT 0 AFTER priority'
+            : 'ALTER TABLE tasks ADD COLUMN kanban_rank INTEGER NOT NULL DEFAULT 0');
+    }
     // Scheduler targets (#31): must run after the schedule_period ALTER so the
     // MySQL "AFTER schedule_period" placement finds its anchor column even on
     // a table that needed both upgrades in the same request.

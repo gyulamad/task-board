@@ -158,6 +158,54 @@ function tb_conversation_message_ids(PDO $pdo, int $me, int $peer): array {
 }
 
 /**
+ * #151: the effective viewer of the messenger surfaces. An administrator may
+ * open the messages page AS any other user ("view as"): the select on the
+ * messages page stores the viewed id in the session, and every messenger
+ * read model - the people list, the thread, the live feed, the older-pages
+ * feed - then runs against that user exactly as the page would render for
+ * them. The session is admin-gated on EVERY use (a plain user's session can
+ * never carry it anywhere), the stored id is re-checked against the users
+ * table (a user deleted mid-view falls back to the admin's own view and the
+ * stale entry clears itself), and the admin's own id always reads as "not
+ * viewing". Returns the signed-in user's own id when no view-as session is
+ * active, so the pristine page's behaviour is untouched.
+ */
+function tb_messages_view_as_id(PDO $pdo): int {
+    $me = (int)user()['id'];
+    if (!is_admin()) return $me;
+    $id = (int)($_SESSION['tb_view_as_id'] ?? 0);
+    if ($id <= 0 || $id === $me) return $me;
+    $s = $pdo->prepare('SELECT 1 FROM users WHERE id=?');
+    $s->execute([$id]);
+    if (!$s->fetchColumn()) {
+        unset($_SESSION['tb_view_as_id']);
+        return $me;
+    }
+    return $id;
+}
+
+/**
+ * #151: the viewed user of an active view-as session, for the ribbon - the
+ * persistent "messages are viewed as XY" notice with its one-click exit.
+ * Null when the visitor is not an admin, stores nothing in their session,
+ * or picked themselves (which is exactly "viewing as nobody").
+ */
+function tb_messages_view_as_user(PDO $pdo): ?array {
+    $me = (int)user()['id'];
+    if (!is_admin()) return null;
+    $id = (int)($_SESSION['tb_view_as_id'] ?? 0);
+    if ($id <= 0 || $id === $me) return null;
+    $s = $pdo->prepare('SELECT id, display_name FROM users WHERE id=?');
+    $s->execute([$id]);
+    $row = $s->fetchAll();
+    if (!$row) {
+        unset($_SESSION['tb_view_as_id']);
+        return null;
+    }
+    return ['id' => (int)$row[0]['id'], 'display_name' => (string)$row[0]['display_name']];
+}
+
+/**
  * The shared read model of the messenger's left pane (#114): the per-person
  * unread counts, the "Deleted user" orphan counters and the people rows in
  * the #94 activity order (newest conversation first, people never written to

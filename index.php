@@ -460,9 +460,41 @@ if (user()) {
                 // so the audit shows what was written, not just that something was.
                 history($pdo,$id,'Comment added',$body); redirect('?page=task&id='.$id.'#comments');
             }
+            if ($action === 'view_as_enter') {
+                // View user conversations (#151): the administrator picks a
+                // user on the messages page and from then on reads the
+                // messenger as that user would - their people list, their
+                // threads, their badges - until the ribbon's exit click.
+                // The session write is admin-gated here and every read path
+                // re-checks it (tb_messages_view_as_id), so a plain user can
+                // neither set nor keep such a session. Picking themselves is
+                // the clean "stop viewing" path alongside the ribbon exit.
+                if (!is_admin()) throw new RuntimeException('Only an administrator can view the board as another user.');
+                $asId = (int)($_POST['user_id'] ?? 0);
+                if ($asId !== (int)user()['id'] && user_exists($pdo, $asId)) {
+                    $_SESSION['tb_view_as_id'] = $asId;
+                } else {
+                    unset($_SESSION['tb_view_as_id']);
+                }
+                redirect('?page=messages');
+            }
+            if ($action === 'view_as_exit') {
+                // The ribbon's "view your own messages" click: the viewing
+                // session ends and the page falls back to the admin's own
+                // messenger, byte-identical to the pre-view-as behaviour.
+                if (!is_admin()) throw new RuntimeException('Only an administrator can leave the view-as mode.');
+                unset($_SESSION['tb_view_as_id']);
+                flash('Back to your own messages.');
+                redirect('?page=messages');
+            }
             if ($action === 'send_message') {
                 // Message board (#56): a signed-in user leaves a message to
                 // another user - never to themselves, "to each other".
+                // View-as (#151) is read-only surveillance: while the admin
+                // sees the board as another user the composer is not even
+                // rendered, and this guard holds so a hand-crafted submit
+                // cannot send under the viewed user's name (impersonation).
+                if (tb_messages_view_as_user($pdo) !== null) throw new RuntimeException('Sending is disabled while viewing the board as another user.');
                 $recipientId = (int)($_POST['recipient_id'] ?? 0);
                 $msgBody = trim((string)($_POST['body'] ?? ''));
                 if ($recipientId === (int)user()['id']) throw new RuntimeException('Pick another user to message.');
@@ -538,8 +570,11 @@ if (user()) {
                 tb_delete_messages($pdo, [$msgId]);
                 flash('Message deleted.');
                 // Back to the conversation the message belonged to: the other
-                // end of the pair, with the orphan thread as u=0 (#17).
-                $other = (int)$row['sender_id'] === (int)user()['id'] ? (int)$row['recipient_id'] : (int)$row['sender_id'];
+                // end of the pair relative to the EFFECTIVE viewer, so a
+                // view-as admin (#151) lands back in the thread they are
+                // moderating, with the orphan thread as u=0 (#17).
+                $viewerId = tb_messages_view_as_id($pdo);
+                $other = (int)$row['sender_id'] === $viewerId ? (int)$row['recipient_id'] : (int)$row['sender_id'];
                 redirect('?page=messages&u=' . $other);
             }
             if ($action === 'delete_messages') {
@@ -559,9 +594,13 @@ if (user()) {
                 // thread with the selected peer - u=0 is the "Deleted user"
                 // thread (#17) - is wiped in one submit. Only the messages of
                 // this pair are touched, never anybody else's conversations.
+                // The pair belongs to the EFFECTIVE viewer (#151): in view-as
+                // mode the admin wipes the conversation of the user they are
+                // looking at - the same power they have on their own thread,
+                // exactly "just like I can on mine".
                 if (!is_admin()) throw new RuntimeException('Only an administrator can delete messages.');
                 $peerId = max(0, (int)($_POST['u'] ?? 0));
-                $msgIds = tb_conversation_message_ids($pdo, (int)user()['id'], $peerId);
+                $msgIds = tb_conversation_message_ids($pdo, tb_messages_view_as_id($pdo), $peerId);
                 if (!$msgIds) throw new RuntimeException('The conversation is already empty.');
                 tb_delete_messages($pdo, $msgIds);
                 flash('Conversation deleted.');
@@ -1323,6 +1362,12 @@ if ($page==='messages_live') {
         $_SESSION['tb_last_page'] = 'messages';
     }
     $me=(int)user()['id'];
+    // View-as (#151): the feed runs as the VIEWED user - their bubbles, their
+    // people rows, their badge - but never consumes their state: the read
+    // flip below is skipped while viewing, so their unread badges keep
+    // counting exactly as if nobody had looked.
+    $viewAs=tb_messages_view_as_user($pdo);
+    $viewerId=$viewAs!==null?(int)$viewAs['id']:$me;
     $u=isset($_GET['u'])?(int)$_GET['u']:-1;
     $after=max(0,(int)($_GET['after'] ?? 0));
     // The people rows carry the chat page name in their links; the feed
@@ -1338,24 +1383,24 @@ if ($page==='messages_live') {
     // rows actually returned, so the next poll drains the rest.
     if ($u===0) {
         $t=$pdo->prepare('SELECT * FROM messages WHERE ((recipient_id=? AND sender_id IS NULL) OR (sender_id=? AND recipient_id IS NULL)) AND id>? ORDER BY id ASC LIMIT 50');
-        $t->execute([$me,$me,$after]);
+        $t->execute([$viewerId,$viewerId,$after]);
     } else {
         $t=$pdo->prepare('SELECT * FROM messages WHERE ((sender_id=? AND recipient_id=?) OR (sender_id=? AND recipient_id=?)) AND id>? ORDER BY id ASC LIMIT 50');
-        $t->execute([$me,$u,$u,$me,$after]);
+        $t->execute([$viewerId,$u,$u,$viewerId,$after]);
     }
     $rows=$t->fetchAll();
-    if ($rows && $u>0) {
+    if ($rows && $u>0 && $viewAs===null) {
         $pdo->prepare('UPDATE messages SET is_read=1 WHERE recipient_id=? AND is_read=0 AND sender_id=?')->execute([$me,$u]);
     }
     $html='';
     $lastId=$after;
     $feedAttachments=tb_message_attachments($pdo,array_map(function($m){return (int)$m['id'];},$rows));
     foreach ($rows as $m) {
-        $mine=$m['sender_id']!==null&&(int)$m['sender_id']===$me;
+        $mine=$m['sender_id']!==null&&(int)$m['sender_id']===$viewerId;
         $html.=tb_message_bubble($m,$mine,$feedAttachments[(int)$m['id']]??[],is_admin());
         $lastId=(int)$m['id'];
     }
-    $people=tb_chat_people_model($pdo,$me);
+    $people=tb_chat_people_model($pdo,$viewerId);
     $feedPeer=null;
     if ($u>0) {
         $fp=$pdo->prepare('SELECT id, display_name, last_seen_at, logged_out FROM users WHERE id=?');
@@ -1367,13 +1412,15 @@ if ($page==='messages_live') {
     }
     // #118: how far the seen status has reached for the viewer's own messages
     // in the open conversation - the peer opening the thread flips the Sent
-    // labels to Seen in place, without a page reload.
+    // labels to Seen in place, without a page reload. While viewing as
+    // somebody (#151) the "own messages" are the viewed user's, so the
+    // labels tell their story, not the admin's.
     if ($u>0) {
         $seen=$pdo->prepare('SELECT COALESCE(MAX(id),0) FROM messages WHERE sender_id=? AND recipient_id=? AND is_read=1');
-        $seen->execute([$me,$u]);
+        $seen->execute([$viewerId,$u]);
     } else {
         $seen=$pdo->prepare('SELECT COALESCE(MAX(id),0) FROM messages WHERE sender_id=? AND recipient_id IS NULL AND is_read=1');
-        $seen->execute([$me]);
+        $seen->execute([$viewerId]);
     }
     $seenUpTo=(int)$seen->fetchColumn();
     header('Content-Type: application/json; charset=utf-8');
@@ -1382,13 +1429,15 @@ if ($page==='messages_live') {
         'html'=>$html,
         'lastId'=>$lastId,
         'peopleHtml'=>tb_chat_people_rows($people['entries'],$people['unreadBySender'],$people['orphanUnread'],$feedPeer,$chatPage),
-        'newCount'=>tb_unread_message_count($pdo,$me),
+        'newCount'=>tb_unread_message_count($pdo,$viewerId),
         'seenUpTo'=>$seenUpTo,
     ], JSON_UNESCAPED_UNICODE));
 }
 
 if ($page==='messages_more') {
     $me=(int)user()['id'];
+    // View-as (#151): the older pages load for the VIEWED user's thread too.
+    $viewerId=tb_messages_view_as_id($pdo);
     $u=isset($_GET['u'])?(int)$_GET['u']:-1;
     $before=(int)($_GET['before'] ?? 0);
     if ($u!==0 && $u<=0) { http_response_code(404); exit('Unknown conversation.'); }
@@ -1398,10 +1447,10 @@ if ($page==='messages_more') {
     }
     if ($u===0) {
         $t=$pdo->prepare('SELECT * FROM messages WHERE ((recipient_id=? AND sender_id IS NULL) OR (sender_id=? AND recipient_id IS NULL))'.($before>0?' AND id<?':'').' ORDER BY id DESC LIMIT 21');
-        $t->execute($before>0?[$me,$me,$before]:[$me,$me]);
+        $t->execute($before>0?[$viewerId,$viewerId,$before]:[$viewerId,$viewerId]);
     } else {
         $t=$pdo->prepare('SELECT * FROM messages WHERE ((sender_id=? AND recipient_id=?) OR (sender_id=? AND recipient_id=?))'.($before>0?' AND id<?':'').' ORDER BY id DESC LIMIT 21');
-        $t->execute($before>0?[$me,$u,$u,$me,$before]:[$me,$u,$u,$me]);
+        $t->execute($before>0?[$viewerId,$u,$u,$viewerId,$before]:[$viewerId,$u,$u,$viewerId]);
     }
     $rows=$t->fetchAll();
     $feedHasMore=count($rows)>20;
@@ -1410,7 +1459,7 @@ if ($page==='messages_more') {
     $feedAttachments=tb_message_attachments($pdo,array_map(function($m){return (int)$m['id'];},$rows));
     $html='';
     foreach ($rows as $m) {
-        $mine=$m['sender_id']!==null&&(int)$m['sender_id']===$me;
+        $mine=$m['sender_id']!==null&&(int)$m['sender_id']===$viewerId;
         $html.=tb_message_bubble($m,$mine,$feedAttachments[(int)$m['id']]??[],is_admin());
     }
     header('Content-Type: application/json; charset=utf-8');
@@ -1435,7 +1484,13 @@ if ($page==='message_download') {
     $a=$s->fetch();
     if(!$a) { http_response_code(404); exit('File not found.'); }
     $me=(int)user()['id'];
-    if (!((int)$a['sender_user']===$me || (int)$a['recipient_user']===$me)) { http_response_code(403); exit('Forbidden.'); }
+    // View-as (#151): an administrator reading the board as somebody else is
+    // a participant of that user's conversations for the attachment route -
+    // the surveillance would be half-blind if the paperclips stayed opaque.
+    $viewAs=tb_messages_view_as_user($pdo);
+    $asId=$viewAs!==null?(int)$viewAs['id']:null;
+    if (!((int)$a['sender_user']===$me || (int)$a['recipient_user']===$me
+        || ($asId!==null && ((int)$a['sender_user']===$asId || (int)$a['recipient_user']===$asId)))) { http_response_code(403); exit('Forbidden.'); }
     if (!is_file(tb_attachment_path((string)$a['stored_name']))) { http_response_code(404); exit('File not found.'); }
     header('Content-Type: '.$a['mime_type']); header('Content-Length: '.$a['file_size']);
     $tbName = preg_replace('/[\x00-\x1f\x7f"]+/', '', (string)$a['original_name']) ?? '';
@@ -1467,16 +1522,25 @@ if ($page === 'messages') {
     // survive.
     $chatPage = 'messages';
     $me=(int)user()['id'];
-    $newCount=tb_unread_message_count($pdo,$me);
+    // View user conversations (#151): an admin may read the whole messenger
+    // AS another user. $viewerId is who the page renders for - the admin's
+    // own id unless a view-as session is active - while $me stays the
+    // signed-in account for the navbar badge and the session itself.
+    $viewAs=tb_messages_view_as_user($pdo);
+    $viewerId=$viewAs!==null?(int)$viewAs['id']:$me;
+    // The page badge shows what the VIEWED user would see (#151: "I see the
+    // messages page as the user would"); the navbar badge keeps the admin's
+    // own count - the navbar always belongs to the signed-in account.
+    $newCount=tb_unread_message_count($pdo,$viewerId);
     // The navbar badge renders after the mark-read below, so it reuses this
     // pre-mark-read count instead of querying a self-consumed zero.
-    $GLOBALS['TB_UNREAD_BADGE']=$newCount;
+    $GLOBALS['TB_UNREAD_BADGE']=$viewAs!==null?tb_unread_message_count($pdo,$me):$newCount;
     // The left-pane read model (#114) is shared with the messages_live feed:
     // per-person unread counts, the orphan counters and the people rows in
     // the #94 activity order. The unread maps are read before the mark-read
     // below, so the left list shows what is new on this very load.
     $pq = trim((string)($_GET['q'] ?? ''));
-    $chatPeopleModel=tb_chat_people_model($pdo,$me,$pq);
+    $chatPeopleModel=tb_chat_people_model($pdo,$viewerId,$pq);
     $unreadBySender=$chatPeopleModel['unreadBySender'];
     $orphanUnread=$chatPeopleModel['orphanUnread'];
     $chatEntries=$chatPeopleModel['entries'];
@@ -1484,7 +1548,11 @@ if ($page === 'messages') {
     $peopleUrl=tb_crud_url_builder($chatPage,['q','u']);
     // Viewing the board is what marks the messages read - the badge on the
     // page and in the navbar always means "new since the last visit".
-    $pdo->prepare('UPDATE messages SET is_read=1 WHERE recipient_id=? AND is_read=0')->execute([$me]);
+    // View-as (#151) reads WITHOUT consuming: the viewed user's unread
+    // badges keep counting exactly as if nobody had looked.
+    if ($viewAs===null) {
+        $pdo->prepare('UPDATE messages SET is_read=1 WHERE recipient_id=? AND is_read=0')->execute([$me]);
+    }
     // The selected conversation: ?u=<user id>, with u=0 as the "Deleted user"
     // thread (#17: messages survive account deletion, both FKs SET NULL).
     // Without a valid selection the newest unread sender wins, else the
@@ -1503,11 +1571,13 @@ if ($page === 'messages') {
         $row=$s->fetchAll();
         return $row ? ['id'=>(int)$row[0]['id'],'display_name'=>(string)$row[0]['display_name'],'last_seen_at'=>$row[0]['last_seen_at'] ?? null,'logged_out'=>(int)($row[0]['logged_out'] ?? 0)] : null;
     };
-    if ($peerId>0 && $peerId!==$me) {
-        // The self id is excluded on purpose: the people list never contains
-        // the visitor's own row (no self-conversation), so a crafted
-        // ?u=<own id> falls through to the auto-select exactly like it did
-        // when the peer was looked up in the rendered list rows.
+    if ($peerId>0 && $peerId!==$viewerId) {
+        // The viewer's own id is excluded on purpose: the people list never
+        // contains the viewer's own row (no self-conversation), so a crafted
+        // ?u=<viewer id> falls through to the auto-select exactly like it
+        // did when the peer was looked up in the rendered list rows. While
+        // viewing as somebody (#151) the viewer is the VIEWED user, so even
+        // the admin's own id opens the viewed user's picture of that thread.
         $peer=$peerRowById($peerId);
         if ($peer!==null) $peerExplicit=true;
     }
@@ -1515,13 +1585,13 @@ if ($page === 'messages') {
     if ($peer===null && $peerId!==0) {
         if ($unreadBySender) {
             $newest=$pdo->prepare('SELECT sender_id FROM messages WHERE recipient_id=? AND is_read=0 AND sender_id IS NOT NULL ORDER BY id DESC LIMIT 1');
-            $newest->execute([$me]);
+            $newest->execute([$viewerId]);
             $newestId=(int)($newest->fetchAll(PDO::FETCH_COLUMN)[0] ?? 0);
             if ($newestId>0) $peer=$peerRowById($newestId);
         }
         if ($peer===null) {
             $recent=$pdo->prepare('SELECT CASE WHEN sender_id=? THEN recipient_id ELSE sender_id END other_id FROM messages WHERE sender_id=? OR recipient_id=? ORDER BY id DESC LIMIT 1');
-            $recent->execute([$me,$me,$me]);
+            $recent->execute([$viewerId,$viewerId,$viewerId]);
             $otherId=(int)($recent->fetchAll(PDO::FETCH_COLUMN)[0] ?? 0);
             if ($otherId>0) $peer=$peerRowById($otherId);
         }
@@ -1541,11 +1611,11 @@ if ($page === 'messages') {
     $threadRows=[];
     if ($peerId===0) {
         $t=$pdo->prepare('SELECT * FROM messages WHERE (recipient_id=? AND sender_id IS NULL) OR (sender_id=? AND recipient_id IS NULL) ORDER BY id DESC LIMIT 21');
-        $t->execute([$me,$me]);
+        $t->execute([$viewerId,$viewerId]);
         $threadRows=$t->fetchAll();
     } elseif ($peer!==null) {
         $t=$pdo->prepare('SELECT * FROM messages WHERE (sender_id=? AND recipient_id=?) OR (sender_id=? AND recipient_id=?) ORDER BY id DESC LIMIT 21');
-        $t->execute([$me,$peerId,$peerId,$me]);
+        $t->execute([$viewerId,$peerId,$peerId,$viewerId]);
         $threadRows=$t->fetchAll();
     }
     $hasMore=count($threadRows)>20;
@@ -1600,9 +1670,26 @@ if ($page === 'messages') {
       .tb-chat-bubble{max-width:88%!important}
     }
     </style>
+    <?php if ($viewAs!==null): ?>
+    <!-- View user conversations (#151): the persistent ribbon while the
+         admin reads the messenger as somebody else - the clicked exit ends
+         the session and restores the admin's own view in one POST. -->
+    <div class="alert alert-warning py-2 px-3 d-flex flex-wrap justify-content-between align-items-center gap-2 mb-3" role="status" data-tb-view-as-ribbon>
+        <span>Messages are viewed as <b><?=h($viewAs['display_name'])?></b> &middot; reading only &middot; the user's unread badges are not consumed.</span>
+        <form method="post" class="mb-0"><?=csrf_field()?><input type="hidden" name="action" value="view_as_exit"><button class="btn btn-sm btn-outline-secondary" title="View your own messages">View your own messages</button></form>
+    </div>
+    <?php endif; ?>
     <div class="d-flex justify-content-between align-items-center mb-3 tb-chat-intro"><div><h1 class="h3 mb-0">Messages</h1><div class="muted">A messenger-style board: pick a person on the left, chat in bubbles on the right - every message shows when it was sent and whether it was seen.</div></div><span class="badge text-bg-danger fs-6" data-tb-chat-newcount><?=$newCount?> new message<?=$newCount===1?'':'s'?></span></div>
     <div class="row g-4 tb-chat<?=$hasPeer?' has-peer':''?>" data-tb-chat data-tb-chat-live-url="<?=h('?page=messages_live&u='.$peerId)?>">
         <div class="col-lg-4 tb-chat-people"><div class="card p-3 tb-chat-people-card"><h2 class="h5">People</h2>
+            <?php if (is_admin()):
+                $vaUsers=$pdo->prepare('SELECT id, display_name FROM users WHERE id<>? ORDER BY display_name ASC');
+                $vaUsers->execute([$me]); ?>
+            <!-- View user conversations (#151): the "view as" select. Only an
+                 administrator sees it; the choice rides a CSRF-guarded POST
+                 and the session it writes is re-checked on every read. -->
+            <form method="post" class="d-flex gap-2 mb-2" data-tb-view-as-form title="See the messenger exactly as this user would"><?=csrf_field()?><input type="hidden" name="action" value="view_as_enter"><select name="user_id" class="form-select form-select-sm" aria-label="View the board as another user" onchange="this.form.submit()"><option value="">View as...</option><?php foreach ($vaUsers->fetchAll() as $vaUser): ?><option value="<?=$vaUser['id']?>"<?=$viewAs!==null&&(int)$viewAs['id']===(int)$vaUser['id']?' selected':''?>><?=h($vaUser['display_name'])?></option><?php endforeach; ?></select></form>
+            <?php endif; ?>
             <form method="get" class="d-flex gap-2 mb-2"><input type="hidden" name="page" value="<?=$chatPage?>"><?php if($peerExplicit): ?><input type="hidden" name="u" value="<?=$peerId?>"><?php endif; ?><input class="form-control form-control-sm" type="search" name="q" value="<?=h($pq)?>" placeholder="Search people..." aria-label="Search people"><button class="btn btn-sm btn-outline-secondary">Search</button><?php if($pq!==''): ?><a class="btn btn-link btn-sm" href="<?=h($peerExplicit?'?page='.$chatPage.'&u='.$peerId:'?page='.$chatPage)?>&amp;clear_search=1">Clear</a><?php endif; ?></form>
             <div data-tb-chat-people-rows<?php if($pq===''): ?> data-tb-chat-live-people="1"<?php endif; ?>><?=tb_chat_people_rows($chatEntries,$unreadBySender,$orphanUnread,$peer,$chatPage)?></div>
             <?php if(!$chatEntries): ?><div class="small muted"><?=$pq!==''?'No people match the search.':'Nobody to talk to yet.'?></div><?php endif; ?>
@@ -1611,9 +1698,10 @@ if ($page === 'messages') {
         <div class="col-lg-8 tb-chat-thread"><div class="card p-3">
             <div class="tb-chat-head d-flex align-items-center gap-2"><a class="btn btn-sm btn-outline-secondary tb-chat-back" href="?page=<?=$chatPage?>" aria-label="Back to the people list" title="Back to the people list">&larr;</a><h2 class="h5"><?=h($peer!==null?'Conversation with '.$peer['display_name']:'Deleted user')?></h2><?php if (is_admin()): ?><form method="post" id="tb-chat-bulk-delete" class="ms-auto" onsubmit="return confirm('Delete the selected messages permanently?')"><?=csrf_field()?><input type="hidden" name="action" value="delete_messages"><input type="hidden" name="u" value="<?=$peerId?>"><button class="btn btn-sm btn-outline-danger" title="Delete the selected messages">Delete selected</button></form><form method="post" onsubmit="return confirm('Delete this whole conversation permanently?')"><?=csrf_field()?><input type="hidden" name="action" value="delete_conversation"><input type="hidden" name="u" value="<?=$peerId?>"><button class="btn btn-sm btn-outline-danger" title="Delete the whole conversation">Delete conversation</button></form><?php endif; ?></div>
             <div class="tb-chat-scroll" data-tb-chat-scroll data-tb-more="<?=h('?page=messages_more&u='.$peerId.($oldestId!==null?'&before='.(int)$oldestId:''))?>" data-tb-has-more="<?=$hasMore?'1':'0'?>" data-tb-after="<?=$newestId?>">
-            <?php foreach ($thread as $m): $mine=$m['sender_id']!==null&&(int)$m['sender_id']===$me; echo tb_message_bubble($m,$mine,$threadAttachments[(int)$m['id']]??[],is_admin()); endforeach; if(!$thread): ?><div class="text-center muted small py-4">No messages here yet - say hi below.</div><?php endif; ?>
+            <?php foreach ($thread as $m): $mine=$m['sender_id']!==null&&(int)$m['sender_id']===$viewerId; echo tb_message_bubble($m,$mine,$threadAttachments[(int)$m['id']]??[],is_admin()); endforeach; if(!$thread): ?><div class="text-center muted small py-4">No messages here yet - say hi below.</div><?php endif; ?>
             </div>
-            <?php if ($peerId!==0): ?><form method="post" class="tb-chat-composer mt-2" enctype="multipart/form-data" data-tb-chat-send><?=csrf_field()?><input type="hidden" name="action" value="send_message"><input type="hidden" name="recipient_id" value="<?=$peerId?>"><input type="hidden" name="send_token" value="<?=h(tb_message_send_token())?>"><div class="input-group"><button class="btn btn-outline-secondary tb-chat-attach" type="button" aria-label="Attach a file" title="Attach a file">&#128206;</button><input type="file" class="d-none" name="attachment" aria-label="Attachment file" data-tb-chat-file><textarea class="form-control" id="message-body" name="body" rows="2" placeholder="Write a message..." aria-label="Message" data-tb-chat-body autofocus></textarea><button class="btn btn-primary" type="submit">Send</button></div><div class="small muted mt-1 d-none" data-tb-chat-file-name></div><div class="small muted mt-1">Enter sends &middot; Shift+Enter or Ctrl+Enter adds a new line &middot; max <?=round($config['max_upload_bytes']/1024/1024)?> MB per attachment.</div></form>
+            <?php if ($viewAs!==null): ?><div class="small muted mt-2">Viewing as <?=h($viewAs['display_name'])?> - sending is disabled; the delete controls above still work on this conversation.</div>
+            <?php elseif ($peerId!==0): ?><form method="post" class="tb-chat-composer mt-2" enctype="multipart/form-data" data-tb-chat-send><?=csrf_field()?><input type="hidden" name="action" value="send_message"><input type="hidden" name="recipient_id" value="<?=$peerId?>"><input type="hidden" name="send_token" value="<?=h(tb_message_send_token())?>"><div class="input-group"><button class="btn btn-outline-secondary tb-chat-attach" type="button" aria-label="Attach a file" title="Attach a file">&#128206;</button><input type="file" class="d-none" name="attachment" aria-label="Attachment file" data-tb-chat-file><textarea class="form-control" id="message-body" name="body" rows="2" placeholder="Write a message..." aria-label="Message" data-tb-chat-body autofocus></textarea><button class="btn btn-primary" type="submit">Send</button></div><div class="small muted mt-1 d-none" data-tb-chat-file-name></div><div class="small muted mt-1">Enter sends &middot; Shift+Enter or Ctrl+Enter adds a new line &middot; max <?=round($config['max_upload_bytes']/1024/1024)?> MB per attachment.</div></form>
             <?php else: ?><div class="small muted mt-2">This account was deleted - the conversation stays readable, but new messages cannot be delivered.</div><?php endif; ?>
         </div></div></div>
     <script>

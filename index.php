@@ -2277,7 +2277,7 @@ if ($page==='statuses' && is_admin()) {
     $statuses=all_statuses($pdo);
     render_header('Task statuses',$config,$error); ?>
     <div class="d-flex justify-content-between align-items-center mb-3"><div><h1 class="h3 mb-0">Task statuses</h1><div class="muted">Labels, display order, completion flag and colour</div></div><a class="btn btn-outline-secondary" href="?page=admin">Back to administration</a></div>
-    <div class="card p-4"><p class="small muted">Rename statuses, change their display order, mark them as completion statuses, pick their colour or delete the ones no task uses. The colour renders on every status badge of the board; tick &quot;Default colour&quot; to go back to the built-in look. Drag a row by its grip to reorder the statuses (#156) - the numeric field shows the stored position and still accepts a manual number.</p><ul class="list-group mb-3" data-tb-status-list><?php foreach($statuses as $st): ?><li class="list-group-item d-flex align-items-center" data-tb-status-row data-status-id="<?=$st['id']?>"><div class="d-flex align-items-center px-2 text-secondary user-select-none" draggable="true" data-tb-status-handle title="Drag to reorder" aria-label="Drag to reorder status <?=h($st['name'])?>"><span aria-hidden="true">&#8942;&#8942;</span></div><form method="post" class="row g-2 align-items-center flex-grow-1"><?=csrf_field()?><input type="hidden" name="action" value="edit_status"><input type="hidden" name="id" value="<?=$st['id']?>"><div class="col-12 col-md-2"><?=tb_status_badge((string)$st['name'], $st['color'] ?? null)?></div><div class="col-12 col-md-4"><label class="visually-hidden" for="status-name-<?=$st['id']?>">Status name</label><input class="form-control form-control-sm" name="name" id="status-name-<?=$st['id']?>" value="<?=h($st['name'])?>" maxlength="40" required></div><div class="col-4 col-md-1"><label class="visually-hidden" for="status-sort-<?=$st['id']?>">Sort order</label><input class="form-control form-control-sm" type="number" name="sort_order" id="status-sort-<?=$st['id']?>" value="<?=$st['sort_order']?>" title="Display order, lower numbers first"></div><div class="col-auto"><label class="visually-hidden" for="status-color-<?=$st['id']?>">Colour of status <?=h($st['name'])?></label><input type="color" class="form-control form-control-color form-control-sm" name="color" id="status-color-<?=$st['id']?>" value="<?=h(strtolower((string)($st['color'] ?? '#6c757d')))?>" title="Status colour (a colour picker; tick &quot;Default colour&quot; for the built-in look)"></div><div class="col-auto form-check mb-0 ms-1"><input class="form-check-input" type="checkbox" name="color_default" id="status-color-default-<?=$st['id']?>" <?=($st['color'] ?? null)===null?'checked':''?>><label class="form-check-label small" for="status-color-default-<?=$st['id']?>">Default colour</label></div><div class="col-8 col-md-2 form-check ms-md-1 mb-0"><input class="form-check-input" type="checkbox" name="is_done" id="status-done-<?=$st['id']?>" <?=$st['is_done']?'checked':''?>><label class="form-check-label small" for="status-done-<?=$st['id']?>">Completed</label><?php if($st['is_done']): ?><span class="badge text-bg-success ms-1">Completion status</span><?php endif; ?></div><div class="col-12 col-md-2 d-flex gap-1 justify-content-md-end"><button class="btn btn-sm btn-outline-primary">Save</button><button type="submit" class="btn btn-sm btn-outline-danger" form="delete-status-<?=$st['id']?>">Delete</button></div></form><form method="post" id="delete-status-<?=$st['id']?>" class="d-none" onsubmit="return confirm('Delete this status?');"><?=csrf_field()?><input type="hidden" name="action" value="delete_status"><input type="hidden" name="id" value="<?=$st['id']?>"></form></li><?php endforeach; ?></ul><form method="post"><?=csrf_field()?><input type="hidden" name="action" value="add_status"><div class="row g-2 align-items-center"><div class="col-12 col-md-5"><input class="form-control" name="name" placeholder="New status label" required></div><div class="col-auto"><label class="visually-hidden" for="new-status-color">Colour of the new status</label><input type="color" class="form-control form-control-color form-control-sm" name="color" id="new-status-color" value="#6c757d" title="Status colour"></div><div class="col-auto form-check mb-0 ms-1"><input class="form-check-input" type="checkbox" name="color_default" id="new-status-color-default"><label class="form-check-label small" for="new-status-color-default">Default colour</label></div><div class="col-12 col-md-3 form-check mb-0 ms-md-1"><input class="form-check-input" type="checkbox" name="is_done" id="done"><label class="form-check-label" for="done">Treat as completed</label></div><div class="col-12 col-md-auto"><button class="btn btn-primary">Add status</button></div></div></form><p class="small muted mt-3">Statuses are shown in display order. A status that tasks still use and the last remaining status cannot be deleted.</p></div>
+    <div class="card p-4"><p class="small muted">Rename statuses, change their display order, mark them as completion statuses, pick their colour or delete the ones no task uses. The colour renders on every status badge of the board; tick &quot;Default colour&quot; to go back to the built-in look. Drag a row by its grip to reorder the statuses (#156) - the numeric field shows the stored position and still accepts a manual number. On a phone or tablet press and hold the grip until the row lifts, then move it.</p><style>/* #156 v2: touch drag feedback, page-scoped so the shared header stylesheet stays untouched */.tb-status-over{outline:2px dashed var(--bs-primary,#0d6efd);outline-offset:-2px}.tb-status-noselect{-webkit-touch-callout:none;-webkit-user-select:none;user-select:none}</style><ul class="list-group mb-3" data-tb-status-list><?php foreach($statuses as $st): ?><li class="list-group-item d-flex align-items-center" data-tb-status-row data-status-id="<?=$st['id']?>"><div class="d-flex align-items-center px-2 text-secondary user-select-none" draggable="true" data-tb-status-handle title="Drag to reorder" aria-label="Drag to reorder status <?=h($st['name'])?>"><span aria-hidden="true">&#8942;&#8942;</span></div><form method="post" class="row g-2 align-items-center flex-grow-1"><?=csrf_field()?><input type="hidden" name="action" value="edit_status"><input type="hidden" name="id" value="<?=$st['id']?>"><div class="col-12 col-md-2"><?=tb_status_badge((string)$st['name'], $st['color'] ?? null)?></div><div class="col-12 col-md-4"><label class="visually-hidden" for="status-name-<?=$st['id']?>">Status name</label><input class="form-control form-control-sm" name="name" id="status-name-<?=$st['id']?>" value="<?=h($st['name'])?>" maxlength="40" required></div><div class="col-4 col-md-1"><label class="visually-hidden" for="status-sort-<?=$st['id']?>">Sort order</label><input class="form-control form-control-sm" type="number" name="sort_order" id="status-sort-<?=$st['id']?>" value="<?=$st['sort_order']?>" title="Display order, lower numbers first"></div><div class="col-auto"><label class="visually-hidden" for="status-color-<?=$st['id']?>">Colour of status <?=h($st['name'])?></label><input type="color" class="form-control form-control-color form-control-sm" name="color" id="status-color-<?=$st['id']?>" value="<?=h(strtolower((string)($st['color'] ?? '#6c757d')))?>" title="Status colour (a colour picker; tick &quot;Default colour&quot; for the built-in look)"></div><div class="col-auto form-check mb-0 ms-1"><input class="form-check-input" type="checkbox" name="color_default" id="status-color-default-<?=$st['id']?>" <?=($st['color'] ?? null)===null?'checked':''?>><label class="form-check-label small" for="status-color-default-<?=$st['id']?>">Default colour</label></div><div class="col-8 col-md-2 form-check ms-md-1 mb-0"><input class="form-check-input" type="checkbox" name="is_done" id="status-done-<?=$st['id']?>" <?=$st['is_done']?'checked':''?>><label class="form-check-label small" for="status-done-<?=$st['id']?>">Completed</label><?php if($st['is_done']): ?><span class="badge text-bg-success ms-1">Completion status</span><?php endif; ?></div><div class="col-12 col-md-2 d-flex gap-1 justify-content-md-end"><button class="btn btn-sm btn-outline-primary">Save</button><button type="submit" class="btn btn-sm btn-outline-danger" form="delete-status-<?=$st['id']?>">Delete</button></div></form><form method="post" id="delete-status-<?=$st['id']?>" class="d-none" onsubmit="return confirm('Delete this status?');"><?=csrf_field()?><input type="hidden" name="action" value="delete_status"><input type="hidden" name="id" value="<?=$st['id']?>"></form></li><?php endforeach; ?></ul><form method="post"><?=csrf_field()?><input type="hidden" name="action" value="add_status"><div class="row g-2 align-items-center"><div class="col-12 col-md-5"><input class="form-control" name="name" placeholder="New status label" required></div><div class="col-auto"><label class="visually-hidden" for="new-status-color">Colour of the new status</label><input type="color" class="form-control form-control-color form-control-sm" name="color" id="new-status-color" value="#6c757d" title="Status colour"></div><div class="col-auto form-check mb-0 ms-1"><input class="form-check-input" type="checkbox" name="color_default" id="new-status-color-default"><label class="form-check-label small" for="new-status-color-default">Default colour</label></div><div class="col-12 col-md-3 form-check mb-0 ms-md-1"><input class="form-check-input" type="checkbox" name="is_done" id="done"><label class="form-check-label" for="done">Treat as completed</label></div><div class="col-12 col-md-auto"><button class="btn btn-primary">Add status</button></div></div></form><p class="small muted mt-3">Statuses are shown in display order. A status that tasks still use and the last remaining status cannot be deleted.</p></div>
     <script>
 // Drag & drop ordering of the status rows (#156): the grip handle is the
 // native HTML5 draggable, the list is the drop zone, and a drop reorders the
@@ -2328,6 +2328,125 @@ list.addEventListener('drop',function(e){
     document.body.appendChild(form);
     form.submit();
 });
+})();
+// Touch support (#156 v2): the native HTML5 drag above never fires on phones
+// and tablets - a finger produces pointer/touch events, not dragstart/drop -
+// so the grip did nothing at all on mobile. The touch path mirrors it: press
+// and HOLD the grip (~260 ms) to lift the row (a quick swipe still scrolls
+// the page like before), the row follows the finger, the row under it lights
+// up (tb-status-over) and lifting the finger posts the same reorder_statuses
+// form the desktop drop submits. Only the grip starts a touch drag - the
+// row's inputs keep their normal touch behaviour - and the mouse keeps the
+// HTML5 path above.
+(function(){
+var list=document.querySelector('[data-tb-status-list]');
+if(!list||!window.PointerEvent)return;
+var dragged=null,pressTimer=null,activePointer=null,startX=0,startY=0,startNext=null,swallowClick=0;
+var PICK_DELAY=260,MOVE_SLOP=10,FINGER_LIFT=14;
+var rowUnder=function(x,y){
+    // elementFromPoint above the fingertip - a straight look at (x, y) finds
+    // the lifted row itself, so the aim point rides over the finger
+    var el=document.elementFromPoint(x,y-FINGER_LIFT);
+    return el&&el.closest?el.closest('[data-tb-status-row]'):null;
+};
+var place=function(x,y){
+    // a row detached from the DOM (a re-render mid-gesture) ends the gesture
+    if(!dragged.isConnected){stop(false);return;}
+    var aim=y-FINGER_LIFT;
+    var row=rowUnder(x,y);
+    if(row&&row!==dragged&&row.parentElement===list){
+        // above or below the row's midpoint decides before/after - so the
+        // bottom of the list is reachable by aiming under the last row
+        var box=row.getBoundingClientRect();
+        list.insertBefore(dragged,aim>box.top+box.height/2?row.nextElementSibling:row);
+    } else if(!row){
+        var listBox=list.getBoundingClientRect();
+        if(aim>listBox.bottom){list.appendChild(dragged);}
+    }
+};
+var submit=function(){
+    var ids=[];
+    list.querySelectorAll('[data-tb-status-row]').forEach(function(r){ids.push(r.getAttribute('data-status-id'));});
+    var form=document.createElement('form');
+    form.method='post';
+    // the current URL, exactly like the mouse drop above - a failed reorder
+    // re-renders the statuses page with the error
+    form.action=window.location.pathname+window.location.search;
+    var field=function(name,value){
+        var input=document.createElement('input');
+        input.type='hidden';input.name=name;input.value=value;
+        form.appendChild(input);
+    };
+    field('csrf',(document.querySelector('input[name="csrf"]')||{}).value||'');
+    field('action','reorder_statuses');
+    ids.forEach(function(id){field('order[]',id);});
+    document.body.appendChild(form);
+    form.submit();
+};
+var stop=function(submitChange){
+    if(pressTimer){clearTimeout(pressTimer);pressTimer=null;}
+    if(dragged){
+        dragged.classList.remove('tb-status-dragging');
+        // a row put back exactly where it was lifted changes nothing - no
+        // form, no reload for a no-op pick
+        if(submitChange&&dragged.nextElementSibling!==startNext&&dragged.isConnected){submit();}
+        dragged=null;
+        swallowClick=Date.now()+400;
+    }
+    document.querySelectorAll('.tb-status-over').forEach(function(r){r.classList.remove('tb-status-over');});
+    document.documentElement.classList.remove('tb-status-noselect');
+    activePointer=null;
+};
+list.addEventListener('pointerdown',function(e){
+    // only the grip starts a touch drag; the mouse keeps the HTML5 path above
+    if(activePointer!==null||e.pointerType==='mouse')return;
+    var handle=e.target.closest&&e.target.closest('[data-tb-status-handle]');
+    if(!handle)return;
+    var row=handle.closest('[data-tb-status-row]');
+    if(!row)return;
+    activePointer=e.pointerId;
+    startX=e.clientX;startY=e.clientY;
+    pressTimer=setTimeout(function(){
+        pressTimer=null;
+        if(activePointer===null)return;
+        dragged=row;
+        startNext=row.nextElementSibling;
+        row.classList.add('tb-status-dragging');
+        document.documentElement.classList.add('tb-status-noselect');
+    },PICK_DELAY);
+});
+list.addEventListener('pointermove',function(e){
+    if(e.pointerId!==activePointer)return;
+    if(!dragged){
+        // the finger is travelling before the pick-up: that is a scroll -
+        // give the gesture back to the browser and forget the press
+        if(pressTimer&&(Math.abs(e.clientX-startX)>MOVE_SLOP||Math.abs(e.clientY-startY)>MOVE_SLOP)){
+            clearTimeout(pressTimer);pressTimer=null;activePointer=null;
+        }
+        return;
+    }
+    place(e.clientX,e.clientY);
+    document.querySelectorAll('.tb-status-over').forEach(function(r){r.classList.remove('tb-status-over');});
+    var row=rowUnder(e.clientX,e.clientY);
+    if(row&&row!==dragged){row.classList.add('tb-status-over');}
+});
+list.addEventListener('pointerup',function(e){
+    if(e.pointerId!==activePointer)return;
+    stop(!!dragged);
+});
+list.addEventListener('pointercancel',function(e){
+    if(e.pointerId!==activePointer)return;
+    stop(false);
+});
+// the browser only honours preventDefault on a non-passive touchmove that was
+// registered before the gesture started: while a row is lifted this keeps the
+// page from scrolling under the finger, a plain swipe passes through untouched
+list.addEventListener('touchmove',function(e){if(dragged)e.preventDefault();},{passive:false});
+// the finger that just dropped a row sits on the row's controls - swallow the
+// click the lift would produce so a reorder never saves or deletes by accident
+document.addEventListener('click',function(e){
+    if(Date.now()<swallowClick){e.preventDefault();e.stopPropagation();}
+},true);
 })();
 </script>
     <?php render_footer(); exit;

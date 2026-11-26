@@ -43,6 +43,28 @@ final class StatusDragDropTest extends E2eTestCase
         $this->assertStringContainsString('name="sort_order"', $page->body);
     }
 
+    public function test_the_statuses_page_ships_the_touch_drag_path_for_phones_and_tablets(): void
+    {
+        // #156 v2: the native HTML5 drag never fires on touch devices, so the
+        // grip did nothing on mobile. The page ships a pointer/touch path
+        // beside it - press and hold on the grip lifts the row, the row under
+        // the finger lights up and the same reorder_statuses form is submitted
+        // on lift. Only the grip starts a touch drag and the mouse keeps the
+        // HTML5 path, so the row's inputs and desktop behaviour are unchanged.
+        $admin = $this->adminSession();
+
+        $page = $admin->get('/?page=statuses');
+        $this->assertSame(200, $page->status);
+        $this->assertStringContainsString("e.pointerType==='mouse')return", $page->body, 'The mouse keeps the native HTML5 drag path.');
+        $this->assertStringContainsString('PICK_DELAY', $page->body, 'The press-and-hold pick-up delay is defined.');
+        $this->assertStringContainsString('[data-tb-status-handle]', $page->body, 'Only the grip starts a touch drag.');
+        $this->assertStringContainsString("field('action','reorder_statuses')", $page->body, 'The touch drop submits the same reorder_statuses action.');
+        $this->assertStringContainsString('.tb-status-over{outline:2px dashed', $page->body, 'The row highlight visual is defined.');
+        $this->assertStringContainsString('.tb-status-noselect{-webkit-touch-callout:none', $page->body, 'The pick-up suppresses the long-press callout.');
+        $this->assertStringContainsString('{passive:false}', $page->body, 'The touchmove scroll blocker is registered non-passive.');
+        $this->assertStringContainsString('press and hold the grip', $page->body, 'The hint explains the touch gesture.');
+    }
+
     public function test_a_drop_renumbers_the_statuses_in_the_submitted_order(): void
     {
         $admin = $this->adminSession();

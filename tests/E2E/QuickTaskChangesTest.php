@@ -47,6 +47,33 @@ final class QuickTaskChangesTest extends E2eTestCase
         $this->assertStringContainsString('an empty selection unassigns everybody', $page->body, 'The picker explains the empty selection.');
     }
 
+    public function test_the_quick_changes_card_sits_right_below_the_comment_form(): void
+    {
+        // #153 v2: on a phone the right sidebar stacks UNDER the main column,
+        // so the pickers buried at the very bottom of the page behind every
+        // comment, attachment and history row. The card now lives in the main
+        // column immediately after the Comments card - the DOM order pins the
+        // placement: comment form -> Quick changes -> Attachments, and the
+        // sidebar (Relationships) comes after the card again.
+        $this->adminSession();
+        $taskId = $this->session->createTask('Placement probe');
+
+        $page = $this->session->taskPage($taskId);
+        $this->assertSame(200, $page->status);
+        $commentFormAt = strpos($page->body, 'name="action" value="comment"');
+        $quickChangesAt = strpos($page->body, 'id="quick-changes"');
+        $attachmentsAt = strpos($page->body, '<h2 class="h5">Attachments</h2>');
+        $relationshipsAt = strpos($page->body, '<h2 class="h5">Relationships</h2>');
+        $this->assertNotFalse($commentFormAt, 'The comment form renders.');
+        $this->assertNotFalse($quickChangesAt, 'The Quick changes card renders.');
+        $this->assertNotFalse($attachmentsAt, 'The Attachments card renders.');
+        $this->assertNotFalse($relationshipsAt, 'The Relationships card renders.');
+        $this->assertGreaterThan($commentFormAt, $quickChangesAt, 'The card is below the comment form.');
+        $this->assertGreaterThan($quickChangesAt, $attachmentsAt, 'The card is right below the comment form, before the Attachments card.');
+        $this->assertGreaterThan($quickChangesAt, $relationshipsAt, 'The card is out of the right sidebar: Relationships renders after it.');
+        $this->assertStringNotContainsString('card p-4 mt-4" id="quick-changes"', $page->body, 'The card no longer rides the sidebar spacing.');
+    }
+
     public function test_the_quick_status_select_moves_the_task_with_the_full_audit_trail(): void
     {
         $admin = $this->adminSession();

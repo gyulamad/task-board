@@ -1157,7 +1157,19 @@ function render_header(string $title, array $config, string $error = ''): void {
     <?php if (!empty($_SESSION['flash'])): ?><div class="alert alert-success<?=!empty($_SESSION['flash_class']) ? ' ' . h((string)$_SESSION['flash_class']) : ''?>"><?=h($_SESSION['flash'])?></div><?php unset($_SESSION['flash'], $_SESSION['flash_class']); endif; ?>
     <?php if($error): ?><div class="alert alert-danger"><?=h($error)?></div><?php endif;
 }
-function render_footer(): void { ?></main><?php if (user()): ?><script>
+function render_footer(): void { ?></main><?php if (user()): ?><?php if (!empty($GLOBALS['TB_LIST_VIEW_REPLAYED_QUERY'])): ?><script>
+// #155: this page rendered a #113 replayed view on a bare URL - refreshing
+// THAT URL is a consecutive bare visit (no replay, the pre-#113 behaviour),
+// so the stored filter "disappeared" on refresh and came back only after a
+// trip elsewhere. The boot hands the effective merged view over; rewriting
+// the address bar to it once means a refresh re-requests the full URL and
+// the view simply stays. The #113 second-click escape and the #126 poll
+// rule are untouched - the server-side replay rules do not change.
+(function(){
+var q=<?=json_encode((string)$GLOBALS['TB_LIST_VIEW_REPLAYED_QUERY'], JSON_HEX_TAG|JSON_HEX_AMP|JSON_HEX_APOS|JSON_HEX_QUOT)?>;
+try{history.replaceState(null,'',window.location.pathname+(q?'?'+q:''));}catch(e){}
+})();
+</script><?php endif; ?><script>
 (function(){
 // (#64) The red navbar badges are server-rendered at page load; this poller
 // keeps them live while the board stays open: every 10 seconds it reads the

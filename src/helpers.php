@@ -1000,6 +1000,16 @@ function tb_list_view_boot(string $page, ?PDO $pdo = null): void {
         // replay, not from the visitor's own URL - the task filter card reads
         // the flag to keep the advanced area closed on such a bare visit.
         $GLOBALS['TB_LIST_VIEW_REPLAYED'] = true;
+        // #155: the replay lands on a bare URL, and a refresh of THAT URL
+        // counts as a consecutive bare visit (no replay, the pre-#113
+        // behaviour) - so the filter "disappeared" on refresh and came back
+        // only after a trip elsewhere. The effective merged view rides out
+        // with the page and the shared footer script rewrites the address
+        // bar to it once, so a refresh re-requests the full URL and the view
+        // simply stays. The #113 second-click escape and the #126 poll rule
+        // are untouched: the server-side replay rules do not change, the
+        // address bar just stops lying about where the visitor is.
+        $GLOBALS['TB_LIST_VIEW_REPLAYED_QUERY'] = http_build_query($_GET);
     }
 }
 

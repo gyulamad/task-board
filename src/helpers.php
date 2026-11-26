@@ -383,6 +383,24 @@ function user_options(PDO $pdo): array {
     return $pdo->query('SELECT id,display_name,last_seen_at,logged_out FROM users ORDER BY display_name')->fetchAll();
 }
 
+/** Human-readable assignee roster for the audit trail: display names joined
+ * with ', ' in the order the ids are given, or the em dash when the list is
+ * empty - the exact shape the full save's audit writes (#54), with the same
+ * '#id' fallback for a name that can not be resolved any more. Used by the
+ * #153 quick assignee change so the quick action's history rows read exactly
+ * like a full save's. */
+function tb_task_assignee_names(PDO $pdo, array $ids): string {
+    $ids = array_map('intval', $ids);
+    if (!$ids) return '—';
+    $ph = implode(',', array_fill(0, count($ids), '?'));
+    $s = $pdo->prepare('SELECT id, display_name FROM users WHERE id IN (' . $ph . ')');
+    $s->execute($ids);
+    $userNames = [];
+    foreach ($s->fetchAll(PDO::FETCH_ASSOC) as $u) $userNames[(int)$u['id']] = (string)$u['display_name'];
+    $names = array_map(fn(int $i): string => $userNames[$i] ?? ('#' . $i), $ids);
+    return implode(', ', $names);
+}
+
 /**
  * Assignees for several tasks in one query, keyed by task id: each entry is a
  * list of rows (display_name + last_seen_at) ready for tb_user_with_activity().

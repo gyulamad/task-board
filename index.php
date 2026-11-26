@@ -342,6 +342,71 @@ if (user()) {
                 if (!empty($audit)) foreach ($audit as [$hField,$hLabel,$hOld,$hNew]) history_change($pdo,$id,$hField,$hLabel,$hOld,$hNew);
                 redirect('?page=task&id=' . $id);
             }
+            if ($action === 'quick_task_status') {
+                // Quick changes on the task view (#153): a status select lives
+                // on the task page, so a ticket can be moved without opening
+                // the full edit form. The server mirrors save_task's discipline
+                // exactly - same validation, the same field-level audit row and
+                // the same event sentence - so the history trail can not tell a
+                // quick move from a full save; only the untouched fields make
+                // the request smaller. An unchanged pick writes nothing: a
+                // no-op save leaves no row behind either. Archived tasks stay
+                // read-only (the card is not rendered, the action still guards).
+                $id = (int)$_POST['id'];
+                $t = find_task($pdo, $id);
+                if (!$t) throw new RuntimeException('Task not found.');
+                if (task_is_archived($t)) throw new RuntimeException('This task is archived and read-only. Restore it from the archive first.');
+                $statusId = (int)($_POST['status_id'] ?? 0);
+                if (!status_exists($pdo, $statusId)) throw new RuntimeException('Choose a valid status.');
+                if ((int)$t['status_id'] === $statusId) {
+                    flash('Status unchanged.');
+                    redirect('?page=task&id=' . $id);
+                }
+                $statusNames=[];
+                foreach (all_statuses($pdo) as $st) $statusNames[(int)$st['id']]=(string)$st['name'];
+                $pdo->prepare('UPDATE tasks SET status_id=? WHERE id=?')->execute([$statusId,$id]);
+                $audit=['status','Status',$statusNames[(int)$t['status_id']] ?? null,$statusNames[$statusId] ?? null];
+                history($pdo,$id,'Task updated','The followings are changed: Status. Status changed from "'.$audit[2].'" to "'.$audit[3].'".');
+                history_change($pdo,$id,...$audit);
+                flash('Status updated.');
+                redirect('?page=task&id=' . $id);
+            }
+            if ($action === 'quick_task_assignees') {
+                // Quick changes on the task view (#153): the assignees
+                // multi-select rewrites the roster without the full edit form,
+                // exactly like the edit page's picker would. The old roster is
+                // captured before the delete (#54), the rows are re-inserted
+                // before the event row lands (the CI fix: history() notifies
+                // the final roster, not the in-between one), and the audit
+                // carries the same human-readable names a full save records.
+                // An empty submission unassigns everybody - the picker stays
+                // honest about it in its help text. Archived tasks are refused.
+                $id = (int)$_POST['id'];
+                $t = find_task($pdo, $id);
+                if (!$t) throw new RuntimeException('Task not found.');
+                if (task_is_archived($t)) throw new RuntimeException('This task is archived and read-only. Restore it from the archive first.');
+                $assignees = array_values(array_unique(array_filter(array_map('intval', (array)($_POST['assignees'] ?? [])), fn(int $v): bool => $v > 0)));
+                foreach ($assignees as $uid) {
+                    if (!user_exists($pdo, $uid)) throw new RuntimeException('Choose valid assignees.');
+                }
+                $hStmt=$pdo->prepare('SELECT user_id FROM task_assignees WHERE task_id=?'); $hStmt->execute([$id]);
+                $oldAssigneeIds=array_map('intval', $hStmt->fetchAll(PDO::FETCH_COLUMN));
+                $oldSorted=$oldAssigneeIds; $newSorted=$assignees;
+                sort($oldSorted); sort($newSorted);
+                if ($oldSorted === $newSorted) {
+                    flash('Assignees unchanged.');
+                    redirect('?page=task&id=' . $id);
+                }
+                $oldNames = tb_task_assignee_names($pdo, $oldAssigneeIds);
+                $newNames = tb_task_assignee_names($pdo, $assignees);
+                $pdo->prepare('DELETE FROM task_assignees WHERE task_id=?')->execute([$id]);
+                $a = $pdo->prepare('INSERT IGNORE INTO task_assignees(task_id,user_id) VALUES(?,?)');
+                foreach ($assignees as $uid) $a->execute([$id,$uid]);
+                history($pdo,$id,'Task updated','The followings are changed: Assignees. Assignees changed from "'.$oldNames.'" to "'.$newNames.'".');
+                history_change($pdo,$id,'assignees','Assignees',$oldNames,$newNames);
+                flash('Assignees updated.');
+                redirect('?page=task&id=' . $id);
+            }
             if ($action === 'archive_task') {
                 // Soft delete (#12): the task leaves the lists but stays restorable.
                 $id = (int)$_POST['id'];
@@ -2223,12 +2288,16 @@ sel.addEventListener('change',function(){
 if ($page==='task') {
     $id=(int)($_GET['id']??0);$s=$pdo->prepare('SELECT t.*,s.name status_name,s.color status_color,u.display_name creator,u.last_seen_at creator_last_seen,u.logged_out creator_logged_out,prj.name project_name FROM tasks t JOIN statuses s ON s.id=t.status_id LEFT JOIN users u ON u.id=t.created_by LEFT JOIN projects prj ON prj.id=t.project_id WHERE t.id=?');$s->execute([$id]);$t=$s->fetch();
     if(!$t){http_response_code(404);exit('Task not found.');}
-    $s=$pdo->prepare('SELECT u.display_name,u.last_seen_at,u.logged_out FROM task_assignees a JOIN users u ON u.id=a.user_id WHERE a.task_id=?');$s->execute([$id]);$assignees=$s->fetchAll();
+    $s=$pdo->prepare('SELECT u.id,u.display_name,u.last_seen_at,u.logged_out FROM task_assignees a JOIN users u ON u.id=a.user_id WHERE a.task_id=?');$s->execute([$id]);$assignees=$s->fetchAll();
     $s=$pdo->prepare('SELECT c.*,u.display_name,u.last_seen_at,u.logged_out FROM comments c LEFT JOIN users u ON u.id=c.user_id WHERE c.task_id=? ORDER BY c.created_at');$s->execute([$id]);$comments=$s->fetchAll();
     $s=$pdo->prepare('SELECT a.*,u.display_name,u.last_seen_at,u.logged_out FROM attachments a LEFT JOIN users u ON u.id=a.user_id WHERE a.task_id=? ORDER BY a.created_at DESC');$s->execute([$id]);$attachments=$s->fetchAll();
     $s=$pdo->prepare('SELECT h.*,u.display_name,u.last_seen_at,u.logged_out FROM task_history h LEFT JOIN users u ON u.id=h.user_id WHERE h.task_id=? ORDER BY h.created_at DESC');$s->execute([$id]);$historyRows=$s->fetchAll();
     $s=$pdo->prepare('SELECT l.*,t.title FROM task_links l JOIN tasks t ON t.id=l.related_task_id WHERE l.task_id=? ORDER BY l.link_type');$s->execute([$id]);$links=$s->fetchAll();
     $all=$pdo->prepare('SELECT id,title FROM tasks WHERE id<>? AND archived_at IS NULL ORDER BY id DESC LIMIT 200');$all->execute([$id]);
+    // Quick changes on the task view (#153): the picker sources ride along the
+    // same lookups the edit page uses (all_statuses, user_options) and the
+    // roster ids mark the multi-select's current assignees.
+    $statuses=all_statuses($pdo);$users=user_options($pdo);$assigneeIds=array_map('intval',array_column($assignees,'id'));
     $isArchived=task_is_archived($t);
     render_header('Task #'.$id,$config,$error); ?>
     <div class="d-flex justify-content-between align-items-start mb-3"><div><div class="muted">Task #<?=$id?> · <?=tb_status_badge((string)$t['status_name'], $t['status_color'] ?? null)?><?php if($isArchived): ?> <span class="badge text-bg-secondary">Archived</span><?php endif; ?></div><h1 class="h3"><?=h($t['title'])?></h1></div><?php if(!$isArchived): ?><a class="btn btn-primary" href="?page=edit&id=<?=$id?>">Edit task</a><?php endif; ?></div>
@@ -2237,6 +2306,7 @@ if ($page==='task') {
     <div class="card p-4 mb-4"><h2 class="h5">Attachments</h2><?php foreach($attachments as $a): ?><div class="d-flex justify-content-between border-bottom py-2"><a href="?page=download&id=<?=$a['id']?>"><?=h($a['original_name'])?></a><span class="small muted"><?=tb_user_with_activity($a)?> · <?=number_format($a['file_size']/1024,1)?> KB · <?=h(tb_ago($a['created_at']))?></span><?php if(is_admin()||(int)$a['user_id']===(int)user()['id']): ?><form method="post" class="d-inline" onsubmit="return confirm('Delete this attachment permanently?')"><?=csrf_field()?><input type="hidden" name="action" value="delete_attachment"><input type="hidden" name="attachment_id" value="<?=$a['id']?>"><button class="btn btn-sm btn-link text-danger p-0" title="Delete this attachment">delete</button></form><?php endif; ?></div><?php endforeach; ?><form method="post" enctype="multipart/form-data" class="mt-3"><?=csrf_field()?><input type="hidden" name="action" value="upload"><input type="hidden" name="task_id" value="<?=$id?>"><div class="input-group"><input class="form-control" type="file" name="file" required><button class="btn btn-outline-primary">Upload</button></div><div class="form-text">Max <?=round($config['max_upload_bytes']/1024/1024)?> MB. Allowed: common images, PDF, TXT, ZIP, DOCX and XLSX.</div></form></div>
     <div class="card p-4"><h2 class="h5">History</h2><?php foreach($historyRows as $r): ?><div class="border-bottom py-2"><strong><?=h($r['event'])?></strong> <span class="small muted">by <?=tb_user_with_activity($r)?> · <?=h(tb_ago($r['created_at']))?></span> <a class="small text-decoration-none" href="?page=task_history&id=<?=$r['id']?>" title="Full audit of this entry (#54)">details</a><?php if($r['details']): ?><div class="small"><?=h(tb_excerpt((string)$r['details'], 100))?></div><?php endif; ?><?php if($r['field']): ?><div class="small muted">Field &quot;<?=h((string)$r['field']) ?>&quot;: from &quot;<?=h(tb_excerpt((string)($r['old_value'] ?? '—'), 100)) ?>&quot; to &quot;<?=h(tb_excerpt((string)($r['new_value'] ?? '—'), 100)) ?>&quot;</div><?php endif; ?></div><?php endforeach; ?></div></div>
     <div class="col-lg-4"><div class="card p-4"><h2 class="h5">Relationships</h2><?php foreach($links as $l): ?><div class="border-bottom py-2"><span class="badge text-bg-secondary"><?=h($l['link_type'])?></span> <a href="?page=task&id=<?=$l['related_task_id']?>">#<?=$l['related_task_id']?> <?=h($l['title'])?></a><form method="post" class="d-inline"><?=csrf_field()?><input type="hidden" name="action" value="unlink_task"><input type="hidden" name="task_id" value="<?=$id?>"><input type="hidden" name="related_task_id" value="<?=$l['related_task_id']?>"><input type="hidden" name="link_type" value="<?=h($l['link_type'])?>"><button class="btn btn-sm btn-link text-danger">remove</button></form></div><?php endforeach; ?><form method="post" class="mt-3"><?=csrf_field()?><input type="hidden" name="action" value="link_task"><input type="hidden" name="task_id" value="<?=$id?>"><label class="form-label">Link type</label><select class="form-select mb-2" name="link_type"><?php foreach(TASK_BOARD_LINK_TYPES as $linkTypeValue=>$linkTypeLabel): ?><option value="<?=h($linkTypeValue)?>"><?=h($linkTypeLabel)?></option><?php endforeach; ?></select><label class="form-label">Task</label><select class="form-select mb-2" name="related_task_id" required><?php foreach($all->fetchAll() as $a): ?><option value="<?=$a['id']?>">#<?=$a['id']?> - <?=h($a['title'])?></option><?php endforeach; ?></select><button class="btn btn-outline-primary w-100">Add relationship</button></form></div>
+    <div class="card p-4 mt-4" id="quick-changes"><h2 class="h5">Quick changes</h2><p class="small muted mb-3">Move the ticket without opening the edit form - the kanban board follows the status.</p><form method="post" class="mb-3"><?=csrf_field()?><input type="hidden" name="action" value="quick_task_status"><input type="hidden" name="id" value="<?=$id?>"><label class="form-label" for="tb-quick-status">Status</label><select class="form-select" name="status_id" id="tb-quick-status" data-tb-quick-status><?php foreach($statuses as $st): ?><option value="<?=$st['id']?>" <?=(int)$t['status_id']===(int)$st['id']?'selected':''?>><?=h($st['name'])?></option><?php endforeach; ?></select><button class="btn btn-outline-primary mt-2 w-100">Set status</button></form><form method="post"><?=csrf_field()?><input type="hidden" name="action" value="quick_task_assignees"><input type="hidden" name="id" value="<?=$id?>"><label class="form-label" for="tb-quick-assignees">Assignees</label><select class="form-select" name="assignees[]" id="tb-quick-assignees" multiple size="4" data-tb-quick-assignees><?php foreach($users as $u): ?><option value="<?=$u['id']?>" <?=in_array((int)$u['id'],$assigneeIds,true)?'selected':''?>><?=h($u['display_name'])?></option><?php endforeach; ?></select><div class="form-text">Ctrl/Cmd-click for several; an empty selection unassigns everybody.</div><button class="btn btn-outline-primary mt-2 w-100">Set assignees</button></form></div>
     <div class="card p-4 mt-4"><h2 class="h5">Actions</h2><?php if($isArchived): ?><p class="small muted">This task is archived and hidden from the task list.</p><form method="post" class="mb-2"><?=csrf_field()?><input type="hidden" name="action" value="restore_task"><input type="hidden" name="id" value="<?=$id?>"><button class="btn btn-outline-primary w-100">Restore task</button></form><form method="post" onsubmit="return confirm('Delete this task permanently? This cannot be undone.')"><?=csrf_field()?><input type="hidden" name="action" value="delete_task"><input type="hidden" name="id" value="<?=$id?>"><input type="hidden" name="return" value="?"><button class="btn btn-outline-danger w-100">Delete permanently</button></form><?php else: ?><form method="post" onsubmit="return confirm('Archive this task? It will be hidden from the task list but can be restored from the archive.')"><?=csrf_field()?><input type="hidden" name="action" value="archive_task"><input type="hidden" name="id" value="<?=$id?>"><button class="btn btn-outline-danger w-100">Archive task</button></form><?php endif; ?></div></div></div>
     <?php render_footer(); exit;
 }

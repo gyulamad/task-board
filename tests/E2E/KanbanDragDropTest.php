@@ -225,7 +225,12 @@ final class KanbanDragDropTest extends E2eTestCase
         // pins the area state to an explicit adv before the #48/#119 guesses.
         $admin = $this->adminSession();
         $moved = $admin->createTask('Panel closed drag', ['assignees' => ['1']]);
-        $other = $admin->createTask('Panel closed peer', ['assignees' => ['1']]);
+        // The peer must NOT match the assignee=1 filter - the 12:24 report's
+        // "non-matching card stays hidden" is only true for a card outside the
+        // filter. The v2 authoring fixture assigned it user 1 as well, which
+        // made the card legitimately visible and its own pin impossible
+        // (caught by the release suite run, documented on the task).
+        $other = $admin->createTask('Panel closed peer');
 
         $response = $admin->post('/?page=kanban&assignee=1&adv=0', [
             'action' => 'move_kanban_task', 'id' => (string)$moved, 'status_id' => '2', 'order' => [(string)$moved],

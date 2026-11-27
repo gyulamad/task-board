@@ -214,6 +214,101 @@ final class KanbanDragDropTest extends E2eTestCase
         $this->assertStringContainsString('The kanban board did not change.', $admin->get('/?page=kanban&q=steady')->body);
     }
 
+    public function test_a_drop_round_trip_keeps_the_advanced_panel_closed_when_it_was_closed(): void
+    {
+        // #175 round 2 (the 12:24 report): "Also the filter opens (which is
+        // wrong, it should stay closed)". The v1 fix redirects to the very URL
+        // the drop came from, but that explicit request carries the advanced
+        // keys - so the #48 rule popped the panel open on every drag, even
+        // though the visitor dragged with it closed. The drop form now appends
+        // adv=1/0 (the panel state the visitor dragged on) and the filter card
+        // pins the area state to an explicit adv before the #48/#119 guesses.
+        $admin = $this->adminSession();
+        $moved = $admin->createTask('Panel closed drag', ['assignees' => ['1']]);
+        $other = $admin->createTask('Panel closed peer', ['assignees' => ['1']]);
+
+        $response = $admin->post('/?page=kanban&assignee=1&adv=0', [
+            'action' => 'move_kanban_task', 'id' => (string)$moved, 'status_id' => '2', 'order' => [(string)$moved],
+        ]);
+        $this->assertSame(302, $response->status);
+        $this->assertSame('/?page=kanban&assignee=1&adv=0', (string)$response->header('location'), 'The redirect rides the same URL including the pinned panel state.');
+
+        $body = $admin->get('/?page=kanban&assignee=1&adv=0')->body;
+        $this->assertStringContainsString('<div class="collapse" id="advanced-filters">', $body, 'The advanced area stays closed - the state the visitor dragged on.');
+        $this->assertStringNotContainsString('<div class="collapse show" id="advanced-filters">', $body, 'No auto-expansion on the returned board.');
+        $this->assertStringContainsString('<span class="badge text-bg-info ms-1">on</span>', $body, 'The toggle keeps its honest "on" badge - the filter itself still applies (#119 idea).');
+        $this->assertStringContainsString($this->taskCardLink($moved, 'Panel closed drag'), $body, 'The moved card renders - the assignee filter survived.');
+        $this->assertStringNotContainsString($this->taskCardLink($other, 'Panel closed peer'), $body, 'The non-matching card stays hidden.');
+
+        // The documented #48 default is untouched: a request that carries the
+        // advanced keys WITHOUT the explicit adv still expands the area.
+        $plain = $admin->post('/?page=kanban&assignee=1', [
+            'action' => 'move_kanban_task', 'id' => (string)$moved, 'status_id' => '2', 'order' => [(string)$moved],
+        ]);
+        $this->assertSame(302, $plain->status);
+        $this->assertSame('/?page=kanban&assignee=1', (string)$plain->header('location'));
+        $body = $admin->get('/?page=kanban&assignee=1')->body;
+        $this->assertStringContainsString('<div class="collapse show" id="advanced-filters">', $body, 'No adv param: the #48 rule (expand on an explicit filtered request) still holds.');
+    }
+
+    public function test_a_drop_round_trip_with_the_panel_open_keeps_it_open(): void
+    {
+        // The mirror case: a visitor dragging with the panel open must not see
+        // it collapse on the returned board - adv=1 pins it open.
+        $admin = $this->adminSession();
+        $moved = $admin->createTask('Panel open drag', ['assignees' => ['1']]);
+
+        $response = $admin->post('/?page=kanban&assignee=1&adv=1', [
+            'action' => 'move_kanban_task', 'id' => (string)$moved, 'status_id' => '2', 'order' => [(string)$moved],
+        ]);
+        $this->assertSame(302, $response->status);
+        $this->assertSame('/?page=kanban&assignee=1&adv=1', (string)$response->header('location'));
+
+        $body = $admin->get('/?page=kanban&assignee=1&adv=1')->body;
+        $this->assertStringContainsString('<div class="collapse show" id="advanced-filters">', $body, 'The advanced area stays open - the state the visitor dragged on.');
+    }
+
+    public function test_a_replayed_stored_view_remembers_the_panel_state(): void
+    {
+        // The #113 stored view captures every view param - adv now rides along,
+        // so a later bare visit replays the panel state too. The explicit adv
+        // wins over the #119 replay rule in BOTH directions: an adv=1 stored
+        // view opens the area on the replayed board (the pre-fix replay rule
+        // would have kept it closed and the open state would have been lost).
+        $admin = $this->adminSession();
+        $taskId = $admin->createTask('Replay panel drag', ['assignees' => ['1']]);
+
+        // A no-op drop is enough: the capture refreshes the stored view with
+        // assignee=1 + adv=1.
+        $response = $admin->post('/?page=kanban&assignee=1&adv=1', [
+            'action' => 'move_kanban_task', 'id' => (string)$taskId, 'status_id' => '1', 'order' => [(string)$taskId],
+        ]);
+        $this->assertSame(302, $response->status);
+
+        $admin->get('/?page=tasks');
+        $body = $admin->get('/?page=kanban')->body;
+        $this->assertStringContainsString('<div class="collapse show" id="advanced-filters">', $body, 'The replayed view pins the panel open - the explicit adv beats the #119 replay rule.');
+    }
+
+    public function test_the_drop_scripts_carry_the_scroll_and_panel_state_fixes(): void
+    {
+        // The scroll half of the 12:24 report: "when I drag a task the whole
+        // page refreshes jumping to the top so it's no longer there what I
+        // want to see". The E2E harness drives the HTTP round-trip, not the
+        // browser, so the client-side half is pinned by markup: both drop
+        // paths build the drop URL with the adv append, both store the scroll
+        // position before submitting, and the reader restores it once.
+        $this->adminSession();
+        $body = $this->board();
+        $this->assertStringContainsString("dropUrl+=(window.location.search?'&':'?')+'adv='+(adv&&adv.classList.contains('show')?'1':'0')", $body, 'The mouse drop appends the advanced panel state.');
+        $this->assertStringContainsString("sessionStorage.setItem('tb-kanban-return-scroll',String(Math.round(window.scrollY||0)))", $body, 'The mouse drop stores the scroll position.');
+        $this->assertStringContainsString("if(!document.querySelector('#tb-list-region'))return", $body, 'The scroll reader is a kanban-scoped no-op elsewhere.');
+        $this->assertStringContainsString("sessionStorage.getItem('tb-kanban-return-scroll')", $body, 'The reader restores the stored position.');
+        $this->assertStringContainsString('window.scrollTo(0,saved)', $body, 'The restore scrolls the returned board back.');
+        $this->assertSame(2, substr_count($body, "sessionStorage.setItem('tb-kanban-return-scroll'"), 'Both the mouse and the touch drop path store the scroll position.');
+        $this->assertSame(2, substr_count($body, "+'adv='+(adv&&adv.classList.contains('show')?'1':'0')"), 'Both drop paths pin the advanced panel state.');
+    }
+
     public function test_an_archived_task_is_refused_by_the_move_action(): void
     {
         $this->adminSession();

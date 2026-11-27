@@ -3002,8 +3002,22 @@ region.addEventListener('drop',function(e){
     form.method='post';
     // the current URL, so the move returns the visitor to exactly the board
     // (with its filters) they were dragging on - success and failure alike
-    // (#175: the redirect rides the same URL, the filter never clears)
-    form.action=window.location.pathname+window.location.search;
+    // (#175: the redirect rides the same URL, the filter never clears).
+    // #175 round 2: the advanced panel state rides along as adv=1/0 - an
+    // explicit request key the filter card honours, so the returned board
+    // re-opens exactly the panel the visitor dragged on instead of the #48
+    // URL-key guess (a filtered board no longer pops the panel open).
+    var dropUrl=window.location.pathname+window.location.search;
+    try{
+        var adv=document.getElementById('advanced-filters');
+        dropUrl+=(window.location.search?'&':'?')+'adv='+(adv&&adv.classList.contains('show')?'1':'0');
+    }catch(err){}
+    form.action=dropUrl;
+    // and the scroll position: the plain form round-trip is a full reload that
+    // lands at the top of the board, so the cards the visitor was arranging
+    // scrolled out of view. Store where they were looking; the reader below
+    // restores it once, on the load this submit produces.
+    try{sessionStorage.setItem('tb-kanban-return-scroll',String(Math.round(window.scrollY||0)));}catch(err){}
     var field=function(name,value){
         var input=document.createElement('input');
         input.type='hidden';input.name=name;input.value=value;
@@ -3019,6 +3033,24 @@ region.addEventListener('drop',function(e){
     document.body.appendChild(form);
     form.submit();
 });
+})();
+// #175 round 2: the drop's full-reload round-trip lands the browser at the top
+// of the page - the visitor "is no longer there", the cards they were arranging
+// scrolled out of view (the 12:24 report: "the whole page refreshes jumping to
+// the top"). The drop stored the scroll position right before submitting (the
+// tb-kanban-return-scroll marker); this reader restores it exactly once, on the
+// load the drop itself produced, and clears the marker so any later manual
+// reload keeps the normal top-of-page behaviour. Same guard as the drop paths:
+// without the kanban region this script is a no-op.
+(function(){
+if(!document.querySelector('#tb-list-region'))return;
+try{
+    var saved=parseInt(sessionStorage.getItem('tb-kanban-return-scroll')||'',10);
+    if(isFinite(saved)&&saved>=0){
+        sessionStorage.removeItem('tb-kanban-return-scroll');
+        window.scrollTo(0,saved);
+    }
+}catch(err){}
 })();
 // Touch support (#154 v2): the native HTML5 drag above never fires on phones
 // and tablets - a finger produces pointer/touch events, not dragstart/drop -
@@ -3060,8 +3092,17 @@ var submit=function(column){
     var form=document.createElement('form');
     form.method='post';
     // the current URL, exactly like the mouse drop above - the move returns
-    // the visitor to the same view, filters included (#175)
-    form.action=window.location.pathname+window.location.search;
+    // the visitor to the same view, filters included (#175). #175 round 2
+    // rides the same two extras on the touch path: adv=1/0 pins the advanced
+    // panel state the visitor dragged on, and the scroll marker restores the
+    // viewport the full-reload round-trip would otherwise jump away from.
+    var dropUrl=window.location.pathname+window.location.search;
+    try{
+        var adv=document.getElementById('advanced-filters');
+        dropUrl+=(window.location.search?'&':'?')+'adv='+(adv&&adv.classList.contains('show')?'1':'0');
+    }catch(err){}
+    form.action=dropUrl;
+    try{sessionStorage.setItem('tb-kanban-return-scroll',String(Math.round(window.scrollY||0)));}catch(err){}
     var field=function(name,value){
         var input=document.createElement('input');
         input.type='hidden';input.name=name;input.value=value;

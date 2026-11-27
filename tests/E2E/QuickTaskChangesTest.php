@@ -35,9 +35,9 @@ final class QuickTaskChangesTest extends E2eTestCase
     {
         $this->adminSession();
         $workerId = $this->createUser('worker', 'Worker User', 'WorkerPass12345');
-        $taskId = $this->session->createTask('Quick target', ['assignees' => [(string)$workerId]]);
+        $taskId = $this->adminSession()->createTask('Quick target', ['assignees' => [(string)$workerId]]);
 
-        $page = $this->session->taskPage($taskId);
+        $page = $this->adminSession()->taskPage($taskId);
         $this->assertSame(200, $page->status);
         $this->assertStringContainsString('id="quick-changes"', $page->body, 'The Quick changes card is rendered.');
         $this->assertStringContainsString('name="action" value="quick_task_changes"', $page->body, 'The card posts the combined quick action.');
@@ -67,9 +67,9 @@ final class QuickTaskChangesTest extends E2eTestCase
         // sidebar (Relationships) comes after the card again. #170 keeps the
         // placement byte-identical; only the card's inner markup merges.
         $this->adminSession();
-        $taskId = $this->session->createTask('Placement probe');
+        $taskId = $this->adminSession()->createTask('Placement probe');
 
-        $page = $this->session->taskPage($taskId);
+        $page = $this->adminSession()->taskPage($taskId);
         $this->assertSame(200, $page->status);
         $commentFormAt = strpos($page->body, 'name="action" value="comment"');
         $quickChangesAt = strpos($page->body, 'id="quick-changes"');
@@ -90,16 +90,16 @@ final class QuickTaskChangesTest extends E2eTestCase
         $this->adminSession();
         $workerId = $this->createUser('worker', 'Worker User', 'WorkerPass12345');
         $peerId = $this->createUser('peer', 'Peer User', 'PeerPass123456');
-        $taskId = $this->session->createTask('One save', ['assignees' => [(string)$workerId]]);
+        $taskId = $this->adminSession()->createTask('One save', ['assignees' => [(string)$workerId]]);
 
-        $response = $this->session->post('/?page=task&id=' . $taskId, [
+        $response = $this->adminSession()->post('/?page=task&id=' . $taskId, [
             'action' => 'quick_task_changes', 'id' => (string)$taskId,
             'status_id' => '2', 'assignees' => [(string)$peerId, (string)$workerId],
         ]);
         $this->assertSame(302, $response->status, 'The quick save redirects back to the task.');
         $this->assertStringContainsString('page=task&id=' . $taskId, (string)$response->header('location'));
 
-        $page = $this->session->taskPage($taskId);
+        $page = $this->adminSession()->taskPage($taskId);
         $this->assertStringContainsString('Status and assignees updated.', $page->body, 'The confirmation ribbon renders.');
         $this->assertStringContainsString('The followings are changed: Status, Assignees.', $page->body, 'The event summary renders within the 100-char details cut (#80).');
         $eventDetails = (string)TestServer::pdo()->query("SELECT details FROM task_history WHERE task_id=$taskId AND event='Task updated' AND field IS NULL ORDER BY id")->fetchColumn();
@@ -125,14 +125,14 @@ final class QuickTaskChangesTest extends E2eTestCase
     {
         $this->adminSession();
         $workerId = $this->createUser('worker', 'Worker User', 'WorkerPass12345');
-        $taskId = $this->session->createTask('Status only', ['assignees' => [(string)$workerId]]);
+        $taskId = $this->adminSession()->createTask('Status only', ['assignees' => [(string)$workerId]]);
 
-        $response = $this->session->post('/?page=task&id=' . $taskId, [
+        $response = $this->adminSession()->post('/?page=task&id=' . $taskId, [
             'action' => 'quick_task_changes', 'id' => (string)$taskId,
             'status_id' => '2', 'assignees' => [(string)$workerId],
         ]);
         $this->assertSame(302, $response->status);
-        $page = $this->session->taskPage($taskId);
+        $page = $this->adminSession()->taskPage($taskId);
         $this->assertStringContainsString('Status updated.', $page->body, 'The confirmation names the field that moved.');
         $this->assertStringContainsString('The followings are changed: Status. Status changed from &quot;TODO&quot; to &quot;IN PROGRESS&quot;.', $page->body, 'The single-field event sentence is byte-identical to the pre-#170 quick move.');
         $this->assertStringContainsString('Field &quot;status&quot;: from &quot;TODO&quot; to &quot;IN PROGRESS&quot;', $page->body, 'The field-level audit row renders.');
@@ -148,14 +148,14 @@ final class QuickTaskChangesTest extends E2eTestCase
         $this->adminSession();
         $workerId = $this->createUser('worker', 'Worker User', 'WorkerPass12345');
         $peerId = $this->createUser('peer', 'Peer User', 'PeerPass123456');
-        $taskId = $this->session->createTask('Roster rewrite', ['assignees' => [(string)$workerId]]);
+        $taskId = $this->adminSession()->createTask('Roster rewrite', ['assignees' => [(string)$workerId]]);
 
-        $response = $this->session->post('/?page=task&id=' . $taskId, [
+        $response = $this->adminSession()->post('/?page=task&id=' . $taskId, [
             'action' => 'quick_task_changes', 'id' => (string)$taskId,
             'status_id' => '1', 'assignees' => [(string)$peerId, (string)$workerId],
         ]);
         $this->assertSame(302, $response->status);
-        $page = $this->session->taskPage($taskId);
+        $page = $this->adminSession()->taskPage($taskId);
         $this->assertStringContainsString('Assignees updated.', $page->body);
         $this->assertSame('TODO', (string)TestServer::pdo()->query("SELECT s.name FROM tasks t JOIN statuses s ON s.id=t.status_id WHERE t.id=$taskId")->fetchColumn(), 'An unchanged status is not rewritten.');
 
@@ -167,11 +167,11 @@ final class QuickTaskChangesTest extends E2eTestCase
 
         // Unassigning everybody: an empty multi-select submission (no key at
         // all) leaves the task unassigned and the audit says so.
-        $response = $this->session->post('/?page=task&id=' . $taskId, [
+        $response = $this->adminSession()->post('/?page=task&id=' . $taskId, [
             'action' => 'quick_task_changes', 'id' => (string)$taskId, 'status_id' => '1',
         ]);
         $this->assertSame(302, $response->status);
-        $page = $this->session->taskPage($taskId);
+        $page = $this->adminSession()->taskPage($taskId);
         $this->assertStringContainsString('Unassigned', $page->body);
         $this->assertSame('0', (string)TestServer::pdo()->query("SELECT COUNT(*) FROM task_assignees WHERE task_id=$taskId")->fetchColumn());
         $rows = TestServer::pdo()->query("SELECT old_value, new_value FROM task_history WHERE task_id=$taskId AND field='assignees' ORDER BY id")->fetchAll();
@@ -183,9 +183,9 @@ final class QuickTaskChangesTest extends E2eTestCase
     {
         $this->adminSession();
         $workerId = $this->createUser('worker', 'Worker User', 'WorkerPass12345');
-        $taskId = $this->session->createTask('Notify the pick');
+        $taskId = $this->adminSession()->createTask('Notify the pick');
 
-        $this->session->post('/?page=task&id=' . $taskId, [
+        $this->adminSession()->post('/?page=task&id=' . $taskId, [
             'action' => 'quick_task_changes', 'id' => (string)$taskId,
             'status_id' => '1', 'assignees' => [(string)$workerId],
         ]);
@@ -198,15 +198,15 @@ final class QuickTaskChangesTest extends E2eTestCase
     {
         $this->adminSession();
         $workerId = $this->createUser('worker', 'Worker User', 'WorkerPass12345');
-        $taskId = $this->session->createTask('Steady pick', ['assignees' => [(string)$workerId]]);
+        $taskId = $this->adminSession()->createTask('Steady pick', ['assignees' => [(string)$workerId]]);
 
         $before = (int)TestServer::pdo()->query("SELECT COUNT(*) FROM task_history WHERE task_id=$taskId")->fetchColumn();
-        $response = $this->session->post('/?page=task&id=' . $taskId, [
+        $response = $this->adminSession()->post('/?page=task&id=' . $taskId, [
             'action' => 'quick_task_changes', 'id' => (string)$taskId,
             'status_id' => '1', 'assignees' => [(string)$workerId],
         ]);
         $this->assertSame(302, $response->status);
-        $page = $this->session->taskPage($taskId);
+        $page = $this->adminSession()->taskPage($taskId);
         $this->assertStringContainsString('Nothing changed.', $page->body, 'The no-op says so honestly.');
         $after = (int)TestServer::pdo()->query("SELECT COUNT(*) FROM task_history WHERE task_id=$taskId")->fetchColumn();
         $this->assertSame($before, $after, 'A no-op writes no row.');
@@ -216,9 +216,9 @@ final class QuickTaskChangesTest extends E2eTestCase
     {
         $this->adminSession();
         $workerId = $this->createUser('worker', 'Worker User', 'WorkerPass12345');
-        $taskId = $this->session->createTask('Bad status', ['assignees' => [(string)$workerId]]);
+        $taskId = $this->adminSession()->createTask('Bad status', ['assignees' => [(string)$workerId]]);
 
-        $response = $this->session->post('/?page=task&id=' . $taskId, [
+        $response = $this->adminSession()->post('/?page=task&id=' . $taskId, [
             'action' => 'quick_task_changes', 'id' => (string)$taskId,
             'status_id' => '999', 'assignees' => [(string)$workerId],
         ]);
@@ -232,9 +232,9 @@ final class QuickTaskChangesTest extends E2eTestCase
     public function test_the_quick_form_refuses_invalid_assignees(): void
     {
         $this->adminSession();
-        $taskId = $this->session->createTask('Bad roster');
+        $taskId = $this->adminSession()->createTask('Bad roster');
 
-        $response = $this->session->post('/?page=task&id=' . $taskId, [
+        $response = $this->adminSession()->post('/?page=task&id=' . $taskId, [
             'action' => 'quick_task_changes', 'id' => (string)$taskId,
             'status_id' => '2', 'assignees' => ['999'],
         ]);
@@ -270,7 +270,7 @@ final class QuickTaskChangesTest extends E2eTestCase
     {
         $this->adminSession();
         $workerId = $this->createUser('worker', 'Worker User', 'WorkerPass12345');
-        $taskId = $this->session->createTask('Plain powers');
+        $taskId = $this->adminSession()->createTask('Plain powers');
 
         $worker = new AppSession('worker', 'WorkerPass12345');
         $page = $worker->taskPage($taskId);

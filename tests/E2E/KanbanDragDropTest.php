@@ -20,7 +20,7 @@ final class KanbanDragDropTest extends E2eTestCase
 {
     private function board(string $suffix = ''): string
     {
-        return $this->session->get('/?page=kanban' . $suffix)->body;
+        return $this->adminSession()->get('/?page=kanban' . $suffix)->body;
     }
 
     private function columnHeader(string $statusName): string
@@ -45,7 +45,7 @@ final class KanbanDragDropTest extends E2eTestCase
     public function test_the_board_renders_draggable_cards_and_drop_zone_columns(): void
     {
         $this->adminSession();
-        $taskId = $this->session->createTask('Draggable item');
+        $taskId = $this->adminSession()->createTask('Draggable item');
 
         $body = $this->board();
         $this->assertStringContainsString('draggable="true" data-task-id="' . $taskId . '" data-tb-kanban-card', $body, 'The cards are HTML5 draggables carrying their task id.');
@@ -80,9 +80,9 @@ final class KanbanDragDropTest extends E2eTestCase
     public function test_a_drop_into_another_column_moves_the_task_with_the_full_audit_trail(): void
     {
         $this->adminSession();
-        $taskId = $this->session->createTask('Moving item');
+        $taskId = $this->adminSession()->createTask('Moving item');
 
-        $response = $this->session->post('/?page=kanban', [
+        $response = $this->adminSession()->post('/?page=kanban', [
             'action' => 'move_kanban_task', 'id' => (string)$taskId, 'status_id' => '2', 'order' => [(string)$taskId],
         ]);
         $this->assertSame(302, $response->status, 'The drop redirects back to the board.');
@@ -91,7 +91,7 @@ final class KanbanDragDropTest extends E2eTestCase
         $ranks = $this->ranks();
         $this->assertSame([2, 1], $ranks[$taskId], 'The task moved to IN PROGRESS with rank 1.');
 
-        $page = $this->session->get('/?page=task&id=' . $taskId);
+        $page = $this->adminSession()->get('/?page=task&id=' . $taskId);
         $this->assertStringContainsString('Kanban board updated.', $page->body, 'The confirmation ribbon renders.');
         $this->assertStringContainsString('The followings are changed: Status. Status changed from &quot;TODO&quot; to &quot;IN PROGRESS&quot;.', $page->body, 'The event sentence matches the full save shape.');
         $this->assertStringContainsString('Field &quot;status&quot;: from &quot;TODO&quot; to &quot;IN PROGRESS&quot;', $page->body, 'The status audit row renders.');
@@ -101,10 +101,10 @@ final class KanbanDragDropTest extends E2eTestCase
     public function test_a_reorder_inside_a_column_ranks_the_column_and_writes_the_kanban_order_row(): void
     {
         $this->adminSession();
-        $first = $this->session->createTask('First item');
-        $second = $this->session->createTask('Second item');
+        $first = $this->adminSession()->createTask('First item');
+        $second = $this->adminSession()->createTask('Second item');
 
-        $response = $this->session->post('/?page=kanban', [
+        $response = $this->adminSession()->post('/?page=kanban', [
             'action' => 'move_kanban_task', 'id' => (string)$first, 'status_id' => '1', 'order' => [(string)$second, (string)$first],
         ]);
         $this->assertSame(302, $response->status);
@@ -118,7 +118,7 @@ final class KanbanDragDropTest extends E2eTestCase
             'The board renders the manual order.'
         );
 
-        $page = $this->session->get('/?page=task&id=' . $first);
+        $page = $this->adminSession()->get('/?page=task&id=' . $first);
         $this->assertStringContainsString('The followings are changed: Kanban order. Kanban order changed from &quot;position 1 in TODO&quot; to &quot;position 2 in TODO&quot;.', $page->body, 'The reorder sentence names both positions.');
         $rows = TestServer::pdo()->query("SELECT field, old_value, new_value FROM task_history WHERE task_id=$first AND field IS NOT NULL ORDER BY id")->fetchAll();
         $this->assertCount(1, $rows, 'Only the kanban_order field row - a pure reorder writes no status row.');
@@ -130,14 +130,14 @@ final class KanbanDragDropTest extends E2eTestCase
     public function test_a_drop_that_changes_nothing_writes_no_history_row(): void
     {
         $this->adminSession();
-        $taskId = $this->session->createTask('Steady item');
+        $taskId = $this->adminSession()->createTask('Steady item');
 
         $before = (int)TestServer::pdo()->query("SELECT COUNT(*) FROM task_history WHERE task_id=$taskId")->fetchColumn();
-        $response = $this->session->post('/?page=kanban', [
+        $response = $this->adminSession()->post('/?page=kanban', [
             'action' => 'move_kanban_task', 'id' => (string)$taskId, 'status_id' => '1', 'order' => [(string)$taskId],
         ]);
         $this->assertSame(302, $response->status);
-        $page = $this->session->get('/?page=kanban');
+        $page = $this->adminSession()->get('/?page=kanban');
         $this->assertStringContainsString('The kanban board did not change.', $page->body, 'The no-op says so honestly.');
         $after = (int)TestServer::pdo()->query("SELECT COUNT(*) FROM task_history WHERE task_id=$taskId")->fetchColumn();
         $this->assertSame($before, $after, 'A no-op drop writes no row.');
@@ -147,14 +147,14 @@ final class KanbanDragDropTest extends E2eTestCase
     {
         $this->adminSession();
         $workerId = $this->createWorker('worker', 'Worker User', 'WorkerPass12345');
-        $moved = $this->session->createTask('Filtered move', ['assignees' => ['1']]);
-        $visible = $this->session->createTask('Visible peer', ['status_id' => '2', 'assignees' => ['1']]);
-        $hidden = $this->session->createTask('Hidden peer', ['status_id' => '2', 'assignees' => [(string)$workerId]]);
+        $moved = $this->adminSession()->createTask('Filtered move', ['assignees' => ['1']]);
+        $visible = $this->adminSession()->createTask('Visible peer', ['status_id' => '2', 'assignees' => ['1']]);
+        $hidden = $this->adminSession()->createTask('Hidden peer', ['status_id' => '2', 'assignees' => [(string)$workerId]]);
 
         // The assignee filter shows only the admin-assigned cards, so the
         // submitted IN PROGRESS order can only name the visible peer - the
         // worker's card stays hidden and must not interleave.
-        $response = $this->session->post('/?page=kanban&assignee=1', [
+        $response = $this->adminSession()->post('/?page=kanban&assignee=1', [
             'action' => 'move_kanban_task', 'id' => (string)$moved, 'status_id' => '2', 'order' => [(string)$visible],
         ]);
         $this->assertSame(302, $response->status);
@@ -167,10 +167,10 @@ final class KanbanDragDropTest extends E2eTestCase
     public function test_an_archived_task_is_refused_by_the_move_action(): void
     {
         $this->adminSession();
-        $taskId = $this->session->createTask('Archived move');
-        $this->session->post('/?page=task&id=' . $taskId, ['action' => 'archive_task', 'id' => (string)$taskId, 'return' => '?']);
+        $taskId = $this->adminSession()->createTask('Archived move');
+        $this->adminSession()->post('/?page=task&id=' . $taskId, ['action' => 'archive_task', 'id' => (string)$taskId, 'return' => '?']);
 
-        $response = $this->session->post('/?page=kanban', [
+        $response = $this->adminSession()->post('/?page=kanban', [
             'action' => 'move_kanban_task', 'id' => (string)$taskId, 'status_id' => '2', 'order' => [(string)$taskId],
         ]);
         $this->assertSame(200, $response->status);
@@ -181,9 +181,9 @@ final class KanbanDragDropTest extends E2eTestCase
     public function test_the_move_action_refuses_an_unknown_status_and_a_malformed_order(): void
     {
         $this->adminSession();
-        $taskId = $this->session->createTask('Bad move');
+        $taskId = $this->adminSession()->createTask('Bad move');
 
-        $response = $this->session->post('/?page=kanban', [
+        $response = $this->adminSession()->post('/?page=kanban', [
             'action' => 'move_kanban_task', 'id' => (string)$taskId, 'status_id' => '999', 'order' => [(string)$taskId],
         ]);
         $this->assertSame(200, $response->status);
@@ -193,9 +193,9 @@ final class KanbanDragDropTest extends E2eTestCase
 
         // Archived ids in a crafted order list are dropped, not ranked: the
         // move itself still lands for the live task.
-        $peer = $this->session->createTask('Live peer');
-        $this->session->post('/?page=task&id=' . $peer, ['action' => 'archive_task', 'id' => (string)$peer, 'return' => '?']);
-        $response = $this->session->post('/?page=kanban', [
+        $peer = $this->adminSession()->createTask('Live peer');
+        $this->adminSession()->post('/?page=task&id=' . $peer, ['action' => 'archive_task', 'id' => (string)$peer, 'return' => '?']);
+        $response = $this->adminSession()->post('/?page=kanban', [
             'action' => 'move_kanban_task', 'id' => (string)$taskId, 'status_id' => '2', 'order' => [(string)$peer, (string)$taskId],
         ]);
         $this->assertSame(302, $response->status);
@@ -207,7 +207,7 @@ final class KanbanDragDropTest extends E2eTestCase
     public function test_the_move_action_refuses_an_unknown_task(): void
     {
         $this->adminSession();
-        $response = $this->session->post('/?page=kanban', [
+        $response = $this->adminSession()->post('/?page=kanban', [
             'action' => 'move_kanban_task', 'id' => '9999', 'status_id' => '2', 'order' => ['9999'],
         ]);
         $this->assertSame(200, $response->status);

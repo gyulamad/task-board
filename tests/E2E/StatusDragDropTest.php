@@ -65,6 +65,29 @@ final class StatusDragDropTest extends E2eTestCase
         $this->assertStringContainsString('press and hold the grip', $page->body, 'The hint explains the touch gesture.');
     }
 
+    public function test_the_statuses_page_shows_the_landing_gap_while_dragging(): void
+    {
+        // #156 v3: the 12:33 report - "the hard to see where the status will
+        // land when I drop" - the desktop drag now carries a placeholder gap
+        // that sits at the exact landing position while the row is dragged
+        // over the list (above a row's midpoint = before it, below = after
+        // it, below the last row = the end), the drop inserts the dragged row
+        // where the gap stands, and the gap leaves with the drag. The gap
+        // carries no data-status-id, so the submitted order only ever lists
+        // real rows.
+        $admin = $this->adminSession();
+
+        $page = $admin->get('/?page=statuses');
+        $this->assertSame(200, $page->status);
+        $this->assertStringContainsString("gap.setAttribute('data-tb-status-gap','')", $page->body, 'The landing gap is a dedicated placeholder element.');
+        $this->assertStringContainsString('.tb-status-gap{height:34px;border:2px dashed', $page->body, 'The gap visual is defined page-scoped.');
+        $this->assertStringContainsString('if(y<box.top+box.height/2){target=rows[i];break;}', $page->body, 'The pointer midpoint rule decides before/after.');
+        $this->assertStringContainsString('if(target){list.insertBefore(gap,target);}', $page->body, 'The gap moves with the pointer.');
+        $this->assertStringContainsString('if(gap.parentNode){list.insertBefore(dragged,gap);}', $page->body, 'The drop lands exactly where the gap showed.');
+        $this->assertStringContainsString('var removeGap=function(){if(gap.parentNode){gap.parentNode.removeChild(gap);}};', $page->body, 'The gap leaves with the drag (dragend and drop).');
+        $this->assertStringContainsString("list.querySelectorAll('[data-tb-status-row]')", $page->body, 'The submitted order collects only real rows, never the gap.');
+    }
+
     public function test_a_drop_renumbers_the_statuses_in_the_submitted_order(): void
     {
         $admin = $this->adminSession();

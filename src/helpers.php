@@ -1027,7 +1027,11 @@ function tb_list_view_boot(string $page, ?PDO $pdo = null): void {
         // simply stays. The #113 second-click escape and the #126 poll rule
         // are untouched: the server-side replay rules do not change, the
         // address bar just stops lying about where the visitor is.
-        $GLOBALS['TB_LIST_VIEW_REPLAYED_QUERY'] = http_build_query($_GET);
+        // #172: the rewrite carries the canonical URL shape every list URL
+        // builder emits - the page key first, the stored params after it -
+        // because the stored-first merge alone put the page key last
+        // (status[]=1 & page=kanban), a shape no list link on the board uses.
+        $GLOBALS['TB_LIST_VIEW_REPLAYED_QUERY'] = http_build_query(['page' => $page] + $_GET);
     }
 }
 

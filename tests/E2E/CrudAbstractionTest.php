@@ -793,6 +793,15 @@ final class CrudAbstractionTest extends E2eTestCase
 
     // --- messages: the messenger people list on the engine (#57-E) --------
 
+    /** The people-rows region only (#151): the admin view-as dropdown lists
+     * every account elsewhere on the page, so a page-wide name assertion
+     * would test the dropdown, not the list. */
+    private function peopleRows(string $body): string
+    {
+        $this->assertSame(1, preg_match('/data-tb-chat-people-rows[^>]*>(.*?)<\/div>/s', $body, $m), 'The people rows region renders.');
+        return $m[1];
+    }
+
     private function crudUserId(string $username): int
     {
         $s = TestServer::pdo()->prepare('SELECT id FROM users WHERE username=?');
@@ -847,7 +856,7 @@ final class CrudAbstractionTest extends E2eTestCase
 
         $page = $admin->get('/?page=messages&u=' . $peerId . '&q=Searchpeer');
         $this->assertTrue($page->contains('Searchpeer Name'), 'The matching person renders.');
-        $this->assertFalse($page->contains('Otherpeer Name'), 'The rows outside the search are filtered out.');
+        $this->assertStringNotContainsString('Otherpeer Name', $this->peopleRows($page->body), 'The rows outside the search are filtered out.');
         $this->assertTrue($page->contains('Conversation with Searchpeer Name'), 'The conversation pane stays open on the searched view.');
         $this->assertTrue($page->contains('value="Searchpeer"'), 'The search term stays in the input.');
         $this->assertTrue($page->contains('href="?page=messages&amp;u=' . $peerId . '&amp;clear_search=1">Clear</a>'), 'The clear link stays on the requested page, keeps the conversation and drops the stored selection (#113).');
@@ -868,11 +877,11 @@ final class CrudAbstractionTest extends E2eTestCase
         $this->assertTrue($page1->contains('Page 1 of 2'), 'The shared pagination counter renders.');
         $this->assertTrue($page1->contains('page=messages&amp;p=2'), 'The pagination links stay on the page.');
         $this->assertTrue($page1->contains('Peopleuser20 Name'), 'Twenty people land on page 1.');
-        $this->assertFalse($page1->contains('Peopleuser22 Name'), 'The rest stay behind the pagination.');
+        $this->assertStringNotContainsString('Peopleuser22 Name', $this->peopleRows($page1->body), 'The rest stay behind the pagination.');
 
         $page2 = $admin->get('/?page=messages&p=2');
         $this->assertTrue($page2->contains('Peopleuser22 Name'), 'Page 2 carries the remaining people.');
-        $this->assertFalse($page2->contains('Peopleuser01 Name'), 'Page 1 rows stay on page 1.');
+        $this->assertStringNotContainsString('Peopleuser01 Name', $this->peopleRows($page2->body), 'Page 1 rows stay on page 1.');
 
         // The #94 order survives the port: a brand-new conversation moves its
         // person to the top of the (engine-ordered) list.

@@ -47,7 +47,7 @@ final class RefreshKeepsViewTest extends E2eTestCase
         $admin->get('/?page=tasks&q=Alpha+search');
         $admin->taskPage($alpha);
         $replayed = $admin->get('/?page=tasks');
-        $this->assertStringContainsString('var q="page=tasks&q=Alpha+search"', $replayed->body, 'Precondition: the replay rewrites to the merged view.');
+        $this->assertStringContainsString('var q="page=tasks\u0026q=Alpha+search"', $replayed->body, 'Precondition: the replay rewrites to the merged view (& is JSON-hex-escaped inside the script).');
 
         $refreshed = $admin->get('/?page=tasks&q=Alpha+search');
         $this->assertTrue($refreshed->contains('#' . $alpha . ' · Alpha search token'), 'The refresh keeps the filter.');

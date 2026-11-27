@@ -115,7 +115,10 @@ final class MessagesViewAsTest extends E2eTestCase
         $this->assertTrue($asOla->contains('Pia to Ola, visible through view-as.'), 'The viewed user\'s thread renders.');
         $this->assertTrue($asOla->contains('Ola replying to Pia.'), 'Both halves of the foreign conversation render.');
         $this->assertTrue($asOla->contains('Viewing as Ola - sending is disabled'), 'The composer is replaced by the read-only note.');
-        $this->assertFalse($asOla->contains('data-tb-chat-send'), 'No send form while viewing.');
+        // The composer FORM must be gone while viewing - the read-only note
+        // replaces it. The chat script keeps the data-tb-chat-send selector
+        // string in its code, so the honest pin is the composer's own markup.
+        $this->assertFalse($asOla->contains('<form method="post" class="tb-chat-composer'), 'No send form while viewing.');
         $this->assertTrue($asOla->contains('value="delete_conversation"'), 'The delete controls stay available in view-as.');
 
         // The bubble sides follow the VIEWED user: Ola's own message renders
@@ -177,6 +180,10 @@ final class MessagesViewAsTest extends E2eTestCase
         $s = TestServer::pdo()->prepare('SELECT COUNT(*) FROM messages');
         $s->execute();
         $before = (int)$s->fetchColumn();
+        // The cursor must close before the next HTTP request: pdo_sqlite runs
+        // unbuffered, so an open statement keeps the database's read lock and
+        // the app server's next write waits behind it (the request hangs).
+        $s->closeCursor();
 
         // A hand-crafted send under the viewed user's context is refused: no
         // message row, a clean validation error.
@@ -189,6 +196,7 @@ final class MessagesViewAsTest extends E2eTestCase
         $this->assertTrue($refused->contains('Sending is disabled while viewing the board as another user.'), 'The send action refuses in view-as.');
         $s->execute();
         $this->assertSame($before, (int)$s->fetchColumn(), 'Nothing was written.');
+        $s->closeCursor();
 
         // The normal send still works once the viewing ended.
         $admin->post('/?page=messages', ['action' => 'view_as_exit']);
@@ -234,9 +242,12 @@ final class MessagesViewAsTest extends E2eTestCase
         $s = TestServer::pdo()->prepare('SELECT COUNT(*) FROM messages WHERE (sender_id=? AND recipient_id=?) OR (sender_id=? AND recipient_id=?)');
         $s->execute([$veraId, $wandaId, $wandaId, $veraId]);
         $this->assertSame(0, (int)$s->fetchColumn(), 'The Vera-Wanda conversation is gone.');
+        $s->closeCursor();
         $s = TestServer::pdo()->prepare('SELECT COUNT(*) FROM messages WHERE (sender_id=? AND recipient_id=?) OR (sender_id=? AND recipient_id=?)');
         $s->execute([$veraId, $xaverId, $xaverId, $veraId]);
         $this->assertSame(1, (int)$s->fetchColumn(), 'The Vera-Xaver conversation is untouched.');
+        // The read lock must not survive into the next request (see above).
+        $s->closeCursor();
         $this->assertTrue($admin->get('/?page=messages&u=' . $xaverId)->contains('Xaver to Vera, kept.'), 'The kept thread still renders through the view-as.');
 
         // The bulk delete works on the viewed thread too.
@@ -245,6 +256,7 @@ final class MessagesViewAsTest extends E2eTestCase
         $s = TestServer::pdo()->prepare('SELECT id FROM messages WHERE body=?');
         $s->execute(['Bulk target.']);
         $bulkId = (int)$s->fetchColumn();
+        $s->closeCursor();
         $bulk = $admin->post('/?page=messages&u=' . $xaverId, ['action' => 'delete_messages', 'u' => (string)$xaverId, 'ids' => [(string)$bulkId]]);
         $this->assertSame(302, $bulk->status);
         $this->assertFalse($admin->get('/?page=messages&u=' . $xaverId)->contains('Bulk target.'), 'The bulk-selected message is gone.');

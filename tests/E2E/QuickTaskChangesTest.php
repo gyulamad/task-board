@@ -175,7 +175,11 @@ final class QuickTaskChangesTest extends E2eTestCase
         $this->assertStringContainsString('Unassigned', $page->body);
         $this->assertSame('0', (string)TestServer::pdo()->query("SELECT COUNT(*) FROM task_assignees WHERE task_id=$taskId")->fetchColumn());
         $rows = TestServer::pdo()->query("SELECT old_value, new_value FROM task_history WHERE task_id=$taskId AND field='assignees' ORDER BY id")->fetchAll();
-        $this->assertSame('Peer User, Worker User', $rows[1]['old_value']);
+        // The unassign records the roster AS STORED: the pick order of the
+        // previous change lives only in that row's sentence, the table itself
+        // keeps the rows in its (task_id, user_id) primary-key order - the
+        // same table-order read the full save's audit uses for old names.
+        $this->assertSame('Worker User, Peer User', $rows[1]['old_value']);
         $this->assertSame('—', $rows[1]['new_value'], 'The empty roster is recorded as the em dash, like a full save writes it.');
     }
 

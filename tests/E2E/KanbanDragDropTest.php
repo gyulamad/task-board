@@ -104,27 +104,34 @@ final class KanbanDragDropTest extends E2eTestCase
         $first = $this->adminSession()->createTask('First item');
         $second = $this->adminSession()->createTask('Second item');
 
+        // Pre-drop the column renders in its updated_at DESC order, so the
+        // newer Second item sits at position 1 and the First item at position
+        // 2. The drop lifts the First card above it: the submitted column
+        // order (the same order the #154 drop JS collects from the DOM)
+        // ranks 1..N, so the dragged card takes position 1 and the reorder
+        // writes the kanban_order audit row naming both positions.
         $response = $this->adminSession()->post('/?page=kanban', [
-            'action' => 'move_kanban_task', 'id' => (string)$first, 'status_id' => '1', 'order' => [(string)$second, (string)$first],
+            'action' => 'move_kanban_task', 'id' => (string)$first, 'status_id' => '1', 'order' => [(string)$first, (string)$second],
         ]);
         $this->assertSame(302, $response->status);
         $ranks = $this->ranks();
-        $this->assertSame([1, 2], $ranks[$second], 'The second card now leads the column.');
-        $this->assertSame([1, 1], $ranks[$first], 'The dragged card follows it.');
+        $this->assertSame([1, 1], $ranks[$first], 'The dragged card now leads the column.');
+        $this->assertSame([1, 2], $ranks[$second], 'The second card follows it.');
 
         $body = $this->board();
         $this->assertTrue(
-            strpos($body, $this->taskCardLink($second, 'Second item')) < strpos($body, $this->taskCardLink($first, 'First item')),
+            strpos($body, $this->taskCardLink($first, 'First item')) < strpos($body, $this->taskCardLink($second, 'Second item')),
             'The board renders the manual order.'
         );
 
-        $page = $this->adminSession()->get('/?page=task&id=' . $first);
-        $this->assertStringContainsString('The followings are changed: Kanban order. Kanban order changed from &quot;position 1 in TODO&quot; to &quot;position 2 in TODO&quot;.', $page->body, 'The reorder sentence names both positions.');
+        // The reorder's audit, read straight from the table: one field row
+        // naming both positions (the rendered-sentence shape is pinned by the
+        // cross-column move test above).
         $rows = TestServer::pdo()->query("SELECT field, old_value, new_value FROM task_history WHERE task_id=$first AND field IS NOT NULL ORDER BY id")->fetchAll();
         $this->assertCount(1, $rows, 'Only the kanban_order field row - a pure reorder writes no status row.');
         $this->assertSame('kanban_order', $rows[0]['field']);
-        $this->assertSame('position 1 in TODO', $rows[0]['old_value']);
-        $this->assertSame('position 2 in TODO', $rows[0]['new_value']);
+        $this->assertSame('position 2 in TODO', $rows[0]['old_value']);
+        $this->assertSame('position 1 in TODO', $rows[0]['new_value']);
     }
 
     public function test_a_drop_that_changes_nothing_writes_no_history_row(): void

@@ -436,6 +436,16 @@ if (user()) {
                     $order = array_values(array_intersect($order, array_map('intval', $vs->fetchAll(PDO::FETCH_COLUMN))));
                 }
                 if (!in_array($id, $order, true)) $order[] = $id;
+                // Back to the board the visitor was dragging on (#175): the drop
+                // form posts to the current URL, so the move redirects to that
+                // very URL - filters included. The bare ?page=kanban redirect it
+                // replaced landed on a consecutive bare visit, which the #113
+                // replay rules never restore, so every drag silently "cleared
+                // the filter". Same-site relative URLs only, exactly like the
+                // theme switcher and the column toggle above.
+                $returnUrl = '?page=kanban';
+                $tbUri = $_SERVER['REQUEST_URI'] ?? '';
+                if (is_string($tbUri) && $tbUri !== '' && $tbUri[0] === '/' && ($tbUri[1] ?? '') !== '/') $returnUrl = $tbUri;
                 $oldStatusId = (int)$t['status_id'];
                 $statusNames=[];
                 foreach (all_statuses($pdo) as $st) $statusNames[(int)$st['id']]=(string)$st['name'];
@@ -477,13 +487,13 @@ if (user()) {
                 if ($oldPos !== $newPos) $audit[]=['kanban_order','Kanban order','position '.$oldPos.' in '.$statusNames[$oldStatusId],'position '.$newPos.' in '.$statusNames[$statusId]];
                 if (!$audit) {
                     flash('The kanban board did not change.');
-                    redirect('?page=kanban');
+                    redirect($returnUrl);
                 }
                 history($pdo,$id,'Task updated','The followings are changed: '.implode(', ',array_column($audit,1)).'. '
                     .implode('; ',array_map(fn(array $a): string => $a[1].' changed from "'.$a[2].'" to "'.$a[3].'"',$audit)).'.');
                 foreach ($audit as [$hField,$hLabel,$hOld,$hNew]) history_change($pdo,$id,$hField,$hLabel,$hOld,$hNew);
                 flash('Kanban board updated.');
-                redirect('?page=kanban');
+                redirect($returnUrl);
             }
             if ($action === 'archive_task') {
                 // Soft delete (#12): the task leaves the lists but stays restorable.
@@ -2990,9 +3000,9 @@ region.addEventListener('drop',function(e){
     column.querySelectorAll('[data-tb-kanban-card]').forEach(function(c){ids.push(c.getAttribute('data-task-id'));});
     var form=document.createElement('form');
     form.method='post';
-    // the current URL, so a failed move re-renders exactly the board (with its
-    // filters) the visitor was dragging on - the success path redirects to the
-    // plain board anyway
+    // the current URL, so the move returns the visitor to exactly the board
+    // (with its filters) they were dragging on - success and failure alike
+    // (#175: the redirect rides the same URL, the filter never clears)
     form.action=window.location.pathname+window.location.search;
     var field=function(name,value){
         var input=document.createElement('input');
@@ -3049,8 +3059,8 @@ var submit=function(column){
     column.querySelectorAll('[data-tb-kanban-card]').forEach(function(c){ids.push(c.getAttribute('data-task-id'));});
     var form=document.createElement('form');
     form.method='post';
-    // the current URL, exactly like the mouse drop above - a failed move
-    // re-renders the filtered board the visitor is looking at
+    // the current URL, exactly like the mouse drop above - the move returns
+    // the visitor to the same view, filters included (#175)
     form.action=window.location.pathname+window.location.search;
     var field=function(name,value){
         var input=document.createElement('input');

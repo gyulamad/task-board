@@ -14,7 +14,9 @@ use TaskBoard\Tests\Support\TestServer;
  * (filtered-out) tasks of the column follow appended in their previous board
  * order, the status move writes the same audit rows the #153 quick change
  * writes, the reorder writes a kanban_order row with human-readable
- * positions, and a drop that changes nothing writes nothing at all.
+ * positions, and a drop that changes nothing writes nothing at all. Since
+ * #175 the move redirects back to the very URL the drop came from, so the
+ * board's active filter survives every drag.
  */
 final class KanbanDragDropTest extends E2eTestCase
 {
@@ -169,6 +171,47 @@ final class KanbanDragDropTest extends E2eTestCase
         $this->assertSame([2, 1], $ranks[$visible], 'The visible peer keeps the arranged first position.');
         $this->assertSame([2, 2], $ranks[$moved], 'The dragged card lands right behind it.');
         $this->assertSame([2, 3], $ranks[$hidden], 'The hidden peer follows appended - never interleaved into the arranged row.');
+    }
+
+    public function test_a_drop_returns_the_visitor_to_the_filtered_board_they_dragged_on(): void
+    {
+        // #175: kanban drag drop to another column clears the filter. The drop
+        // posts to the current URL, but the move action redirected to the bare
+        // ?page=kanban - a consecutive bare visit the #113 replay rules never
+        // restore - so every drag silently dropped the active filter. The move
+        // now redirects to the very URL the drop came from, filters included.
+        // The admin session is taken from adminSession() directly, so this
+        // case works on trees without the #172 test-side session fixes.
+        $admin = $this->adminSession();
+        $moved = $admin->createTask('Filtered drag alpha');
+        $other = $admin->createTask('Filtered drag beta');
+
+        $response = $admin->post('/?page=kanban&q=alpha', [
+            'action' => 'move_kanban_task', 'id' => (string)$moved, 'status_id' => '2', 'order' => [(string)$moved],
+        ]);
+        $this->assertSame(302, $response->status);
+        $this->assertSame('/?page=kanban&q=alpha', (string)$response->header('location'), 'The move redirects back to the filtered board, not the plain one.');
+
+        $body = $admin->get('/?page=kanban&q=alpha')->body;
+        $this->assertStringContainsString($this->taskCardLink($moved, 'Filtered drag alpha'), $body, 'The moved card renders on the returned board.');
+        $this->assertStringContainsString('Kanban board updated.', $body, 'The confirmation ribbon renders on the filtered board.');
+        $this->assertStringNotContainsString($this->taskCardLink($other, 'Filtered drag beta'), $body, 'The q filter survived the drop - the non-matching card stays hidden.');
+    }
+
+    public function test_the_no_change_drop_keeps_the_filter_too(): void
+    {
+        // #175: the no-op exit used the same bare redirect, so even a drop that
+        // changed nothing cleared the filter. It returns to the filtered board
+        // as well, with its honest ribbon.
+        $admin = $this->adminSession();
+        $taskId = $admin->createTask('Steady filtered card');
+
+        $response = $admin->post('/?page=kanban&q=steady', [
+            'action' => 'move_kanban_task', 'id' => (string)$taskId, 'status_id' => '1', 'order' => [(string)$taskId],
+        ]);
+        $this->assertSame(302, $response->status);
+        $this->assertSame('/?page=kanban&q=steady', (string)$response->header('location'), 'The no-change move redirects back to the filtered board.');
+        $this->assertStringContainsString('The kanban board did not change.', $admin->get('/?page=kanban&q=steady')->body);
     }
 
     public function test_an_archived_task_is_refused_by_the_move_action(): void

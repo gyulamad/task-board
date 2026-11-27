@@ -76,6 +76,19 @@ final class UpgradePackTest extends E2eTestCase
         return array_map(fn(string $v): string => (string)$v, $rows);
     }
 
+    /** Whether the named table exists in the running test database (#172). */
+    private function tableExists(string $table): bool
+    {
+        if (TestServer::dbMode() === 'mysql') {
+            return (bool)TestServer::pdo()->query("SHOW TABLES LIKE '" . $table . "'")->fetchColumn();
+        }
+        $s = TestServer::pdo()->prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?");
+        $s->execute([$table]);
+        $found = (bool)$s->fetchColumn();
+        $s->closeCursor();
+        return $found;
+    }
+
     public function test_updates_page_offers_the_pack_flow(): void
     {
         $admin = $this->adminSession();
@@ -103,8 +116,10 @@ final class UpgradePackTest extends E2eTestCase
         $stored = glob($this->migrationDir . '/*-upgrade_pack.sql') ?: [];
         $this->assertCount(1, $stored, 'the pack migration is stored version-marked in migrations/.');
         $this->assertSame([substr(basename((string)$stored[0]), 0, 14)], $this->recordedVersions(), 'the #68 engine recorded the pack migration.');
-        $tables = TestServer::pdo()->query("SELECT name FROM sqlite_master WHERE type='table' AND name='e2e_pack_probe'")->fetchAll();
-        $this->assertCount(1, $tables, 'the pack migration ran.');
+        // #172 fix: the probe ran a raw sqlite_master query, which does not
+        // exist on MySQL - the file already carries the dialect-branched
+        // tableExists() helper, so the assertion rides it.
+        $this->assertTrue($this->tableExists('e2e_pack_probe'), 'the pack migration ran.');
         $installed = json_decode((string)file_get_contents($this->docRoot . '/version.json'), true);
         $this->assertSame('testhash0002', $installed['sha'], 'the instance records the pack new_version.');
         $this->assertSame('upgrade-pack', $installed['source']);

@@ -15,16 +15,19 @@ use TaskBoard\Tests\Support\TestServer;
  */
 final class ActivitySettingsTest extends E2eTestCase
 {
-    /** Ages a user's stamp on the database's own clock, like UserActivityTest does. */
+    /**
+     * Ages a user's stamp by binding a plain epoch integer (#172 fix): the
+     * previous MySQL branch wrote `NOW() - INTERVAL n MINUTE` - a DATETIME -
+     * into the epoch BIGINT column, which the driver stored as the number
+     * 20261127123125 (a stamp far in the future), so the aged user always
+     * rendered as fresh and the character-period assertions never saw the
+     * glyph. One dialect-neutral bind, the same idiom SchedulerTest uses.
+     */
     private function backdateMinutes(string $username, int $minutes): void
     {
-        $pdo = TestServer::pdo();
-        $id = $this->userId($username);
-        $isMysql = $pdo->getAttribute(PDO::ATTR_DRIVER_NAME) === 'mysql';
-        $sql = $isMysql
-            ? 'UPDATE users SET last_seen_at = NOW() - INTERVAL ' . $minutes . ' MINUTE WHERE id = ?'
-            : "UPDATE users SET last_seen_at = datetime('now', '-" . $minutes . " minutes') WHERE id = ?";
-        $pdo->prepare($sql)->execute([$id]);
+        TestServer::pdo()
+            ->prepare('UPDATE users SET last_seen_at = ? WHERE id = ?')
+            ->execute([time() - $minutes * 60, $this->userId($username)]);
     }
 
     private function userId(string $username): int

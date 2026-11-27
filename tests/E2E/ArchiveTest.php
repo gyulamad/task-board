@@ -54,12 +54,16 @@ final class ArchiveTest extends E2eTestCase
 
     private function backdateTask(int $taskId, string $sqliteModifier): void
     {
-        $pdo = TestServer::pdo();
-        if (TestServer::dbMode() === 'mysql') {
-            $pdo->exec('UPDATE tasks SET updated_at = DATE_SUB(NOW(), INTERVAL 2 HOUR) WHERE id=' . $taskId);
-        } else {
-            $pdo->exec("UPDATE tasks SET updated_at = datetime('now', '" . $sqliteModifier . "') WHERE id=" . $taskId);
-        }
+        // #172 fix: bind a plain epoch integer instead of the dialect clock.
+        // The MySQL branch wrote DATE_SUB(NOW(), ...) - a DATETIME - into the
+        // epoch BIGINT column, which the driver stored as the number
+        // 20261127... (a stamp far in the future, i.e. never overdue). The
+        // assertions here never noticed because the cron skips archived tasks
+        // regardless of age; the same integer bind as SchedulerTest keeps the
+        // fixture honest for both dialects.
+        TestServer::pdo()
+            ->prepare('UPDATE tasks SET updated_at = ? WHERE id = ?')
+            ->execute([time() - 7200, $taskId]);
     }
 
     public function test_archiving_hides_task_from_list_but_it_stays_viewable(): void

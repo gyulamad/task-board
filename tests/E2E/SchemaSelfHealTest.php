@@ -255,6 +255,11 @@ final class SchemaSelfHealTest extends E2eTestCase
         // projects, saved_searches and documents - the navbar badge queries it
         // on every page, so a missing table would take the whole board down.
         $pdo = TestServer::pdo();
+        // #172 fix (MySQL): message_attachments references messages(id), so
+        // dropping only the parent dies with FK error 1451 before the fixture
+        // ever gets to the heal. Drop the child first - the self-heal
+        // recreates both tables, which is exactly what this test then pins.
+        $pdo->exec('DROP TABLE IF EXISTS message_attachments');
         $pdo->exec('DROP TABLE IF EXISTS messages');
         if ($pdo->getAttribute(PDO::ATTR_DRIVER_NAME) === 'mysql') {
             $this->assertFalse((bool)$pdo->query("SHOW TABLES LIKE 'messages'")->fetchColumn());

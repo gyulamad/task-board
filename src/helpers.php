@@ -1930,6 +1930,25 @@ function tb_epoch_columns(): array {
 }
 
 /**
+ * Whether the named table exists in the running database (#172): one shared
+ * dialect-branched catalog read for every self-heal check. MySQL refuses
+ * SHOW COLUMNS on a missing table (SQLSTATE 42S02), while SQLite's PRAGMA
+ * table_info answers an empty result set - so a table that is MISSING is
+ * exactly the state tb_migrate_schema() exists to fix, and every caller must
+ * ask this helper instead of catalog-reading the table directly.
+ */
+function tb_table_exists(PDO $pdo, string $table): bool {
+    if ($pdo->getAttribute(PDO::ATTR_DRIVER_NAME) === 'mysql') {
+        return (bool)$pdo->query("SHOW TABLES LIKE '" . $table . "'")->fetchColumn();
+    }
+    $statement = $pdo->prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?");
+    $statement->execute([$table]);
+    $found = (bool)$statement->fetchColumn();
+    $statement->closeCursor();
+    return $found;
+}
+
+/**
  * The one-time datetime -> epoch conversion (#108) for a board that predates
  * it: the columns still hold string datetimes written by the database clock
  * (NOW()/CURRENT_TIMESTAMP under the server's timezone, UTC under SQLite).
@@ -1947,6 +1966,12 @@ function tb_migrate_epoch_columns(PDO $pdo): void {
     $isMysql = $pdo->getAttribute(PDO::ATTR_DRIVER_NAME) === 'mysql';
     $legacyOffset = $GLOBALS['TB_CONFIG']['legacy_db_timezone'] ?? null;
     foreach (tb_epoch_columns() as $table => $columns) {
+        // A table this list names may legitimately not exist yet (a board the
+        // self-heal is about to repair) - on MySQL SHOW COLUMNS would throw
+        // 42S02 and, through the boot's catch-all, kill the whole self-heal
+        // before any recreation ran (#172). Skip it: the table-specific
+        // CREATE TABLE sections below bring it back first.
+        if (!tb_table_exists($pdo, $table)) continue;
         $info = $isMysql
             ? array_column($pdo->query('SHOW COLUMNS FROM ' . $table)->fetchAll(PDO::FETCH_ASSOC), 'Type', 'Field')
             : array_column($pdo->query('PRAGMA table_info(' . $table . ')')->fetchAll(PDO::FETCH_ASSOC), 'type', 'name');
@@ -2048,9 +2073,7 @@ function tb_migrate_schema(PDO $pdo): void {
         }
     }
 
-    $hasProjects = $isMysql
-        ? (bool)$pdo->query("SHOW TABLES LIKE 'projects'")->fetchColumn()
-        : (bool)$pdo->query("SELECT 1 FROM sqlite_master WHERE type='table' AND name='projects'")->fetchColumn();
+    $hasProjects = tb_table_exists($pdo, 'projects');
     if (!$hasProjects) {
         if ($isMysql) {
             $pdo->exec("CREATE TABLE projects (
@@ -2109,9 +2132,7 @@ function tb_migrate_schema(PDO $pdo): void {
     // Saved searches (#29): the task list page reads the saved_searches table
     // unconditionally, so a deployment that lands without the upgrade SQL
     // recreates the table on the first request instead of fataling.
-    $hasSavedSearches = $isMysql
-        ? (bool)$pdo->query("SHOW TABLES LIKE 'saved_searches'")->fetchColumn()
-        : (bool)$pdo->query("SELECT 1 FROM sqlite_master WHERE type='table' AND name='saved_searches'")->fetchColumn();
+    $hasSavedSearches = tb_table_exists($pdo, 'saved_searches');
     if (!$hasSavedSearches) {
         if ($isMysql) {
             $pdo->exec("CREATE TABLE saved_searches (
@@ -2136,55 +2157,13 @@ function tb_migrate_schema(PDO $pdo): void {
         }
     }
 
-    // Message attachments (#94): the chat composer can attach one file per
-    // message, so a deployment that lands without the upgrade adds the table
-    // on the first request instead of fataling the sender. Fresh installs get
-    // it from schema.sql. The DDL is dialect-branched here (this table needs
-    // an auto-increment id like the task/document attachments, and plain SQL
-    // migration files must stay dialect-neutral - see migrations/README.md),
-    // which is why it travels through this self-heal and not migrations/.
-    $hasMessageAttachments = $isMysql
-        ? (bool)$pdo->query("SHOW TABLES LIKE 'message_attachments'")->fetchColumn()
-        : (bool)$pdo->query("SELECT 1 FROM sqlite_master WHERE type='table' AND name='message_attachments'")->fetchColumn();
-    if (!$hasMessageAttachments) {
-        if ($isMysql) {
-            $pdo->exec("CREATE TABLE message_attachments (
-                id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
-                message_id INT UNSIGNED NOT NULL,
-                user_id INT UNSIGNED NULL,
-                stored_name VARCHAR(255) NOT NULL,
-                original_name VARCHAR(255) NOT NULL,
-                mime_type VARCHAR(120) NOT NULL,
-                file_size INT UNSIGNED NOT NULL,
-                created_at BIGINT NOT NULL DEFAULT 0,
-                CONSTRAINT fk_message_attachment_message FOREIGN KEY (message_id) REFERENCES messages(id) ON DELETE CASCADE,
-                CONSTRAINT fk_message_attachment_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE SET NULL
-            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4");
-        } else {
-            $pdo->exec("CREATE TABLE message_attachments (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                message_id INTEGER NOT NULL,
-                user_id INTEGER NULL,
-                stored_name TEXT NOT NULL,
-                original_name TEXT NOT NULL,
-                mime_type TEXT NOT NULL,
-                file_size INTEGER NOT NULL,
-                created_at BIGINT NOT NULL DEFAULT 0,
-                CONSTRAINT fk_message_attachment_message FOREIGN KEY (message_id) REFERENCES messages(id) ON DELETE CASCADE,
-                CONSTRAINT fk_message_attachment_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE SET NULL
-            )");
-        }
-    }
-
     // Last activity (#30): the admin page reads users.last_seen_at
     // unconditionally, so a deployment that lands without the upgrade SQL
     // adds the column on the first request instead of fataling. Skipped when
     // the users table is missing entirely: a board without a users table is
     // pre-install and gets the full schema.sql (column included) from the
     // install guard.
-    $hasUsers = $isMysql
-        ? (bool)$pdo->query("SHOW TABLES LIKE 'users'")->fetchColumn()
-        : (bool)$pdo->query("SELECT 1 FROM sqlite_master WHERE type='table' AND name='users'")->fetchColumn();
+    $hasUsers = tb_table_exists($pdo, 'users');
     if ($hasUsers) {
         $userColumns = $isMysql
             ? array_column($pdo->query('SHOW COLUMNS FROM users')->fetchAll(PDO::FETCH_ASSOC), 'Field')
@@ -2213,9 +2192,7 @@ function tb_migrate_schema(PDO $pdo): void {
     // Skipped when the statuses table is missing entirely: a board without a
     // statuses table is pre-install and gets the full schema.sql (column
     // included) from the install guard.
-    $hasStatuses = $isMysql
-        ? (bool)$pdo->query("SHOW TABLES LIKE 'statuses'")->fetchColumn()
-        : (bool)$pdo->query("SELECT 1 FROM sqlite_master WHERE type='table' AND name='statuses'")->fetchColumn();
+    $hasStatuses = tb_table_exists($pdo, 'statuses');
     if ($hasStatuses) {
         $statusColumns = $isMysql
             ? array_column($pdo->query('SHOW COLUMNS FROM statuses')->fetchAll(PDO::FETCH_ASSOC), 'Field')
@@ -2232,9 +2209,7 @@ function tb_migrate_schema(PDO $pdo): void {
     // unconditionally on every request, so a deployment that lands without
     // the upgrade SQL recreates the table on the first request. An absent
     // row simply means the built-in periods are in effect.
-    $hasAppSettings = $isMysql
-        ? (bool)$pdo->query("SHOW TABLES LIKE 'app_settings'")->fetchColumn()
-        : (bool)$pdo->query("SELECT 1 FROM sqlite_master WHERE type='table' AND name='app_settings'")->fetchColumn();
+    $hasAppSettings = tb_table_exists($pdo, 'app_settings');
     if (!$hasAppSettings) {
         if ($isMysql) {
             $pdo->exec("CREATE TABLE app_settings (
@@ -2255,9 +2230,7 @@ function tb_migrate_schema(PDO $pdo): void {
     // "table documents doesn't exist" (42S02) on every existing board.
     // Fresh installs get them from schema.sql. The DDL mirrors schema.sql;
     // the SQLite blocks follow the established projects/saved_searches style.
-    $hasDocuments = $isMysql
-        ? (bool)$pdo->query("SHOW TABLES LIKE 'documents'")->fetchColumn()
-        : (bool)$pdo->query("SELECT 1 FROM sqlite_master WHERE type='table' AND name='documents'")->fetchColumn();
+    $hasDocuments = tb_table_exists($pdo, 'documents');
     if (!$hasDocuments) {
         if ($isMysql) {
             $pdo->exec("CREATE TABLE documents (
@@ -2328,9 +2301,7 @@ function tb_migrate_schema(PDO $pdo): void {
     // read the messages table unconditionally, so a deployment that lands
     // without the upgrade SQL recreates it on the first request. Fresh
     // installs get it from schema.sql; the DDL mirrors schema.sql.
-    $hasMessages = $isMysql
-        ? (bool)$pdo->query("SHOW TABLES LIKE 'messages'")->fetchColumn()
-        : (bool)$pdo->query("SELECT 1 FROM sqlite_master WHERE type='table' AND name='messages'")->fetchColumn();
+    $hasMessages = tb_table_exists($pdo, 'messages');
     if (!$hasMessages) {
         if ($isMysql) {
             $pdo->exec("CREATE TABLE messages (
@@ -2357,14 +2328,54 @@ function tb_migrate_schema(PDO $pdo): void {
         }
     }
 
+    // Message attachments (#94): the chat composer can attach one file per
+    // message, so a deployment that lands without the upgrade adds the table
+    // on the first request instead of fataling the sender. Fresh installs get
+    // it from schema.sql. The DDL is dialect-branched here (this table needs
+    // an auto-increment id like the task/document attachments, and plain SQL
+    // migration files must stay dialect-neutral - see migrations/README.md),
+    // which is why it travels through this self-heal and not migrations/.
+    // #172 fix: this section runs AFTER the messages section - InnoDB refuses
+    // a FOREIGN KEY that references a table that does not exist yet (errno
+    // 150), so the child table must be recreated after its parent; SQLite
+    // only validates foreign keys at DML time and never noticed the order.
+    $hasMessageAttachments = tb_table_exists($pdo, 'message_attachments');
+    if (!$hasMessageAttachments) {
+        if ($isMysql) {
+            $pdo->exec("CREATE TABLE message_attachments (
+                id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+                message_id INT UNSIGNED NOT NULL,
+                user_id INT UNSIGNED NULL,
+                stored_name VARCHAR(255) NOT NULL,
+                original_name VARCHAR(255) NOT NULL,
+                mime_type VARCHAR(120) NOT NULL,
+                file_size INT UNSIGNED NOT NULL,
+                created_at BIGINT NOT NULL DEFAULT 0,
+                CONSTRAINT fk_message_attachment_message FOREIGN KEY (message_id) REFERENCES messages(id) ON DELETE CASCADE,
+                CONSTRAINT fk_message_attachment_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE SET NULL
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4");
+        } else {
+            $pdo->exec("CREATE TABLE message_attachments (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                message_id INTEGER NOT NULL,
+                user_id INTEGER NULL,
+                stored_name TEXT NOT NULL,
+                original_name TEXT NOT NULL,
+                mime_type TEXT NOT NULL,
+                file_size INTEGER NOT NULL,
+                created_at BIGINT NOT NULL DEFAULT 0,
+                CONSTRAINT fk_message_attachment_message FOREIGN KEY (message_id) REFERENCES messages(id) ON DELETE CASCADE,
+                CONSTRAINT fk_message_attachment_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE SET NULL
+            )");
+        }
+    }
+
     // Notifications (#58): the navbar badge and the notifications page read
     // the notifications table unconditionally, so a deployment that lands
     // without the upgrade SQL recreates it on the first request - the same
     // self-heal discipline the messages table follows (#56). Fresh installs
     // get it from schema.sql; the DDL mirrors schema.sql.
-    $hasNotifications = $isMysql
-        ? (bool)$pdo->query("SHOW TABLES LIKE 'notifications'")->fetchColumn()
-        : (bool)$pdo->query("SELECT 1 FROM sqlite_master WHERE type='table' AND name='notifications'")->fetchColumn();
+    $hasNotifications = tb_table_exists($pdo, 'notifications');
     if (!$hasNotifications) {
         if ($isMysql) {
             $pdo->exec("CREATE TABLE notifications (
@@ -2401,9 +2412,7 @@ function tb_migrate_schema(PDO $pdo): void {
     // that lands without the upgrade SQL recreates it on the first request -
     // the same self-heal discipline the messages/notifications tables follow
     // (#56/#58). Fresh installs get it from schema.sql; the DDL mirrors it.
-    $hasMigrations = $isMysql
-        ? (bool)$pdo->query("SHOW TABLES LIKE 'migrations'")->fetchColumn()
-        : (bool)$pdo->query("SELECT 1 FROM sqlite_master WHERE type='table' AND name='migrations'")->fetchColumn();
+    $hasMigrations = tb_table_exists($pdo, 'migrations');
     if (!$hasMigrations) {
         if ($isMysql) {
             $pdo->exec("CREATE TABLE migrations (
@@ -2425,9 +2434,7 @@ function tb_migrate_schema(PDO $pdo): void {
     // file (this host has form) recreates it on the first request - the same
     // self-heal discipline the messages/notifications tables follow
     // (#56/#58). Fresh installs get it from schema.sql; the DDL mirrors it.
-    $hasUserPreferences = $isMysql
-        ? (bool)$pdo->query("SHOW TABLES LIKE 'user_preferences'")->fetchColumn()
-        : (bool)$pdo->query("SELECT 1 FROM sqlite_master WHERE type='table' AND name='user_preferences'")->fetchColumn();
+    $hasUserPreferences = tb_table_exists($pdo, 'user_preferences');
     if (!$hasUserPreferences) {
         if ($isMysql) {
             $pdo->exec("CREATE TABLE user_preferences (
@@ -2453,9 +2460,7 @@ function tb_migrate_schema(PDO $pdo): void {
     // searches survive logout/login. The same self-heal discipline as the
     // table above: fresh installs get it from schema.sql, a deployment that
     // lands without the migration file gets it recreated on first request.
-    $hasUserListViews = $isMysql
-        ? (bool)$pdo->query("SHOW TABLES LIKE 'user_list_views'")->fetchColumn()
-        : (bool)$pdo->query("SELECT 1 FROM sqlite_master WHERE type='table' AND name='user_list_views'")->fetchColumn();
+    $hasUserListViews = tb_table_exists($pdo, 'user_list_views');
     if (!$hasUserListViews) {
         if ($isMysql) {
             $pdo->exec("CREATE TABLE user_list_views (
@@ -2557,7 +2562,15 @@ function tb_apply_pending_migrations(PDO $pdo, ?string $dir = null): array {
             foreach (tb_migration_split_statements($sql) as $statement) {
                 $pdo->exec($statement);
             }
-            $pdo->commit();
+            // MySQL/MariaDB auto-commit every DDL statement (CREATE/ALTER/DROP
+            // ends the transaction implicitly), so commit() must never assume
+            // the transaction is still open (#172): commit() on a closed
+            // transaction throws, the catch below recorded the migration as
+            // failed AFTER it had already applied, and the version was never
+            // written - the next request re-ran the migration against the
+            // tables it had just created. SQLite keeps the atomic
+            // all-or-nothing behaviour.
+            if ($pdo->inTransaction()) $pdo->commit();
         } catch (Throwable $e) {
             if ($pdo->inTransaction()) $pdo->rollBack();
             $result['failed'][$entry['version']] = $e->getMessage();

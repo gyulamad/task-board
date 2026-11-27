@@ -2640,8 +2640,58 @@ if ($page==='task') {
     <?php endif; ?>
     <div class="card p-4 mb-4"><h2 class="h5">Attachments</h2><?php foreach($attachments as $a): ?><div class="d-flex justify-content-between border-bottom py-2"><a href="?page=download&id=<?=$a['id']?>"><?=h($a['original_name'])?></a><span class="small muted"><?=tb_user_with_activity($a)?> · <?=number_format($a['file_size']/1024,1)?> KB · <?=h(tb_ago($a['created_at']))?></span><?php if(is_admin()||(int)$a['user_id']===(int)user()['id']): ?><form method="post" class="d-inline" onsubmit="return confirm('Delete this attachment permanently?')"><?=csrf_field()?><input type="hidden" name="action" value="delete_attachment"><input type="hidden" name="attachment_id" value="<?=$a['id']?>"><button class="btn btn-sm btn-link text-danger p-0" title="Delete this attachment">delete</button></form><?php endif; ?></div><?php endforeach; ?><form method="post" enctype="multipart/form-data" class="mt-3"><?=csrf_field()?><input type="hidden" name="action" value="upload"><input type="hidden" name="task_id" value="<?=$id?>"><div class="input-group"><input class="form-control" type="file" name="file" required><button class="btn btn-outline-primary">Upload</button></div><div class="form-text">Max <?=round($config['max_upload_bytes']/1024/1024)?> MB. Allowed: common images, PDF, TXT, ZIP, DOCX and XLSX.</div></form></div>
     <div class="card p-4"><h2 class="h5">History</h2><?php foreach($historyRows as $r): ?><div class="border-bottom py-2"><strong><?=h($r['event'])?></strong> <span class="small muted">by <?=tb_user_with_activity($r)?> · <?=h(tb_ago($r['created_at']))?></span> <a class="small text-decoration-none" href="?page=task_history&id=<?=$r['id']?>" title="Full audit of this entry (#54)">details</a><?php if($r['details']): ?><div class="small"><?=h(tb_excerpt((string)$r['details'], 100))?></div><?php endif; ?><?php if($r['field']): ?><div class="small muted">Field &quot;<?=h((string)$r['field']) ?>&quot;: from &quot;<?=h(tb_excerpt((string)($r['old_value'] ?? '—'), 100)) ?>&quot; to &quot;<?=h(tb_excerpt((string)($r['new_value'] ?? '—'), 100)) ?>&quot;</div><?php endif; ?></div><?php endforeach; ?></div></div>
-    <div class="col-lg-4"><div class="card p-4"><h2 class="h5">Relationships</h2><?php foreach($links as $l): ?><div class="border-bottom py-2"><span class="badge text-bg-secondary"><?=h($l['link_type'])?></span> <a href="?page=task&id=<?=$l['related_task_id']?>">#<?=$l['related_task_id']?> <?=h($l['title'])?></a><form method="post" class="d-inline"><?=csrf_field()?><input type="hidden" name="action" value="unlink_task"><input type="hidden" name="task_id" value="<?=$id?>"><input type="hidden" name="related_task_id" value="<?=$l['related_task_id']?>"><input type="hidden" name="link_type" value="<?=h($l['link_type'])?>"><button class="btn btn-sm btn-link text-danger">remove</button></form></div><?php endforeach; ?><form method="post" class="mt-3"><?=csrf_field()?><input type="hidden" name="action" value="link_task"><input type="hidden" name="task_id" value="<?=$id?>"><label class="form-label">Link type</label><select class="form-select mb-2" name="link_type"><?php foreach(TASK_BOARD_LINK_TYPES as $linkTypeValue=>$linkTypeLabel): ?><option value="<?=h($linkTypeValue)?>"><?=h($linkTypeLabel)?></option><?php endforeach; ?></select><label class="form-label">Task</label><select class="form-select mb-2" name="related_task_id" required><?php foreach($all->fetchAll() as $a): ?><option value="<?=$a['id']?>">#<?=$a['id']?> - <?=h($a['title'])?></option><?php endforeach; ?></select><button class="btn btn-outline-primary w-100">Add relationship</button></form></div>
+    <div class="col-lg-4"><div class="card p-4"><h2 class="h5">Relationships</h2><?php foreach($links as $l): ?><div class="border-bottom py-2"><span class="badge text-bg-secondary"><?=h($l['link_type'])?></span> <a href="?page=task&id=<?=$l['related_task_id']?>">#<?=$l['related_task_id']?> <?=h($l['title'])?></a><form method="post" class="d-inline"><?=csrf_field()?><input type="hidden" name="action" value="unlink_task"><input type="hidden" name="task_id" value="<?=$id?>"><input type="hidden" name="related_task_id" value="<?=$l['related_task_id']?>"><input type="hidden" name="link_type" value="<?=h($l['link_type'])?>"><button class="btn btn-sm btn-link text-danger">remove</button></form></div><?php endforeach; ?><form method="post" class="mt-3"><?=csrf_field()?><input type="hidden" name="action" value="link_task"><input type="hidden" name="task_id" value="<?=$id?>"><label class="form-label">Link type</label><select class="form-select mb-2" name="link_type"><?php foreach(TASK_BOARD_LINK_TYPES as $linkTypeValue=>$linkTypeLabel): ?><option value="<?=h($linkTypeValue)?>"><?=h($linkTypeLabel)?></option><?php endforeach; ?></select><label class="form-label">Task</label><input type="search" class="form-control mb-1" data-tb-task-search placeholder="Type to filter tasks..." aria-label="Search tasks to link" autocomplete="off"><div class="form-text mb-1" id="tb-related-task-hint" data-tb-task-hint aria-live="polite"></div><select class="form-select mb-2" name="related_task_id" required data-tb-task-options aria-describedby="tb-related-task-hint"><option value="" disabled hidden selected data-tb-task-empty>No matching tasks</option><?php foreach($all->fetchAll() as $a): ?><option value="<?=$a['id']?>">#<?=$a['id']?> - <?=h($a['title'])?></option><?php endforeach; ?></select><button class="btn btn-outline-primary w-100">Add relationship</button></form></div>
     <div class="card p-4 mt-4"><h2 class="h5">Actions</h2><?php if($isArchived): ?><p class="small muted">This task is archived and hidden from the task list.</p><form method="post" class="mb-2"><?=csrf_field()?><input type="hidden" name="action" value="restore_task"><input type="hidden" name="id" value="<?=$id?>"><button class="btn btn-outline-primary w-100">Restore task</button></form><form method="post" onsubmit="return confirm('Delete this task permanently? This cannot be undone.')"><?=csrf_field()?><input type="hidden" name="action" value="delete_task"><input type="hidden" name="id" value="<?=$id?>"><input type="hidden" name="return" value="?"><button class="btn btn-outline-danger w-100">Delete permanently</button></form><?php else: ?><form method="post" onsubmit="return confirm('Archive this task? It will be hidden from the task list but can be restored from the archive.')"><?=csrf_field()?><input type="hidden" name="action" value="archive_task"><input type="hidden" name="id" value="<?=$id?>"><button class="btn btn-outline-danger w-100">Archive task</button></form><?php endif; ?></div></div></div>
+    <script>
+    // Task #180: the relationship picker is a search select. Typing filters the
+    // option list down to the tasks that match (case-insensitive substring on
+    // "#id - title"), exactly one match preselects itself, a filter that hides
+    // the picked task resets the selection instead of silently linking an
+    // invisible option, and an emptied search restores the full list. The
+    // native <select> stays the real, required form control, so without JS the
+    // plain unfiltered dropdown still works and the server-side guards are
+    // unchanged.
+    (function(){
+        var input=document.querySelector('[data-tb-task-search]');
+        var select=document.querySelector('[data-tb-task-options]');
+        var hint=document.querySelector('[data-tb-task-hint]');
+        if(!input||!select){return;}
+        var empty=select.querySelector('[data-tb-task-empty]');
+        var options=[].filter.call(select.options,function(o){return !o.hasAttribute('data-tb-task-empty');});
+        var total=options.length;
+        function render(){
+            var q=input.value.trim().toLowerCase();
+            var shown=0,first=null;
+            for(var i=0;i<total;i++){
+                var o=options[i],hit=(q===''||o.text.toLowerCase().indexOf(q)!==-1);
+                o.hidden=!hit;o.style.display=hit?'':'none';
+                if(hit){shown++;if(first===null){first=o;}}
+            }
+            if(empty){empty.hidden=(shown>0);empty.style.display=shown>0?'none':'';}
+            if(q!==''){
+                if(shown===1){select.value=first.value;}
+                else{
+                    var picked=select.selectedOptions[0];
+                    if(!picked||picked.hidden||picked.hasAttribute('data-tb-task-empty')){select.value='';}
+                }
+            }
+            if(hint){
+                if(total===0){hint.textContent='No other tasks can be linked yet.';}
+                else if(q===''){hint.textContent='Type to filter '+(total===1?'the 1 task':'the '+total+' tasks')+' below.';}
+                else if(shown===0){hint.textContent='No task matches your search.';}
+                else{hint.textContent=(shown===1?'1 task matches - pick it below.':shown+' of '+total+' tasks match - pick one below.');}
+            }
+        }
+        input.addEventListener('input',render);
+        input.addEventListener('keydown',function(e){
+            if(e.key==='Escape'){input.value='';render();}
+            // Enter only submits once a real task is picked - mid-search it
+            // would trip the required validation on an empty selection.
+            if(e.key==='Enter'&&select.value===''){e.preventDefault();}
+        });
+        render();
+    })();
+    </script>
     <?php render_footer(); exit;
 }
 
